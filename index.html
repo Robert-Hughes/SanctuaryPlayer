@@ -1,0 +1,57 @@
+<html>
+
+<head>
+    <title>YouTubeNoSpoilers</title>
+    <link rel="shortcut icon" href="data:image/x-icon;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAAZdEVYdFNvZnR3YXJlAHBhaW50Lm5ldCA0LjAuMTczbp9jAAABXklEQVRYR+2Wv2qDUBSH06X0EfIAHTpnKnRy7NLseQwHO/QhoptrMgVcDB3SJa8groW4mICDuChNsURPf+oVRC9E8Q8pzQ8+uOfkXM43qGRESU4nIssi2u2GYb9P1ybJBKZTnHAckvk8XY0TMh5XB/pmNktX44T8NQEdfJd6jWkj8ATuwXuh15i2AiPGM/gExd9r0ZVAwi14BQHIZ87SpUDOI6j9bHQpcAfewBfIZ87ShcANeAEWKM+cpa3AA/go9BrTRiB5/X5Kvca0EeiEyxKYTKoDfSOK6WqckMOBaLkkWiyGYbUiOh7T1ZlAT4miiOI4ZhU/vQqoqkqbzYZV/PQqoCgK6brOKn6uApcj4HkemaZZiyAI2K0sYRhy5yRJIlmWK33HcdjNgsB2u8W3QayFYRjsVhbbtrlzgiDgH/+00tc0jd28PgNXgf8gsF6vWcVPrwKu65Lv+6zihegX8rT4iaDO9uEAAAAASUVORK5CYII=" />
+    <link rel="stylesheet" href="style.css">
+    <!-- https://developers.google.com/youtube/iframe_api_reference -->
+    <script src="https://www.youtube.com/iframe_api"></script>
+</head>
+
+<body>
+    <div id="root">
+        <div id="top-container">
+            <button id="change-video-button">Change Video...</button>
+        </div>
+
+        <div id="mid-container">
+            <div id="player"></div>
+            <div id="blocker-box">Hiding related videos</div>
+            <!-- Use an overlay to display things and intercept mouse clicks on the player -->
+            <div id="player-overlay">
+                <div id="player-overlay-controls">
+                    <div id="player-overlay-controls-top">
+
+                    </div>
+                    <div id="player-overlay-controls-mid"> 
+                        <button id="play-pause-button"></button>
+                        <button id="fullscreen-button"></button>
+                    </div>
+                    <div id="player-overlay-controls-bot">
+                        <button class="seek-button" data-amount="-600">-10m</button>
+                        <button class="seek-button" data-amount="-60">-1m</button>
+                        <button class="seek-button" data-amount="-5">-5s</button>
+                        <span id="current-time-span"></span>
+                        <button class="seek-button" data-amount="+5">+5s</button>
+                        <button class="seek-button" data-amount="+60">+1m</button>
+                        <button class="seek-button" data-amount="+600">+10m</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div id="bot-container">
+            <div id="bot-left-container">
+            </div>
+            <div id="bot-center-container">                
+            </div>
+            <div id="bot-right-container">
+            </div>
+        </div>
+
+    </div>
+
+    <script src="script.js"></script>
+</body>
+
+</html>

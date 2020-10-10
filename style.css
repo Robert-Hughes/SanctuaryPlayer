@@ -1,0 +1,80 @@
+body {
+    height: 100%;
+    margin: 0px;
+    font-size: xx-large;
+    user-select: none;
+    overflow: hidden;  /* Prevent scroll bars from appearing when doing hack in onOverlayClick */
+}
+
+button {
+    font-size: xx-large;
+    padding: 0.5em;
+}
+
+#root {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+}
+
+#mid-container {
+    flex-grow: 1;
+    position: relative;  /* So that we can absolutely position the blocker-box */
+}
+
+#iframe {
+    height: 100%;
+    width: 100%;
+    border: none;
+}
+
+#player-overlay {
+    top: 0px;
+    bottom: 0px;
+    left: 0px;
+    right: 0px;
+    position: absolute;
+}
+#blocker-box {
+    width: 100%;
+    height: 50%;
+    background: black;
+    position: absolute;
+    bottom: 0px;
+    display: none;
+    color: white;
+    pointer-events: none;
+}
+
+#player-overlay-controls {
+    display: none;
+    width: 100%;
+    height: 100%;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    justify-content: space-between;
+}
+
+#player-overlay-controls-mid button {
+    width: 5em;
+    height: 5em;
+}
+#play-pause-button {
+    background-image: url('play.png'); 
+    background-size: cover; 
+}
+#fullscreen-button {
+    background-image: url('fullscreen.png'); 
+    background-size: cover; 
+}
+
+#bot-container {
+    display: flex;
+    justify-content: space-between;
+}
+
+#current-time-span {
+    cursor: pointer;
+    background-color: white;
+}

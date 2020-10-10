@@ -1,0 +1,223 @@
+var player;
+var overlayControlsTimeoutId;
+
+function decodeFriendlyTimeString(timeStr) {
+    // Decode strings of the format:
+    //   1234
+    //   4567s
+    //   1m2s
+    //   2h1m40s
+    //   2m
+    var timeMatch = timeStr.match(/^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s?)?$/);
+    if (!timeMatch) {
+        return null;
+    }
+    var h = parseInt(timeMatch[1] || '0');
+    var m = parseInt(timeMatch[2] || '0');
+    var s = parseInt(timeMatch[3] || '0');
+    return 3600 * h + 60 * m + s;
+}
+
+function toFriendlyTimeString(seconds) {
+    var hours = Math.floor(seconds / 3600);
+    var minutes = Math.floor((seconds % 3600) / 60);
+    var seconds = Math.floor(seconds % 60);
+
+    return hours + 'h' + minutes.toString().padStart(2, '0') + 'm' + seconds.toString().padStart(2, '0') + 's';
+}
+
+function changeVideo() {
+    var url = prompt("Video URL");
+    if (!url) {
+        return;
+    }
+
+    // Regex to extract video ID and time. Needs to work for:
+    //   https://youtu.be/3fgD9k8Hkbc
+    //   https://youtu.be/3fgD9k8Hkbc?t=3839
+    //   https://www.youtube.com/watch?v=3fgD9k8Hkbc
+    //   https://www.youtube.com/watch?v=3fgD9k8Hkbc&t=54m39s
+    //   https://www.youtube.com/watch?v=3fgD9k8Hkbc&t=54m39s&bob=someting
+    var match = url.match(/(?:watch\?v=|youtu\.be\/)(.*?)(?:&|\?|$)(?:t=(.*?))?(?:&|$)/);
+    var params = new URLSearchParams(window.location.search);
+    if (match && match.length >= 2) {
+        params.set('videoId', match[1]);
+        if (match.length >= 3) {
+            params.set('time', match[2]);
+        }
+    }
+    else {
+        alert("Invalid URL")
+        return;
+    }
+
+    window.location = '?' + params.toString();
+}
+
+function onPlayerReady() {
+    // Start background refresh timer
+    window.setInterval(onTimer, 500);
+}
+
+function onPlayerStateChange(event) {
+    // Toggle visibility of blocker box to hide related videos bar at bottom, which can spoil future games.
+    if (event.data == YT.PlayerState.PAUSED) {
+        document.getElementById('blocker-box').style.display = 'block';
+        document.getElementById('play-pause-button').style.background = "url('play.png')";
+    }
+    else if (event.data == YT.PlayerState.PLAYING) {
+        document.getElementById('play-pause-button').style.background = "url('pause.png')";
+        // Hide after a short delay, as it takes a short time for the related videos bar to disappear
+        window.setTimeout(function () {
+            // Make sure video hasn't been paused again during the timer
+            if (player.getPlayerState() == YT.PlayerState.PLAYING) {
+                document.getElementById('blocker-box').style.display = 'none';
+            }
+        }, 250);
+    }
+}
+
+function hideControlsShortly() {
+    if (overlayControlsTimeoutId != null) {
+        window.clearTimeout(overlayControlsTimeoutId);
+    }
+    overlayControlsTimeoutId = window.setTimeout(function () {
+        document.getElementById("player-overlay-controls").style.display = 'none';
+    }, 2000);
+}
+
+function onOverlayClick(event) {
+    document.getElementById("player-overlay-controls").style.display = 'flex';
+    hideControlsShortly();
+    // Hack to force redraw, seems to be a Chrome bug?
+    document.getElementById("player-overlay-controls").style.border = "solid 1px transparent";
+    setTimeout(function () {
+        document.getElementById("player-overlay-controls").style.border = "0px";
+    }, 100);
+}
+
+function onOverlayControlsClick(event) {
+    // Clicking on background of the controls -> hide the controls
+    if (event.target == document.getElementById("player-overlay-controls")) {
+        document.getElementById("player-overlay-controls").style.display = 'none';
+        event.stopPropagation();  // Stop the click from going up to the player-overlay, which would show the controls again!
+    }
+
+    // Clicking anywhere on the controls (e.g. any button) - refresh the timeout to hide the controls
+    hideControlsShortly();
+}
+
+function togglePlayPause(event) {
+    if (player.getPlayerState() == YT.PlayerState.PLAYING) {
+        player.pauseVideo();
+    }
+    else {
+        player.playVideo();
+    }
+}
+
+function toggleFullscreen(event) {
+    if (document.fullscreenElement) {
+        document.exitFullscreen();
+    }
+    else {
+        // Make the whole mid-container fullscreen, so the overlay still works
+        document.getElementById("mid-container").requestFullscreen();
+    }
+}
+
+function seekButtonClicked(e) {
+    var amount = parseInt(this.dataset["amount"]);
+    player.seekTo(player.getCurrentTime() + amount);
+}
+
+function changeTime() {
+    var newTimeStr = prompt("New time:", toFriendlyTimeString(player.getCurrentTime()));
+    if (!newTimeStr) {
+        return;
+    }
+    var time = decodeFriendlyTimeString(newTimeStr);
+    if (time != null) {
+        player.seekTo(time);
+    }
+}
+
+function onTimer() {
+    if (player && player.getPlayerState() != YT.PlayerState.UNSTARTED)  // Video may not yet have been loaded
+    {
+        document.getElementById("current-time-span").innerText = toFriendlyTimeString(player.getCurrentTime());
+
+        // Update URL to reflect the current time in the video, so refreshing the page (or closing and re-opening
+        // the browser will resume the video at the current time).
+        var params = new URLSearchParams(window.location.search);
+        params.set('videoId', player.getVideoData().video_id);
+        params.set('time', toFriendlyTimeString(player.getCurrentTime()));
+        window.history.replaceState({}, '', '?' + params.toString());
+
+        document.title = player.getVideoData().title;
+    }
+}
+
+// This function is called automatically when the youtube iframe script API loads
+// (see the <script> element on the HTML page).
+function onYouTubeIframeAPIReady() {
+    // Load video immediately if provided in URL
+    var params = new URLSearchParams(window.location.search);
+    if (params.has('videoId')) {
+        var startTime = 0;
+        if (params.has('time')) {
+            startTime = decodeFriendlyTimeString(params.get('time'));
+        }
+
+        player = new YT.Player('player', {
+            height: '100%',
+            width: '100%',
+            videoId: params.get('videoId'),
+            playerVars: {
+                'controls': 0,
+                'start': startTime,
+                // Disable fullscreen - we'll handle this ourselves so that we're able to display our own stuff
+                // over the top of the fullscreen video, and be aware when the video toggles fullscreen (which
+                // it seems we can't if the iframe document itself triggers it)
+                'fs': 0,
+                'autoplay': 1,
+            },
+            events: {
+                'onReady': onPlayerReady,
+                'onStateChange': onPlayerStateChange
+            }
+        });
+    }
+}
+
+function onKeyUp(event) {
+    switch (event.code) {
+        case 'ArrowLeft':
+            player.seekTo(player.getCurrentTime() - 5);
+            break;
+        case 'ArrowRight':
+            player.seekTo(player.getCurrentTime() + 5);
+            break;
+        case 'KeyF':
+            toggleFullscreen();
+            break;
+        case 'Space':
+            togglePlayPause();
+            break;
+    }
+    event.preventDefault();  // Prevent (for example), space bar from pressing the focused button
+}
+
+// Hookup event listeners
+document.getElementById("change-video-button").addEventListener("click", changeVideo);
+document.getElementById("current-time-span").addEventListener("click", changeTime);
+document.getElementById("player-overlay").addEventListener("click", onOverlayClick);
+document.getElementById("player-overlay-controls").addEventListener("click", onOverlayControlsClick);
+document.getElementById("play-pause-button").addEventListener("click", togglePlayPause);
+document.getElementById("fullscreen-button").addEventListener("click", toggleFullscreen);
+document.addEventListener("keyup", onKeyUp)
+for (let button of document.getElementsByClassName("seek-button")) {
+    button.addEventListener("click", seekButtonClicked);
+}
+
+// Main logic begins once youtube API loads (onYouTubeIframeAPIReady)
