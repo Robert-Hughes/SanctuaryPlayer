@@ -63,10 +63,12 @@ button {
 #play-pause-button {
     background-image: url('play.png'); 
     background-size: cover; 
+    background-color: white;
 }
 #fullscreen-button {
     background-image: url('fullscreen.png'); 
     background-size: cover; 
+    background-color: white;
 }
 
 #bot-container {

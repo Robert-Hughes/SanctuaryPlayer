@@ -63,10 +63,10 @@ function onPlayerStateChange(event) {
     // Toggle visibility of blocker box to hide related videos bar at bottom, which can spoil future games.
     if (event.data == YT.PlayerState.PAUSED) {
         document.getElementById('blocker-box').style.display = 'block';
-        document.getElementById('play-pause-button').style.background = "url('play.png')";
+        document.getElementById('play-pause-button').style.backgroundImage = "url('play.png')";
     }
     else if (event.data == YT.PlayerState.PLAYING) {
-        document.getElementById('play-pause-button').style.background = "url('pause.png')";
+        document.getElementById('play-pause-button').style.backgroundImage = "url('pause.png')";
         // Hide after a short delay, as it takes a short time for the related videos bar to disappear
         window.setTimeout(function () {
             // Make sure video hasn't been paused again during the timer

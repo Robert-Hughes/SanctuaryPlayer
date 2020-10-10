@@ -10,7 +10,6 @@ cp single-page/YouTubeNoSpoilers.html D:\Dropbox\Utilities\YouTubeNoSpoilers\
 
 TODO:
 
-* broken unicode on phone
 * play speed settings
 * quality settings?
 * Sync somehow between PC and phone
