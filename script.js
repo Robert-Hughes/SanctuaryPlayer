@@ -96,6 +96,7 @@ function onPlayerStateChange(event) {
 function onPlaybackQualityChange(event)
 {
     console.log("onPlaybackQualityChange: " + event.data);
+    document.getElementById("quality-text").innerText = "Quality: " + event.data;
 }
 
 function onPlaybackRateChange(event)

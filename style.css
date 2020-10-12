@@ -85,3 +85,7 @@ button {
     cursor: pointer;
     background-color: white;
 }
+
+#quality-text {
+    background:white;
+}
