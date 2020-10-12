@@ -28,6 +28,11 @@ button {
     border: none;
 }
 
+#loading-status {
+    top: 0px;
+    position: absolute;
+    background:white;
+}
 #player-overlay {
     top: 0px;
     bottom: 0px;

@@ -1,5 +1,6 @@
 var player;
 var overlayControlsTimeoutId;
+var timerId;
 
 function decodeFriendlyTimeString(timeStr) {
     // Decode strings of the format:
@@ -55,8 +56,15 @@ function changeVideo() {
 }
 
 function onPlayerReady() {
-    // Start background refresh timer
-    window.setInterval(onTimer, 500);
+    console.log("onPlayerReady");
+
+    for (var rate of player.getAvailablePlaybackRates()) {
+        var opt = document.createElement("option");
+        opt.value = rate;
+        opt.text = rate + "x";
+        document.getElementById("speed-select").options.add(opt);
+    }
+    document.getElementById("speed-select").value = player.getPlaybackRate();
 }
 
 function onPlayerStateChange(event) {
@@ -66,6 +74,14 @@ function onPlayerStateChange(event) {
         document.getElementById('play-pause-button').style.backgroundImage = "url('play.png')";
     }
     else if (event.data == YT.PlayerState.PLAYING) {
+        // Start background refresh timer if this is the first time the video has been played.
+        // Don't start it before now, otherwise the player.getCurrentTime() might return 0 and we don't want
+        // to report that.
+        if (timerId == null) {
+            window.setInterval(onTimer, 500);           
+            document.getElementById("loading-status").style.display = 'none';
+        }
+
         document.getElementById('play-pause-button').style.backgroundImage = "url('pause.png')";
         // Hide after a short delay, as it takes a short time for the related videos bar to disappear
         window.setTimeout(function () {
@@ -75,6 +91,22 @@ function onPlayerStateChange(event) {
             }
         }, 250);
     }
+}
+
+function onPlaybackQualityChange(event)
+{
+    console.log("onPlaybackQualityChange: " + event.data);
+}
+
+function onPlaybackRateChange(event)
+{
+    console.log("onPlaybackRateChange" + event.data);
+    document.getElementById("speed-select").value = player.getPlaybackRate();
+}
+
+function onError(event)
+{
+    console.log("onError" + event.data);
 }
 
 function hideControlsShortly() {
@@ -184,7 +216,10 @@ function onYouTubeIframeAPIReady() {
             },
             events: {
                 'onReady': onPlayerReady,
-                'onStateChange': onPlayerStateChange
+                'onStateChange': onPlayerStateChange,
+                'onPlaybackQualityChange': onPlaybackQualityChange,
+                'onPlaybackRateChange': onPlaybackRateChange,
+                'onError': onError,
             }
         });
     }
@@ -208,6 +243,10 @@ function onKeyUp(event) {
     event.preventDefault();  // Prevent (for example), space bar from pressing the focused button
 }
 
+function onSpeedSelectChange(event) {
+    player.setPlaybackRate(parseFloat(this.value));
+}
+
 // Hookup event listeners
 document.getElementById("change-video-button").addEventListener("click", changeVideo);
 document.getElementById("current-time-span").addEventListener("click", changeTime);
@@ -215,9 +254,20 @@ document.getElementById("player-overlay").addEventListener("click", onOverlayCli
 document.getElementById("player-overlay-controls").addEventListener("click", onOverlayControlsClick);
 document.getElementById("play-pause-button").addEventListener("click", togglePlayPause);
 document.getElementById("fullscreen-button").addEventListener("click", toggleFullscreen);
+document.getElementById("speed-select").addEventListener("change", onSpeedSelectChange);
 document.addEventListener("keyup", onKeyUp)
 for (let button of document.getElementsByClassName("seek-button")) {
     button.addEventListener("click", seekButtonClicked);
 }
 
+// Show start time at bottom of controls, as it may take a few seconds for the video to load
+// and we'd like the start time to be visible before then
+var params = new URLSearchParams(window.location.search);
+if (params.has('videoId')) {
+    if (params.has('time')) {
+        document.getElementById("loading-status").innerText = 'Loading video at: ' + params.get('time') + '...';
+    } else  {
+        document.getElementById("loading-status").innerText = 'Loading video...';
+    }
+}
 // Main logic begins once youtube API loads (onYouTubeIframeAPIReady)

@@ -10,8 +10,7 @@ cp single-page/YouTubeNoSpoilers.html D:\Dropbox\Utilities\YouTubeNoSpoilers\
 
 TODO:
 
-* play speed settings
-* quality settings?
+* Prevent arrow keys from changing play speed when it's focused (as they also control the video)
+* quality settings? - if we can't change them, maybe just show the current quality somewhere
 * Sync somehow between PC and phone
-* Show something when video is loading on first page load
-* Indicate when  a start time has been set, before clicking play on the video
+* Find better way to fix redraw issue, so it doesn't judder. Maybe replace border within margin or something "equivalent"?
