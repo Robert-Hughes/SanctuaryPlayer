@@ -122,11 +122,6 @@ function hideControlsShortly() {
 function onOverlayClick(event) {
     document.getElementById("player-overlay-controls").style.display = 'flex';
     hideControlsShortly();
-    // Hack to force redraw, seems to be a Chrome bug?
-    document.getElementById("player-overlay-controls").style.border = "solid 1px transparent";
-    setTimeout(function () {
-        document.getElementById("player-overlay-controls").style.border = "0px";
-    }, 100);
 }
 
 function onOverlayControlsClick(event) {
