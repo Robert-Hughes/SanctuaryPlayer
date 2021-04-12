@@ -41,9 +41,9 @@ function changeVideo() {
     //   https://www.youtube.com/watch?v=3fgD9k8Hkbc&t=54m39s&bob=someting
     var match = url.match(/(?:watch\?v=|youtu\.be\/)(.*?)(?:&|\?|$)(?:t=(.*?))?(?:&|$)/);
     var params = new URLSearchParams(window.location.search);
-    if (match && match.length >= 2) {
+    if (match && match[1]) {
         params.set('videoId', match[1]);
-        if (match.length >= 3) {
+        if (match[2]) {
             params.set('time', match[2]);
         }
     }

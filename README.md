@@ -13,3 +13,4 @@ TODO:
 * Prevent arrow keys from changing play speed when it's focused (as they also control the video)
 * Sync somehow between PC and phone
 * Seems to be a delay sometimes when clicking to toggle the overlay
+* Mobile autoplay doesn't work, so maybe indicate to user that htey have to click play? Otherwise just says "loading video..."
