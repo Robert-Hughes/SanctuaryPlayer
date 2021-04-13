@@ -45,6 +45,8 @@ function changeVideo() {
         params.set('videoId', match[1]);
         if (match[2]) {
             params.set('time', match[2]);
+        } else {
+            params.set('time', '0s'); // Important to overwrite any existing time value   
         }
     }
     else {
