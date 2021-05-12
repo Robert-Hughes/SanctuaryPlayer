@@ -70,8 +70,10 @@ function onPlayerReady() {
 }
 
 function onPlayerStateChange(event) {
+    console.log("onPlayerStateChange: " + event.data);
     // Toggle visibility of blocker box to hide related videos bar at bottom, which can spoil future games.
     if (event.data == YT.PlayerState.PAUSED) {
+        //TODO: also display this once the video has finished, as related videos appear at the end too?
         document.getElementById('blocker-box').style.display = 'block';
         document.getElementById('play-pause-button').style.backgroundImage = "url('play.png')";
     }

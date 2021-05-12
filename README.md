@@ -14,3 +14,4 @@ TODO:
 * Sync somehow between PC and phone
 * Seems to be a delay sometimes when clicking to toggle the overlay
 * Mobile autoplay doesn't work, so maybe indicate to user that htey have to click play? Otherwise just says "loading video..."
+* Sometimes video doesn't load correctly - possibly due to ordering of scripts, what if the youtube api loads before our script.js has been loaded?

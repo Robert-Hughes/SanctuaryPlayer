@@ -46,13 +46,13 @@ button {
     background: black;
     position: absolute;
     bottom: 0px;
-    display: none;
+    display: block; /* Initially displayed so that when the video loads but hasn't started playing, the related videos are hidden */
     color: white;
     pointer-events: none;
 }
 
 #player-overlay-controls {
-    display: none;
+    display: flex; /* Initially displayed so that user can see the Change Video button */
     width: 100%;
     height: 100%;
     align-items: center;
