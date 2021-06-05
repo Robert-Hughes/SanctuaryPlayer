@@ -4,6 +4,7 @@ body {
     font-size: xx-large;
     user-select: none;
     overflow: hidden;  /* Prevent scroll bars from appearing when doing hack in onOverlayClick */
+    touch-action: none; /* Prevent double-clicking to zoom on mobile, as often this happens while using the normal UI. */
 }
 
 button {
