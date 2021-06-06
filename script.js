@@ -73,8 +73,8 @@ function onPlayerStateChange(event) {
     console.log("onPlayerStateChange: " + event.data);
     // Toggle visibility of blocker box to hide related videos bar at bottom, which can spoil future games.
     if (event.data == YT.PlayerState.PAUSED) {
-        //TODO: also display this once the video has finished, as related videos appear at the end too?
         document.getElementById('blocker-box').style.display = 'block';
+        document.getElementById('blocker-box').style.height = '50%';
         document.getElementById('play-pause-button').style.backgroundImage = "url('play.png')";
     }
     else if (event.data == YT.PlayerState.PLAYING) {
@@ -94,6 +94,12 @@ function onPlayerStateChange(event) {
                 document.getElementById('blocker-box').style.display = 'none';
             }
         }, 250);
+    }
+    else if (event.data == YT.PlayerState.ENDED) {
+        // Hide related videos that fill the player area at the end of the video
+        document.getElementById('blocker-box').style.display = 'block';
+        document.getElementById('blocker-box').style.height = '100%';
+        document.getElementById('play-pause-button').style.backgroundImage = "url('play.png')";
     }
 }
 
