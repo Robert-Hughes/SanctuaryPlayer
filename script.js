@@ -75,6 +75,7 @@ function onPlayerStateChange(event) {
     if (event.data == YT.PlayerState.PAUSED) {
         document.getElementById('blocker-box').style.display = 'block';
         document.getElementById('blocker-box').style.height = '50%';
+        document.getElementById('blocker-box').innerText = 'Video paused. Hiding related videos.';
         document.getElementById('play-pause-button').style.backgroundImage = "url('play.png')";
     }
     else if (event.data == YT.PlayerState.PLAYING) {
@@ -99,6 +100,7 @@ function onPlayerStateChange(event) {
         // Hide related videos that fill the player area at the end of the video
         document.getElementById('blocker-box').style.display = 'block';
         document.getElementById('blocker-box').style.height = '100%';
+        document.getElementById('blocker-box').innerText = 'End of video. Hiding related videos.';
         document.getElementById('play-pause-button').style.backgroundImage = "url('play.png')";
     }
 }
