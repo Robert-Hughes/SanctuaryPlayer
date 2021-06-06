@@ -193,6 +193,7 @@ function onTimer() {
 // This function is called automatically when the youtube iframe script API loads
 // (see the <script> element on the HTML page).
 function onYouTubeIframeAPIReady() {
+    console.log("onYouTubeIframeAPIReady");
     // Load video immediately if provided in URL
     var params = new URLSearchParams(window.location.search);
     if (params.has('videoId')) {
@@ -225,22 +226,26 @@ function onYouTubeIframeAPIReady() {
     }
 }
 
-function onKeyUp(event) {
+function onKeyDown(event) {
+    // event.preventDefault stops default browser behaviour, for example space bar from pressing the focused button
     switch (event.code) {
         case 'ArrowLeft':
             player.seekTo(player.getCurrentTime() - 5);
+            event.preventDefault();
             break;
         case 'ArrowRight':
             player.seekTo(player.getCurrentTime() + 5);
+            event.preventDefault();
             break;
         case 'KeyF':
             toggleFullscreen();
+            event.preventDefault();
             break;
         case 'Space':
             togglePlayPause();
+            event.preventDefault();  
             break;
     }
-    event.preventDefault();  // Prevent (for example), space bar from pressing the focused button
 }
 
 function onSpeedSelectChange(event) {
@@ -255,7 +260,7 @@ document.getElementById("player-overlay-controls").addEventListener("click", onO
 document.getElementById("play-pause-button").addEventListener("click", togglePlayPause);
 document.getElementById("fullscreen-button").addEventListener("click", toggleFullscreen);
 document.getElementById("speed-select").addEventListener("change", onSpeedSelectChange);
-document.addEventListener("keyup", onKeyUp)
+document.addEventListener("keydown", onKeyDown)
 for (let button of document.getElementsByClassName("seek-button")) {
     button.addEventListener("click", seekButtonClicked);
 }
@@ -270,4 +275,15 @@ if (params.has('videoId')) {
         document.getElementById("loading-status").innerText = 'Loading video...';
     }
 }
-// Main logic begins once youtube API loads (onYouTubeIframeAPIReady)
+
+// Load the YouTube API script. Note I used to have this as a regular <script> element
+// in the HTML <head>, but this seemed to cause issues where the API wouldn't load correctly
+// about half the time (had to keep refreshing the page til it worked). This dynamic loading
+// code here comes from the reference page.
+// https://developers.google.com/youtube/iframe_api_reference
+var tag = document.createElement('script');
+tag.src = "https://www.youtube.com/iframe_api";
+var firstScriptTag = document.getElementsByTagName('script')[0];
+firstScriptTag.parentNode.insertBefore(tag, firstScriptTag);
+
+// Main logic begins once youtube API loads (it calls our onYouTubeIframeAPIReady() function)
