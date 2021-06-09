@@ -74,6 +74,8 @@ button {
 #player-overlay-controls-bot {
     display: flex;
     align-items: center;
+    flex-wrap: wrap; /* Wrap on narrow display (e.g. portrait phone) */
+    justify-content: center; /* Only makes a difference once wrapped */
 }
 #player-overlay-controls-bot-mid {
     display: flex;
