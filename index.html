@@ -20,6 +20,7 @@
                 <div id="player-overlay-controls">
                     <div id="player-overlay-controls-top">
                         <button id="change-video-button">Change Video...</button>
+                      <!--  <span id="quality-text">Quality: </span>-->
                     </div>
                     <div id="player-overlay-controls-mid"> 
                         <button id="play-pause-button"></button>
@@ -29,12 +30,13 @@
                         <button class="seek-button" data-amount="-600">-10m</button>
                         <button class="seek-button" data-amount="-60">-1m</button>
                         <button class="seek-button" data-amount="-5">-5s</button>
-                        <span id="current-time-span"></span>
+                        <div id="player-overlay-controls-bot-mid">
+                            <span id="current-time-span"></span>
+                            <select id="speed-select"></select>
+                        </div>
                         <button class="seek-button" data-amount="+5">+5s</button>
                         <button class="seek-button" data-amount="+60">+1m</button>
                         <button class="seek-button" data-amount="+600">+10m</button>
-                        <select id="speed-select"></select>
-                        <span id="quality-text">Quality: </span>
                     </div>
                 </div>
             </div>

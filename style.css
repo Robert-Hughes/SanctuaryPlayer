@@ -71,6 +71,16 @@ button {
     background-color: white;
 }
 
+#player-overlay-controls-bot {
+    display: flex;
+    align-items: center;
+}
+#player-overlay-controls-bot-mid {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+}
+
 #bot-container {
     display: flex;
     justify-content: space-between;
