@@ -18,3 +18,4 @@ TODO:
 * When screen is narrow (e.g. phone portrait), the UI at the bottom wraps poorly
 * CHange Video button covers up game time
 * More responsive when clicking to skip quickly
+* On mobile, sometimes loads the page already zoomed in. Maybe need to set a "viewport" attribute?
