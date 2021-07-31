@@ -7,7 +7,7 @@ body {
     touch-action: none; /* Prevent double-clicking to zoom on mobile, as often this happens while using the normal UI. */
 }
 
-button {
+#change-video-button {
     font-size: xx-large;
     padding: 0.5em;
 }
@@ -56,7 +56,15 @@ button {
     justify-content: space-between;
 }
 
+#player-overlay-controls-top {
+    margin-left: auto; /* Align to the right */
+}
+
+#player-overlay-controls-mid {
+    display: flex;
+}
 #player-overlay-controls-mid button {
+    font-size: xx-large;
     width: 5em;
     height: 5em;
 }
@@ -74,13 +82,19 @@ button {
 #player-overlay-controls-bot {
     display: flex;
     align-items: center;
-    flex-wrap: wrap; /* Wrap on narrow display (e.g. portrait phone) */
     justify-content: center; /* Only makes a difference once wrapped */
+    width: 100%; /* Otherwise it can become wider than the parent and the shrinking properties on the children don't work as we want */
+}
+#player-overlay-controls-bot button {
+    flex-shrink: 1;  /* Shrink on narrow display (e.g. portrait phone) */
+    min-width: 0; /* Otherwise won't shrink beyond a certain value */
+    font-size: min(5vw, 50px); /* Scale font size with width */
 }
 #player-overlay-controls-bot-mid {
     display: flex;
     flex-direction: column;
     align-items: center;
+    font-size: min(5vw, 50px); /* Scale font size with width */
 }
 
 #bot-container {
@@ -91,6 +105,7 @@ button {
 #current-time-span {
     cursor: pointer;
     background-color: white;
+    margin: 0.3em;
 }
 
 #quality-text {

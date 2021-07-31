@@ -1,6 +1,9 @@
 var player;
 var overlayControlsTimeoutId;
 var timerId;
+ // During seek operations, we store the target time so that repeated seeks can offset relative to this rather than the current
+ // video time, which can lag behind. This is reset to null once the seek has completed.
+var seekTarget = null; 
 
 function decodeFriendlyTimeString(timeStr) {
     // Decode strings of the format:
@@ -60,6 +63,10 @@ function changeVideo() {
 function onPlayerReady() {
     console.log("onPlayerReady");
 
+    // If autoplay doesn't work (e.g. on mobile), indicate to user that they have to click play (otherwise will keep saying "loading video...")
+    document.getElementById("loading-status").innerText = 'Ready to play';
+    document.title = player.getVideoData().title;
+
     for (var rate of player.getAvailablePlaybackRates()) {
         var opt = document.createElement("option");
         opt.value = rate;
@@ -67,6 +74,35 @@ function onPlayerReady() {
         document.getElementById("speed-select").options.add(opt);
     }
     document.getElementById("speed-select").value = player.getPlaybackRate();
+
+    onTimer();
+}
+
+// Note we use this in preference to checking the PlayerState, because when the video is paused and we seek, the player
+// state remains at PAUSED, so we have no way to tell. Also the BUFFERING state could be triggered by other things
+// (e.g. slow internet)
+function isSeeking() {
+    return seekTarget != null;
+}
+
+function getEffectiveCurrentTime() {
+    return isSeeking() ? seekTarget : player.getCurrentTime();
+}
+
+// Seeks to the given time, updating our own seekTarget variable too
+function seekTo(target) {
+    console.log("Seeking to " + target);
+
+    seekTarget = target;
+    player.seekTo(target);
+
+    onTimer(); // Update UI
+}
+
+function seekRelative(offset) {
+    var base = getEffectiveCurrentTime();
+    var target = base + offset;
+    seekTo(target);
 }
 
 function onPlayerStateChange(event) {
@@ -87,6 +123,11 @@ function onPlayerStateChange(event) {
             document.getElementById("loading-status").style.display = 'none';
         }
 
+        // Clear seek time if we were seeking - the video is now playing so the seek must be finished.
+        // This doesn't pick up the case where we seek while paused, but this isn't a big issue and we have no
+        // good way to detect seek completion when paused other than checking the time, which could be error-prone.
+        seekTarget = null;
+
         document.getElementById('play-pause-button').style.backgroundImage = "url('pause.png')";
         // Hide after a short delay, as it takes a short time for the related videos bar to disappear
         window.setTimeout(function () {
@@ -103,6 +144,8 @@ function onPlayerStateChange(event) {
         document.getElementById('blocker-box').innerText = 'End of video. Hiding related videos.';
         document.getElementById('play-pause-button').style.backgroundImage = "url('play.png')";
     }
+
+    onTimer();
 }
 
 function onPlaybackQualityChange(event)
@@ -168,7 +211,7 @@ function toggleFullscreen(event) {
 
 function seekButtonClicked(e) {
     var amount = parseInt(this.dataset["amount"]);
-    player.seekTo(player.getCurrentTime() + amount);
+    seekRelative(amount);
 }
 
 function changeTime() {
@@ -178,23 +221,24 @@ function changeTime() {
     }
     var time = decodeFriendlyTimeString(newTimeStr);
     if (time != null) {
-        player.seekTo(time);
+        seekTo(time);
     }
 }
 
 function onTimer() {
     if (player && player.getPlayerState() != YT.PlayerState.UNSTARTED)  // Video may not yet have been loaded
     {
-        document.getElementById("current-time-span").innerText = toFriendlyTimeString(player.getCurrentTime());
+        var effectiveCurrentTime = getEffectiveCurrentTime();
+
+        document.getElementById("current-time-span").innerText = toFriendlyTimeString(effectiveCurrentTime);
+        document.getElementById("current-time-span").style.backgroundColor = isSeeking() ? 'orange' : 'white';
 
         // Update URL to reflect the current time in the video, so refreshing the page (or closing and re-opening
         // the browser will resume the video at the current time).
         var params = new URLSearchParams(window.location.search);
         params.set('videoId', player.getVideoData().video_id);
-        params.set('time', toFriendlyTimeString(player.getCurrentTime()));
+        params.set('time', toFriendlyTimeString(effectiveCurrentTime));
         window.history.replaceState({}, '', '?' + params.toString());
-
-        document.title = player.getVideoData().title;
     }
 }
 
@@ -209,6 +253,7 @@ function onYouTubeIframeAPIReady() {
         if (params.has('time')) {
             startTime = decodeFriendlyTimeString(params.get('time'));
         }
+        seekTarget = startTime; // Treat the start time as a seek target, so the UI shows this time rather than 0 when loading
 
         player = new YT.Player('player', {
             height: '100%',
@@ -221,6 +266,7 @@ function onYouTubeIframeAPIReady() {
                 // over the top of the fullscreen video, and be aware when the video toggles fullscreen (which
                 // it seems we can't if the iframe document itself triggers it)
                 'fs': 0,
+                // Note that autoplay doesn't work on mobile (a known limitation)
                 'autoplay': 1,
             },
             events: {
@@ -238,11 +284,11 @@ function onKeyDown(event) {
     // event.preventDefault stops default browser behaviour, for example space bar from pressing the focused button
     switch (event.code) {
         case 'ArrowLeft':
-            player.seekTo(player.getCurrentTime() - 5);
+            seekRelative(-5);
             event.preventDefault();
             break;
         case 'ArrowRight':
-            player.seekTo(player.getCurrentTime() + 5);
+            seekRelative(+5);
             event.preventDefault();
             break;
         case 'KeyF':
