@@ -14,8 +14,9 @@ TODO:
 
 * Sync somehow between PC and phone
 * Seems to be a delay sometimes when clicking to toggle the overlay - maybe fixed now, probably a Chrome bug?
-* On mobile, the height of the page is wrong when the browser hides the address bar. It also seems there is no way to bring the address bar back!
-    - to repro, load page then go into full screen and out again
+* On mobile, the height of the page is wrong when the browser hides the address bar.
+    - to repro, load page then go into full screen and out again (possibly twice). 
+    - the address bar can be brought back by scrolling the page from the white bit at the bottom
 * When viewing live video but behind live, turning the screen off and on resets to live!
 * Support youtube vids embedded on sites like eventvods.com? Or could just use reddit links?
 * Better time format support, mainly for the display at the bottom and the "Change Time" dialog
