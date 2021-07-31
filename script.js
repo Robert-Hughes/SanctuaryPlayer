@@ -31,33 +31,42 @@ function toFriendlyTimeString(seconds) {
 }
 
 function changeVideo() {
-    var url = prompt("Video URL");
-    if (!url) {
-        return;
+    if (player) {
+        player.pauseVideo();
     }
 
-    // Regex to extract video ID and time. Needs to work for:
-    //   https://youtu.be/3fgD9k8Hkbc
-    //   https://youtu.be/3fgD9k8Hkbc?t=3839
-    //   https://www.youtube.com/watch?v=3fgD9k8Hkbc
-    //   https://www.youtube.com/watch?v=3fgD9k8Hkbc&t=54m39s
-    //   https://www.youtube.com/watch?v=3fgD9k8Hkbc&t=54m39s&bob=someting
-    var match = url.match(/(?:watch\?v=|youtu\.be\/)(.*?)(?:&|\?|$)(?:t=(.*?))?(?:&|$)/);
-    var params = new URLSearchParams(window.location.search);
-    if (match && match[1]) {
-        params.set('videoId', match[1]);
-        if (match[2]) {
-            params.set('time', match[2]);
-        } else {
-            params.set('time', '0s'); // Important to overwrite any existing time value   
+    // Show the prompt on a timeout, so that the pause command above has time to take effect.
+    // The timeout must be >0, as we need to make sure our onPlayerStateChange callback happens
+    // first to show the blocker.
+    window.setTimeout(function () {
+        var url = prompt("Please enter YouTube video URL:");
+        if (!url) {
+            return;
         }
-    }
-    else {
-        alert("Invalid URL")
-        return;
-    }
 
-    window.location = '?' + params.toString();
+        // Regex to extract video ID and time. Needs to work for:
+        //   https://youtu.be/3fgD9k8Hkbc
+        //   https://youtu.be/3fgD9k8Hkbc?t=3839
+        //   https://www.youtube.com/watch?v=3fgD9k8Hkbc
+        //   https://www.youtube.com/watch?v=3fgD9k8Hkbc&t=54m39s
+        //   https://www.youtube.com/watch?v=3fgD9k8Hkbc&t=54m39s&bob=someting
+        var match = url.match(/(?:watch\?v=|youtu\.be\/)(.*?)(?:&|\?|$)(?:t=(.*?))?(?:&|$)/);
+        var params = new URLSearchParams(window.location.search);
+        if (match && match[1]) {
+            params.set('videoId', match[1]);
+            if (match[2]) {
+                params.set('time', match[2]);
+            } else {
+                params.set('time', '0s'); // Important to overwrite any existing time value   
+            }
+        }
+        else {
+            alert("Invalid URL")
+            return;
+        }
+
+        window.location = '?' + params.toString();
+    }, 100);
 }
 
 function onPlayerReady() {
@@ -215,14 +224,23 @@ function seekButtonClicked(e) {
 }
 
 function changeTime() {
-    var newTimeStr = prompt("New time:", toFriendlyTimeString(player.getCurrentTime()));
-    if (!newTimeStr) {
-        return;
+    if (player) {
+        player.pauseVideo();
     }
-    var time = decodeFriendlyTimeString(newTimeStr);
-    if (time != null) {
-        seekTo(time);
-    }
+
+    // Show the prompt on a timeout, so that the pause command above has time to take effect.
+    // The timeout must be >0, as we need to make sure our onPlayerStateChange callback happens
+    // first to show the blocker.
+    window.setTimeout(function () {
+        var newTimeStr = prompt("Please enter new time:", toFriendlyTimeString(getEffectiveCurrentTime()));
+        if (!newTimeStr) {
+            return;
+        }
+        var time = decodeFriendlyTimeString(newTimeStr);
+        if (time != null) {
+            seekTo(time);
+        }
+    }, 100);
 }
 
 function onTimer() {
