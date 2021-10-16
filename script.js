@@ -30,6 +30,14 @@ function toFriendlyTimeString(seconds) {
     return hours + 'h' + minutes.toString().padStart(2, '0') + 'm' + seconds.toString().padStart(2, '0') + 's';
 }
 
+function toFriendlyTimeStringColons(seconds) {
+    var hours = Math.floor(seconds / 3600);
+    var minutes = Math.floor((seconds % 3600) / 60);
+    var seconds = Math.floor(seconds % 60);
+
+    return hours + ':' + minutes.toString().padStart(2, '0') + ':' + seconds.toString().padStart(2, '0');
+}
+
 function changeVideo() {
     if (player) {
         player.pauseVideo();
@@ -248,7 +256,7 @@ function onTimer() {
     {
         var effectiveCurrentTime = getEffectiveCurrentTime();
 
-        document.getElementById("current-time-span").innerText = toFriendlyTimeString(effectiveCurrentTime);
+        document.getElementById("current-time-span").innerText = toFriendlyTimeStringColons(effectiveCurrentTime);
         document.getElementById("current-time-span").style.backgroundColor = isSeeking() ? 'orange' : 'white';
 
         // Update URL to reflect the current time in the video, so refreshing the page (or closing and re-opening

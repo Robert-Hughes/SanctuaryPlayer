@@ -17,9 +17,11 @@ TODO:
 * On mobile, the height of the page is wrong when the browser hides the address bar.
     - to repro, load page then go into full screen and out again (possibly twice). 
     - the address bar can be brought back by scrolling the page from the white bit at the bottom
-* When viewing live video but behind live, turning the screen off and on resets to live!
+* When viewing live video but behind live, turning the screen off (mobile) and on resets to live!
 * Support youtube vids embedded on sites like eventvods.com? Or could just use reddit links?
+    - difficult due to cross-site request limitations - would need to access endpoint at https://eventvods.com/api/match/61042f7688832717bf410b2f
 * Better time format support, mainly for the display at the bottom and the "Change Time" dialog
 * Seeking while video still loading on first load doesn't update UI properly? (At least if the video has a specified start time). Can limit network on DevTools to help repro.
 * If try to seek before 0, display looks weird
 * If try to seek after end of video, the orange time stays forever (as video never plays again)
+* Change Video sometimes doesn't work, need to keep retrying - could it be the background timer overwriting location?
