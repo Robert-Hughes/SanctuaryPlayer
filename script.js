@@ -136,7 +136,7 @@ function onPlayerStateChange(event) {
         // Don't start it before now, otherwise the player.getCurrentTime() might return 0 and we don't want
         // to report that.
         if (timerId == null) {
-            window.setInterval(onTimer, 500);           
+            timerId = window.setInterval(onTimer, 500);           
             document.getElementById("loading-status").style.display = 'none';
         }
 

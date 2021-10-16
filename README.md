@@ -14,6 +14,8 @@ TODO:
 
 * Sync somehow between PC and phone
 * Seems to be a delay sometimes when clicking to toggle the overlay - maybe fixed now, probably a Chrome bug?
+    * This was probably because we were starting loads of timers at the same time :O. THis should be fixed now, but if we still have issues, maybe changing from
+      setInterval to setTimeout might prevent multiple timer callbacks from stacking up and 'falling behind'?
 * On mobile, the height of the page is wrong when the browser hides the address bar.
     - to repro, load page then go into full screen and out again (possibly twice). 
     - the address bar can be brought back by scrolling the page from the white bit at the bottom
