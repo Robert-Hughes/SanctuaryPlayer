@@ -65,7 +65,7 @@ function changeVideo() {
             if (match[2]) {
                 params.set('time', match[2]);
             } else {
-                params.set('time', '0s'); // Important to overwrite any existing time value   
+                params.delete('time'); // Important to overwrite any existing time value
             }
         }
         else {
@@ -252,7 +252,7 @@ function changeTime() {
 }
 
 function onTimer() {
-    if (player && player.getPlayerState() != YT.PlayerState.UNSTARTED)  // Video may not yet have been loaded
+    if (player && player.getPlayerState() != YT.PlayerState.UNSTARTED)  // Video may not yet have been loaded //TODO: sometimes the state is UNSTARTED after coming out of sleep? And this causes seeking to not show the target time correctly
     {
         var effectiveCurrentTime = getEffectiveCurrentTime();
 
@@ -275,7 +275,9 @@ function onYouTubeIframeAPIReady() {
     // Load video immediately if provided in URL
     var params = new URLSearchParams(window.location.search);
     if (params.has('videoId')) {
-        var startTime = 0;
+        // Default to a very short time into the video rather than 0, because for live stream videos, 0 seems to be interpreted as starting from
+        // live, which could be a spoiler.
+        var startTime = 2;  
         if (params.has('time')) {
             startTime = decodeFriendlyTimeString(params.get('time'));
         }
