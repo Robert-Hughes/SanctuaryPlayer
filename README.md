@@ -1,14 +1,12 @@
-Run the following PowerShell commands to package all the source files into a single HTML page:
+Alternative YouTube player which omits various elements which could provide spoilers to esports tournaments.
+For example it doesn't show the length of the video being watched and it doesn't show any related videos.
 
-cd D:\Programming\Media\YouTubeNoSpoilers
-Get-Content index.html | E:\Programming\Python\python -m htmlark --ignore-errors | Set-Content single-page/YouTubeNoSpoilers.html
+It consists of a single static HTML page along with javascript and css, and so can be run locally from the filesystem,
+from a simple web server, or from GitHub's hosting feature if the code is pushed there: https://robert-hughes.github.io/YouTubeNoSpoilers/
 
-Copy to dropbox:
-
-cp single-page/YouTubeNoSpoilers.html D:\Dropbox\Utilities\YouTubeNoSpoilers\
-
-Or can use GitHub's hosting feature as long as this is pushed to GitHub: https://robert-hughes.github.io/YouTubeNoSpoilers/
-
+I am currently trying to use Google App Engine to host it, which will provide the ability to save and sync the user's position
+in videos they are watching, so that it syncs between PC and phone for example. I'm aiming to do this in a way that retains
+the ability for static hosting, which might still be convenient.
 
 TODO:
 
