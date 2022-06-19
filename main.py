@@ -4,6 +4,10 @@
 from flask import Flask
 app = Flask(__name__)
 
+@app.route("/")
+def test():
+    return "Hello test!"
+
 # Note that static files are not served from Flask, as that isn't recommended: 
 # Docs: https://flask.palletsprojects.com/en/2.1.x/quickstart/#static-files
 # https://cloud.google.com/appengine/docs/standard/python3/serving-static-files

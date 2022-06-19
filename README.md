@@ -8,6 +8,11 @@ I am currently trying to use Google App Engine to host it, which will provide th
 in videos they are watching, so that it syncs between PC and phone for example. I'm aiming to do this in a way that retains
 the ability for static hosting, which might still be convenient.
 
+Google App Engine TODO:
+
+* Consider shortening the URL to not have the static/ prefix? Or redirect "/" to "/static/index" so at least you don't have to type it, but 
+ it will still be in the address bar so it's not great
+
 TODO:
 
 * Sync somehow between PC and phone
@@ -25,3 +30,4 @@ TODO:
 * If try to seek before 0, display looks weird
 * If try to seek after end of video, the orange time stays forever (as video never plays again)
 * Change Video sometimes doesn't work, need to keep retrying - could it be the background timer overwriting location?
+* The 2s offset for live videos doesn't always work - maybe we need to increase this or do something cleverer?
