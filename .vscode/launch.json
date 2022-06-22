@@ -12,7 +12,8 @@
             "justMyCode": true,
             "module": "flask",
             "env": {
-                "FLASK_APP": "main.py"
+                "FLASK_APP": "main.py",
+                "GOOGLE_APPLICATION_CREDENTIALS": "youtubenospoilers-c533d4a23862.json"
             },
             "args": ["run"]
         }
