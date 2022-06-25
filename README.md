@@ -4,7 +4,10 @@ For example it doesn't show the length of the video being watched and it doesn't
 It consists of a single static HTML page along with javascript and css, and so can be run locally from the filesystem,
 from a simple web server, or from GitHub's hosting feature if the code is pushed there: https://robert-hughes.github.io/YouTubeNoSpoilers/
 
-The index.html is in the root so that when served from GitHub Pages, the URL is shorter (can be accessed with just a /).
+The index.html is in the root so that when served from GitHub Pages, the URL is shorter (can be accessed with just a /). The other static files (.js, .css, images) are in a 'static' subfolder, to keep separate from the web
+server logic which needs to be in the root (so that it works with Google App Engine), and so that it can be 
+easily served as static content using Google App Engine without having a complicated filter saying
+which files to serve.
 
 I am currently trying to use Google App Engine to host it, which will provide the ability to save and sync the user's position
 in videos they are watching, so that it syncs between PC and phone for example. I'm aiming to do this in a way that retains

@@ -129,7 +129,7 @@ function onPlayerStateChange(event) {
         document.getElementById('blocker-box').style.display = 'block';
         document.getElementById('blocker-box').style.height = '50%';
         document.getElementById('blocker-box').innerText = 'Video paused. Hiding related videos.';
-        document.getElementById('play-pause-button').style.backgroundImage = "url('play.png')";
+        document.getElementById('play-pause-button').style.backgroundImage = "url('static/play.png')";
     }
     else if (event.data == YT.PlayerState.PLAYING) {
         // Start background refresh timer if this is the first time the video has been played.
@@ -145,7 +145,7 @@ function onPlayerStateChange(event) {
         // good way to detect seek completion when paused other than checking the time, which could be error-prone.
         seekTarget = null;
 
-        document.getElementById('play-pause-button').style.backgroundImage = "url('pause.png')";
+        document.getElementById('play-pause-button').style.backgroundImage = "url('static/pause.png')";
         // Hide after a short delay, as it takes a short time for the related videos bar to disappear
         window.setTimeout(function () {
             // Make sure video hasn't been paused again during the timer
@@ -159,7 +159,7 @@ function onPlayerStateChange(event) {
         document.getElementById('blocker-box').style.display = 'block';
         document.getElementById('blocker-box').style.height = '100%';
         document.getElementById('blocker-box').innerText = 'End of video. Hiding related videos.';
-        document.getElementById('play-pause-button').style.backgroundImage = "url('play.png')";
+        document.getElementById('play-pause-button').style.backgroundImage = "url('static/play.png')";
     }
 
     onTimer();
