@@ -16,6 +16,8 @@ Google App Engine TODO:
 TODO:
 
 * Sync somehow between PC and phone
+  - Could also sync watched videos, so can select recent videos from other devices (use case - just started
+  watching a new video on one device, want to continue on another)
 * Seems to be a delay sometimes when clicking to toggle the overlay - maybe fixed now, probably a Chrome bug?
     * This was probably because we were starting loads of timers at the same time :O. THis should be fixed now, but if we still have issues, maybe changing from
       setInterval to setTimeout might prevent multiple timer callbacks from stacking up and 'falling behind'?
