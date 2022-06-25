@@ -261,10 +261,15 @@ function onTimer() {
 
         // Update URL to reflect the current time in the video, so refreshing the page (or closing and re-opening
         // the browser will resume the video at the current time).
+        // This doesn't behave quite like we want with the Chrome global history though (it has one entry per timestamp!).
+        // See this firefox bug report for some discussion: https://bugzilla.mozilla.org/show_bug.cgi?id=753264
         var params = new URLSearchParams(window.location.search);
         params.set('videoId', player.getVideoData().video_id);
         params.set('time', toFriendlyTimeString(effectiveCurrentTime));
         window.history.replaceState({}, '', '?' + params.toString());
+
+        // Also upload the current position to the web server, so that it can be synced with other devices
+        //TODO:
     }
 }
 
