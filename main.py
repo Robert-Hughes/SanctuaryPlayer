@@ -38,12 +38,15 @@ def handle_save_position():
     if not user_id or not device_id:
         return ("Missing user_id or device_id in cookies", 400)
     
-    # Video ID and position from form data
-    video_id = request.form.get('video_id')
-    position = request.form.get('position')
+    # Video ID and position from request args
+    video_id = request.args.get('video_id')
+    position = request.args.get('position')
     if not video_id or not position:
-        return ("Missing video_id or position in form data", 400)
-    position = int(position)
+        return ("Missing video_id or position in query args", 400)
+    try:
+        position = float(position)
+    except ValueError:
+        return ("position is not a valid floating point number", 400)
 
     # Current timestamp
     modified_time = datetime.now(timezone.utc) # Timezone-aware with timezone set to UTC, so that it plays nicely with Google Datastore

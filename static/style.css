@@ -7,7 +7,7 @@ body {
     touch-action: none; /* Prevent double-clicking to zoom on mobile, as often this happens while using the normal UI. */
 }
 
-#change-video-button {
+#change-video-button,#sign-in-button {
     font-size: xx-large;
     padding: 0.5em;
 }

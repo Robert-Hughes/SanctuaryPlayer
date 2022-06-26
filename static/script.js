@@ -38,6 +38,26 @@ function toFriendlyTimeStringColons(seconds) {
     return hours + ':' + minutes.toString().padStart(2, '0') + ':' + seconds.toString().padStart(2, '0');
 }
 
+function signIn() {
+    var userId = prompt("Please enter a User ID. This can be anything you want. Enter the same User ID on a different device to sync. " +
+        "Enter an empty ID to sign out. " +
+        "Please be aware that this is not secure - if anybody else types the same User ID, they will have access to your synced data!");
+    if (userId == "") {
+        // User entered a blank string - sign out by clearing the cookies
+        document.cookie = "user_id=; max-age=0"; // Expires immediately
+        document.cookie = "device_id=; max-age=0";
+    }
+    else if (userId) {
+        // User entered a non-empty string - sign in
+        var deviceId = prompt("Please enter a Device ID. This can be anything you want. This is used to distinguish this device from any others you sign in on.", "Device 1");
+        if (deviceId)
+        {
+            document.cookie = "user_id=" + window.escape(userId) + "; max-age=31536000"; // Expires in one year (need to have a value here, otherwise only lasts until tab is closed)
+            document.cookie = "device_id=" + window.escape(deviceId) + "; max-age=31536000";
+        }
+    }
+}
+
 function changeVideo() {
     if (player) {
         player.pauseVideo();
@@ -268,8 +288,26 @@ function onTimer() {
         params.set('time', toFriendlyTimeString(effectiveCurrentTime));
         window.history.replaceState({}, '', '?' + params.toString());
 
-        // Also upload the current position to the web server, so that it can be synced with other devices
-        //TODO:
+        // If the user is signed in, also upload the current position to the web server, so that it can be synced with other devices
+        if (document.cookie.includes("user_id"))
+        {
+            //TODO: do this at a lower frequency, to avoid overloading the server?
+            //TODO: don't do this if the time hasn't changed (e.g. tab is paused in the background)
+            //  - the same probably goes for the above history entry?
+            var params = new URLSearchParams({
+                'video_id': player.getVideoData().video_id,
+                'position': effectiveCurrentTime,
+            });
+            fetch('save-position?' + params.toString(), { method: 'POST'})
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error('save-position response was not OK');
+                    }
+                })
+                .catch((error) => {
+                    console.error('Error saving position to server:', error);
+                });
+        }
     }
 }
 
@@ -341,6 +379,7 @@ function onSpeedSelectChange(event) {
 
 // Hookup event listeners
 document.getElementById("change-video-button").addEventListener("click", changeVideo);
+document.getElementById("sign-in-button").addEventListener("click", signIn);
 document.getElementById("current-time-span").addEventListener("click", changeTime);
 document.getElementById("player-overlay").addEventListener("click", onOverlayClick);
 document.getElementById("player-overlay-controls").addEventListener("click", onOverlayControlsClick);
