@@ -19,12 +19,14 @@ Google App Engine TODO:
  it will still be in the address bar so it's not great
    - ideally it's just /, as it's a single page web-app. The other static content (javascript, images, css etc.) could remain in the static
    folder, as users won't see/use that URL
+TODO: spaces in user ID or device ID aren't being escaped properly and appear strangely in the database! Cookies?
 
 TODO:
 
 * Sync somehow between PC and phone
   - Could also sync watched videos, so can select recent videos from other devices (use case - just started
   watching a new video on one device, want to continue on another)
+   - delete/clean up old data. Perhaps expires after some time?
 * Seems to be a delay sometimes when clicking to toggle the overlay - maybe fixed now, probably a Chrome bug?
     * This was probably because we were starting loads of timers at the same time :O. THis should be fixed now, but if we still have issues, maybe changing from
       setInterval to setTimeout might prevent multiple timer callbacks from stacking up and 'falling behind'?

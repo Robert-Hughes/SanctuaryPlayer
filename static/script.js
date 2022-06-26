@@ -4,6 +4,7 @@ var timerId;
  // During seek operations, we store the target time so that repeated seeks can offset relative to this rather than the current
  // video time, which can lag behind. This is reset to null once the seek has completed.
 var seekTarget = null; 
+var lastUploadedPosition = null; // The last video position successfully uploaded to the sever (for syncing time across devices)
 
 function decodeFriendlyTimeString(timeStr) {
     // Decode strings of the format:
@@ -286,27 +287,33 @@ function onTimer() {
         var params = new URLSearchParams(window.location.search);
         params.set('videoId', player.getVideoData().video_id);
         params.set('time', toFriendlyTimeString(effectiveCurrentTime));
-        window.history.replaceState({}, '', '?' + params.toString());
+        newState = params.toString();
+        // Only call the API if the position has changed since last time. This avoids unecessary calls, for example when the video is paused
+        if (window.history.state != newState)
+        {
+            window.history.replaceState(newState, '', '?' + params.toString());
+        }
 
         // If the user is signed in, also upload the current position to the web server, so that it can be synced with other devices
         if (document.cookie.includes("user_id"))
         {
-            //TODO: do this at a lower frequency, to avoid overloading the server?
-            //TODO: don't do this if the time hasn't changed (e.g. tab is paused in the background)
-            //  - the same probably goes for the above history entry?
-            var params = new URLSearchParams({
-                'video_id': player.getVideoData().video_id,
-                'position': effectiveCurrentTime,
-            });
-            fetch('save-position?' + params.toString(), { method: 'POST'})
-                .then(response => {
-                    if (!response.ok) {
-                        throw new Error('save-position response was not OK');
-                    }
-                })
-                .catch((error) => {
-                    console.error('Error saving position to server:', error);
+            // Don't upload too often to avoid overloading the server. Especially if we're paused!
+            if (lastUploadedPosition == null || Math.abs(effectiveCurrentTime - lastUploadedPosition) > 10.0) {
+                var params = new URLSearchParams({
+                    'video_id': player.getVideoData().video_id,
+                    'position': effectiveCurrentTime,
                 });
+                fetch('save-position?' + params.toString(), { method: 'POST'})
+                    .then(response => {
+                        if (!response.ok) {
+                            throw new Error('save-position response was not OK');
+                        }
+                        lastUploadedPosition = params.get('position') // Note we use this rather than effectiveCurrentTime, which might have advanced in the meantime (as this is an async callback)
+                    })
+                    .catch((error) => {
+                        console.error('Error saving position to server:', error);
+                    });
+            }
         }
     }
 }
