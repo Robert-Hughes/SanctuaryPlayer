@@ -42,20 +42,74 @@ function toFriendlyTimeStringColons(seconds) {
 function signIn() {
     var userId = prompt("Please enter a User ID. This can be anything you want. Enter the same User ID on a different device to sync. " +
         "Enter an empty ID to sign out. " +
-        "Please be aware that this is not secure - if anybody else types the same User ID, they will have access to your synced data!");
+        "Please be aware that this is not secure - if anybody else types the same User ID, they will have access to your synced data!",
+        localStorage.getItem("user_id") ?? "");
     if (userId == "") {
         // User entered a blank string - sign out by clearing the local storage
         localStorage.removeItem("user_id");
         localStorage.removeItem("device_id");
+
+        //TODO: clear saved positions drop down?
     }
     else if (userId) {
         // User entered a non-empty string - sign in
-        var deviceId = prompt("Please enter a Device ID. This can be anything you want. This is used to distinguish this device from any others you sign in on.", "Device 1");
+        var deviceId = prompt("Please enter a Device ID. This can be anything you want. This is used to distinguish this device from any others you sign in on.", 
+                              localStorage.getItem("device_id") ?? "Device 1");
         if (deviceId)
         {
             localStorage.setItem("user_id", userId);
             localStorage.setItem("device_id", deviceId);
+
+            // Immediately fetch the list of saved positions, in case the user already has data saved from a different device, this will show
+            // it immediately rather than only when they reload the page
+            fetchSavedPositions();
+
+            // This will make the position saved again immediately, even if we just saved it with a different account/device
+            lastUploadedPosition = null;            
         }
+    }
+}
+
+function fetchSavedPositions() {
+    if (localStorage.getItem("user_id"))
+    {
+        var params = new URLSearchParams({
+            'user_id': localStorage.getItem("user_id"),
+        });
+        // If a video has already been selected, include this in the request, so that we also get data about most recent positions for this particular video
+        // Note that we get this from the URL rather than the YouTube player object, because that might not yet have been initialised.
+        var urlParams = new URLSearchParams(window.location.search);
+        if (urlParams.has('videoId')) {
+            params.append("video_id", urlParams.get("videoId"));
+        }
+    
+        fetch("get-saved-positions?" + params.toString())
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error('get-saved-positions response was not OK');
+                }
+                return response.json();
+            })
+            .then(response => {
+                while (document.getElementById("saved-positions-list").options.length > 0) {
+                    document.getElementById("saved-positions-list").remove(0);
+                }
+                for (var x of response.most_recent) {
+                    var opt = document.createElement("option");
+                    opt.value = null;
+                    opt.text = JSON.stringify(x);
+                    document.getElementById("saved-positions-list").add(opt);
+                }
+                for (var x of response.video) {
+                    var opt = document.createElement("option");
+                    opt.value = null;
+                    opt.text = JSON.stringify(x);
+                    document.getElementById("saved-positions-list").add(opt);                    
+                }
+            })
+            .catch((error) => {
+                console.error('Error getting positions from server:', error);
+            });
     }
 }
 
@@ -422,3 +476,6 @@ var firstScriptTag = document.getElementsByTagName('script')[0];
 firstScriptTag.parentNode.insertBefore(tag, firstScriptTag);
 
 // Main logic begins once youtube API loads (it calls our onYouTubeIframeAPIReady() function)
+
+// If the user is already signed in, update the list of saved positions
+fetchSavedPositions();
