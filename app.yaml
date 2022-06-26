@@ -2,6 +2,12 @@
 runtime: python39
 
 handlers:
+  # This configures Google App Engine to serve the index.html as /
+  # This is deliberately not in the static folder, to keep the URL of the main page shorter
+- url: /
+  static_files: index.html
+  upload: index.html
+
   # This configures Google App Engine to serve the files in the app's static directory.
 - url: /static
   static_dir: static

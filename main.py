@@ -11,7 +11,7 @@
 from copyreg import pickle
 from email.headerregistry import UniqueUnstructuredHeader
 from enum import unique
-from flask import Flask, request
+from flask import Flask, request, send_file
 from google.cloud import datastore
 from datetime import datetime
 from datetime import timezone
@@ -19,6 +19,16 @@ from datetime import timezone
 app = Flask(__name__)
 
 datastore_client = datastore.Client()
+
+# Even though we don't use Flask to serve static files (including index.html), when debugging locally
+# Flash _does_ serve static files for us, normally from the static/ subfolder. However our index.html
+# isn't in that folder (deliberately, so that it can be easily hosted from GitHub Pages, for example),
+# so we have to handle that manually here. On the production Google App Engine server, this request
+# should never reach Flask, because Google will serve the index.html itself based on the rules in our
+# app.yaml.
+@app.route('/')
+def serve_index():
+    return send_file("index.html")
 
 @app.route("/save-position", methods=['POST'])
 def handle_save_position():
