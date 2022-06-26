@@ -1,2 +1,3 @@
 # This file is automatically detected by Google App Engine to install our python dependencies
 Flask
+google.cloud.datastore
