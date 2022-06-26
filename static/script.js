@@ -44,17 +44,17 @@ function signIn() {
         "Enter an empty ID to sign out. " +
         "Please be aware that this is not secure - if anybody else types the same User ID, they will have access to your synced data!");
     if (userId == "") {
-        // User entered a blank string - sign out by clearing the cookies
-        document.cookie = "user_id=; max-age=0"; // Expires immediately
-        document.cookie = "device_id=; max-age=0";
+        // User entered a blank string - sign out by clearing the local storage
+        localStorage.removeItem("user_id");
+        localStorage.removeItem("device_id");
     }
     else if (userId) {
         // User entered a non-empty string - sign in
         var deviceId = prompt("Please enter a Device ID. This can be anything you want. This is used to distinguish this device from any others you sign in on.", "Device 1");
         if (deviceId)
         {
-            document.cookie = "user_id=" + window.escape(userId) + "; max-age=31536000"; // Expires in one year (need to have a value here, otherwise only lasts until tab is closed)
-            document.cookie = "device_id=" + window.escape(deviceId) + "; max-age=31536000";
+            localStorage.setItem("user_id", userId);
+            localStorage.setItem("device_id", deviceId);
         }
     }
 }
@@ -295,11 +295,13 @@ function onTimer() {
         }
 
         // If the user is signed in, also upload the current position to the web server, so that it can be synced with other devices
-        if (document.cookie.includes("user_id"))
+        if (localStorage.getItem("user_id"))
         {
             // Don't upload too often to avoid overloading the server. Especially if we're paused!
             if (lastUploadedPosition == null || Math.abs(effectiveCurrentTime - lastUploadedPosition) > 10.0) {
                 var params = new URLSearchParams({
+                    'user_id': localStorage.getItem("user_id"),
+                    'device_id': localStorage.getItem("device_id"),
                     'video_id': player.getVideoData().video_id,
                     'position': effectiveCurrentTime,
                 });

@@ -31,18 +31,14 @@ def serve_index():
     return send_file("index.html")
 
 @app.route("/save-position", methods=['POST'])
-def handle_save_position():
-    # Get user and device ID from cookies
-    user_id = request.cookies.get('user_id')
-    device_id = request.cookies.get('device_id')
-    if not user_id or not device_id:
-        return ("Missing user_id or device_id in cookies", 400)
-    
-    # Video ID and position from request args
+def handle_save_position():   
+    # Get parameters from request args
+    user_id = request.args.get('user_id')
+    device_id = request.args.get('device_id')
     video_id = request.args.get('video_id')
     position = request.args.get('position')
-    if not video_id or not position:
-        return ("Missing video_id or position in query args", 400)
+    if not user_id or not device_id or not video_id or not position:
+        return ("Missing user_id or device_id or video_id or position in query args", 400)
     try:
         position = float(position)
     except ValueError:
@@ -66,10 +62,10 @@ def handle_save_position():
 
 @app.route("/get-saved-positions", methods=['GET'])
 def handle_get_saved_positions():
-    # Get user ID from cookies
-    user_id = request.cookies.get('user_id')
+    # Get user ID from request args
+    user_id = request.args.get('user_id')
     if not user_id:
-        return ("Missing user_id or device_id in cookies", 400)
+        return ("Missing user_id in query args", 400)
     
     # Find the most recent saved positions for any video for this user, across all their devices.
     # This basically shows what you were last watching on each device, independent of what you're watching now.

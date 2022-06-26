@@ -19,7 +19,6 @@ Google App Engine TODO:
  it will still be in the address bar so it's not great
    - ideally it's just /, as it's a single page web-app. The other static content (javascript, images, css etc.) could remain in the static
    folder, as users won't see/use that URL
-TODO: spaces in user ID or device ID aren't being escaped properly and appear strangely in the database! Cookies?
 
 TODO:
 
