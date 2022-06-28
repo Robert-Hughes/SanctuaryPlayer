@@ -21,9 +21,14 @@
             <div id="player-overlay">
                 <div id="player-overlay-controls">
                     <div id="player-overlay-controls-top">
-                        <button id="change-video-button">Change Video...</button>
-                        <button id="sign-in-button">Sign In...</button>
-                        <select id="saved-positions-list"></select>
+                        <select id="menu">
+                            <option>Menu</option>
+                            <option id="change-video-option">Change Video...</option>
+                            <option id="sign-in-option">Sign in...</option>
+                            <optgroup id="saved-positions-most-recent" label="Most Recent"></optgroup>
+                            <optgroup id="saved-positions-this-video" label="This Video"></optgroup>
+                            <option id="sign-out-option">Sign out...</option>
+                        </select>
                       <!--  <span id="quality-text">Quality: </span>-->
                     </div>
                     <div id="player-overlay-controls-mid"> 

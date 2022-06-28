@@ -39,6 +39,7 @@ TODO:
     - possibly less important now that we have YouTubeLiveMonitor?
 * Better time format support, mainly for the display at the bottom and the "Change Time" dialog
 * Seeking while video still loading on first load doesn't update UI properly? (At least if the video has a specified start time). Can limit network on DevTools to help repro.
+   - same thing before pressing initial play (if autoplay is disabled)?
 * If try to seek before 0, display looks weird
 * If try to seek after end of video, the orange time stays forever (as video never plays again)
 * Change Video sometimes doesn't work, need to keep retrying - could it be the background timer overwriting location?

@@ -39,19 +39,42 @@ function toFriendlyTimeStringColons(seconds) {
     return hours + ':' + minutes.toString().padStart(2, '0') + ':' + seconds.toString().padStart(2, '0');
 }
 
+function onMenuChange() {
+    var selectedOption = document.getElementById("menu").selectedOptions[0];
+    if (!selectedOption) return;
+
+    if (selectedOption.id == "change-video-option") {
+        changeVideo();
+    }
+    else if (selectedOption.id == "sign-in-option") {
+        signIn();
+    }
+    else if (selectedOption.id == "sign-out-option") {
+        signOut();
+    }
+
+    // Reset selection, so that user can use the "menu" again (we are misuing <select> here!)
+    document.getElementById("menu").selectedIndex = 0;
+}
+
+function isSignedIn() {
+    return localStorage.getItem("user_id") != null && localStorage.getItem("user_id") != "";
+}
+
+function updateSignedInStatus() {
+    //TODO: prevent timer from hiding UI if the menu is open
+    document.getElementById("sign-in-option").style.display = isSignedIn() ? "none" : "block";
+    document.getElementById("sign-out-option").style.display = isSignedIn() ? "block" : "none";
+    if (isSignedIn()) {
+        document.getElementById("sign-out-option").innerText = "Sign out (current user/device: " + localStorage.getItem("user_id") + "/" + localStorage.getItem("device_id") + ")";
+    }
+}
+
 function signIn() {
     var userId = prompt("Please enter a User ID. This can be anything you want. Enter the same User ID on a different device to sync. " +
-        "Enter an empty ID to sign out. " +
         "Please be aware that this is not secure - if anybody else types the same User ID, they will have access to your synced data!",
         localStorage.getItem("user_id") ?? "");
-    if (userId == "") {
-        // User entered a blank string - sign out by clearing the local storage
-        localStorage.removeItem("user_id");
-        localStorage.removeItem("device_id");
-
-        //TODO: clear saved positions drop down?
-    }
-    else if (userId) {
+    if (userId) {
         // User entered a non-empty string - sign in
         var deviceId = prompt("Please enter a Device ID. This can be anything you want. This is used to distinguish this device from any others you sign in on.", 
                               localStorage.getItem("device_id") ?? "Device 1");
@@ -59,6 +82,8 @@ function signIn() {
         {
             localStorage.setItem("user_id", userId);
             localStorage.setItem("device_id", deviceId);
+
+            updateSignedInStatus();
 
             // Immediately fetch the list of saved positions, in case the user already has data saved from a different device, this will show
             // it immediately rather than only when they reload the page
@@ -70,8 +95,16 @@ function signIn() {
     }
 }
 
+function signOut() {
+    localStorage.removeItem("user_id");
+    localStorage.removeItem("device_id");
+
+    // Rather than updating the UI now, reloading the page is an easy way to guarantee everything is up-to-date
+    window.location.reload();
+}
+
 function fetchSavedPositions() {
-    if (localStorage.getItem("user_id"))
+    if (isSignedIn())
     {
         var params = new URLSearchParams({
             'user_id': localStorage.getItem("user_id"),
@@ -91,20 +124,19 @@ function fetchSavedPositions() {
                 return response.json();
             })
             .then(response => {
-                while (document.getElementById("saved-positions-list").options.length > 0) {
-                    document.getElementById("saved-positions-list").remove(0);
-                }
+                document.getElementById("saved-positions-most-recent").innerHTML = "";
                 for (var x of response.most_recent) {
                     var opt = document.createElement("option");
                     opt.value = null;
                     opt.text = JSON.stringify(x);
-                    document.getElementById("saved-positions-list").add(opt);
+                    document.getElementById("saved-positions-most-recent").appendChild(opt);
                 }
+                document.getElementById("saved-positions-this-video").innerHTML = "";
                 for (var x of response.video) {
                     var opt = document.createElement("option");
                     opt.value = null;
                     opt.text = JSON.stringify(x);
-                    document.getElementById("saved-positions-list").add(opt);                    
+                    document.getElementById("saved-positions-this-video").appendChild(opt);                    
                 }
             })
             .catch((error) => {
@@ -349,7 +381,7 @@ function onTimer() {
         }
 
         // If the user is signed in, also upload the current position to the web server, so that it can be synced with other devices
-        if (localStorage.getItem("user_id"))
+        if (isSignedIn())
         {
             // Don't upload too often to avoid overloading the server. Especially if we're paused!
             if (lastUploadedPosition == null || Math.abs(effectiveCurrentTime - lastUploadedPosition) > 10.0) {
@@ -441,8 +473,7 @@ function onSpeedSelectChange(event) {
 }
 
 // Hookup event listeners
-document.getElementById("change-video-button").addEventListener("click", changeVideo);
-document.getElementById("sign-in-button").addEventListener("click", signIn);
+document.getElementById("menu").addEventListener("change", onMenuChange);
 document.getElementById("current-time-span").addEventListener("click", changeTime);
 document.getElementById("player-overlay").addEventListener("click", onOverlayClick);
 document.getElementById("player-overlay-controls").addEventListener("click", onOverlayControlsClick);
@@ -477,5 +508,6 @@ firstScriptTag.parentNode.insertBefore(tag, firstScriptTag);
 
 // Main logic begins once youtube API loads (it calls our onYouTubeIframeAPIReady() function)
 
+updateSignedInStatus();
 // If the user is already signed in, update the list of saved positions
 fetchSavedPositions();
