@@ -9,17 +9,19 @@ var lastUploadedPosition = null; // The last video position successfully uploade
 function decodeFriendlyTimeString(timeStr) {
     // Decode strings of the format:
     //   1234
+    //   1.45
     //   4567s
     //   1m2s
     //   2h1m40s
     //   2m
-    var timeMatch = timeStr.match(/^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s?)?$/);
+    //   2m1.5s
+    var timeMatch = timeStr.match(/^(?:(\d+)h)?(?:(\d+)m)?(?:([\d.]+)s?)?$/);
     if (!timeMatch) {
         return null;
     }
     var h = parseInt(timeMatch[1] || '0');
     var m = parseInt(timeMatch[2] || '0');
-    var s = parseInt(timeMatch[3] || '0');
+    var s = parseFloat(timeMatch[3] || '0');
     return 3600 * h + 60 * m + s;
 }
 
@@ -51,6 +53,9 @@ function onMenuChange() {
     }
     else if (selectedOption.id == "sign-out-option") {
         signOut();
+    }
+    else if (selectedOption.value) {
+        window.location = selectedOption.value;
     }
 
     // Reset selection, so that user can use the "menu" again (we are misuing <select> here!)
@@ -96,11 +101,13 @@ function signIn() {
 }
 
 function signOut() {
-    localStorage.removeItem("user_id");
-    localStorage.removeItem("device_id");
+    if (confirm("Are you sure you want to sign out? You may want to remember your user ID and device ID:\n" + localStorage.getItem("user_id") + "\n" + localStorage.getItem("device_id"))) {
+        localStorage.removeItem("user_id");
+        localStorage.removeItem("device_id");
 
-    // Rather than updating the UI now, reloading the page is an easy way to guarantee everything is up-to-date
-    window.location.reload();
+        // Rather than updating the UI now, reloading the page is an easy way to guarantee everything is up-to-date
+        window.location.reload();
+    }
 }
 
 function fetchSavedPositions() {
@@ -124,18 +131,25 @@ function fetchSavedPositions() {
                 return response.json();
             })
             .then(response => {
+                function createOpt(x) {
+                    var params = new URLSearchParams(window.location.search);
+                    params.set('videoId', x.video_id);
+                    params.set('time', x.position);
+                    
+                    var opt = document.createElement("option");
+                    opt.value = '?' + params.toString();
+                    opt.text = JSON.stringify(x);    //TODO: something nicer!   
+                    return opt;             
+                }
+
                 document.getElementById("saved-positions-most-recent").innerHTML = "";
                 for (var x of response.most_recent) {
-                    var opt = document.createElement("option");
-                    opt.value = null;
-                    opt.text = JSON.stringify(x);
+                    var opt = createOpt(x);
                     document.getElementById("saved-positions-most-recent").appendChild(opt);
                 }
                 document.getElementById("saved-positions-this-video").innerHTML = "";
                 for (var x of response.video) {
-                    var opt = document.createElement("option");
-                    opt.value = null;
-                    opt.text = JSON.stringify(x);
+                    var opt = createOpt(x);
                     document.getElementById("saved-positions-this-video").appendChild(opt);                    
                 }
             })
