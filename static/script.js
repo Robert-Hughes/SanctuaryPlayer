@@ -41,6 +41,17 @@ function toFriendlyTimeStringColons(seconds) {
     return hours + ':' + minutes.toString().padStart(2, '0') + ':' + seconds.toString().padStart(2, '0');
 }
 
+function onMenuClick(e) {
+    // We don't want the overlay UI to disappear while the user has the menu open
+    // This is a bit of a hack because I can't find a proper way to detect if a <select> dropdown is open,
+    // so instead we just disable the timer for now. 
+    if (overlayControlsTimeoutId != null) {
+        window.clearTimeout(overlayControlsTimeoutId);
+    }
+
+    e.stopPropagation(); // Otherwise it goes through to the onOverlayClick/onOverlayControlsClick and resets the timer!
+}
+
 function onMenuChange() {
     var selectedOption = document.getElementById("menu").selectedOptions[0];
     if (!selectedOption) return;
@@ -131,25 +142,27 @@ function fetchSavedPositions() {
                 return response.json();
             })
             .then(response => {
-                function createOpt(x) {
+                function createOpt(x, showVideoId) {
                     var params = new URLSearchParams(window.location.search);
                     params.set('videoId', x.video_id);
                     params.set('time', x.position);
                     
                     var opt = document.createElement("option");
                     opt.value = '?' + params.toString();
-                    opt.text = JSON.stringify(x);    //TODO: something nicer!   
+                    opt.text = showVideoId ? 
+                        x.device_id + ": " + x.video_id + " at " + toFriendlyTimeString(x.position) : 
+                        x.device_id + ": " + toFriendlyTimeString(x.position);
                     return opt;             
                 }
 
                 document.getElementById("saved-positions-most-recent").innerHTML = "";
                 for (var x of response.most_recent) {
-                    var opt = createOpt(x);
+                    var opt = createOpt(x, true);
                     document.getElementById("saved-positions-most-recent").appendChild(opt);
                 }
                 document.getElementById("saved-positions-this-video").innerHTML = "";
                 for (var x of response.video) {
-                    var opt = createOpt(x);
+                    var opt = createOpt(x, false);
                     document.getElementById("saved-positions-this-video").appendChild(opt);                    
                 }
             })
@@ -487,6 +500,7 @@ function onSpeedSelectChange(event) {
 }
 
 // Hookup event listeners
+document.getElementById("menu").addEventListener("click", onMenuClick);
 document.getElementById("menu").addEventListener("change", onMenuChange);
 document.getElementById("current-time-span").addEventListener("click", changeTime);
 document.getElementById("player-overlay").addEventListener("click", onOverlayClick);
