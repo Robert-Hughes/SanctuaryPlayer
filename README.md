@@ -43,5 +43,4 @@ TODO:
 * If try to seek after end of video, the orange time stays forever (as video never plays again)
 * Change Video sometimes doesn't work, need to keep retrying - could it be the background timer overwriting location?
 * The 2s offset for live videos doesn't always work - maybe we need to increase this or do something cleverer?
-* TUrn off autoplay for desktop, because a) it doesn't work for mobile so it's inconsistent and b) can be annoying especially if tab reloads in the background
 * See if we can enable Samsung video enhancements (it seems to only work for certain apps, not Chrome unfortunately)

@@ -400,8 +400,8 @@ function onYouTubeIframeAPIReady() {
                 // over the top of the fullscreen video, and be aware when the video toggles fullscreen (which
                 // it seems we can't if the iframe document itself triggers it)
                 'fs': 0,
-                // Note that autoplay doesn't work on mobile (a known limitation)
-                'autoplay': 1,
+                // Turn off autoplay because a) it doesn't work for mobile so it's inconsistent and b) can be annoying especially if tab reloads in the background
+                'autoplay': 0,
             },
             events: {
                 'onReady': onPlayerReady,
