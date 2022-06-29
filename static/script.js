@@ -49,6 +49,15 @@ function onMenuClick(e) {
         window.clearTimeout(overlayControlsTimeoutId);
     }
 
+    // Pause video once menu opens, as on mobile the menu covers the video so you wouldn't want it to keep playing
+    if (player) {
+        player.pauseVideo();
+    }
+
+    // Update the list of saved positions each time the menu is opened, so that it is up-to-date (otherwise would need to refresh the page)
+    //TODO: on mobile this causes a flicker when you open the menu
+    fetchSavedPositions();
+
     e.stopPropagation(); // Otherwise it goes through to the onOverlayClick/onOverlayControlsClick and resets the timer!
 }
 
@@ -78,7 +87,6 @@ function isSignedIn() {
 }
 
 function updateSignedInStatus() {
-    //TODO: prevent timer from hiding UI if the menu is open
     document.getElementById("sign-in-option").style.display = isSignedIn() ? "none" : "block";
     document.getElementById("sign-out-option").style.display = isSignedIn() ? "block" : "none";
     if (isSignedIn()) {
@@ -173,42 +181,33 @@ function fetchSavedPositions() {
 }
 
 function changeVideo() {
-    if (player) {
-        player.pauseVideo();
+    var url = prompt("Please enter YouTube video URL:");
+    if (!url) {
+        return;
     }
 
-    // Show the prompt on a timeout, so that the pause command above has time to take effect.
-    // The timeout must be >0, as we need to make sure our onPlayerStateChange callback happens
-    // first to show the blocker.
-    window.setTimeout(function () {
-        var url = prompt("Please enter YouTube video URL:");
-        if (!url) {
-            return;
+    // Regex to extract video ID and time. Needs to work for:
+    //   https://youtu.be/3fgD9k8Hkbc
+    //   https://youtu.be/3fgD9k8Hkbc?t=3839
+    //   https://www.youtube.com/watch?v=3fgD9k8Hkbc
+    //   https://www.youtube.com/watch?v=3fgD9k8Hkbc&t=54m39s
+    //   https://www.youtube.com/watch?v=3fgD9k8Hkbc&t=54m39s&bob=someting
+    var match = url.match(/(?:watch\?v=|youtu\.be\/)(.*?)(?:&|\?|$)(?:t=(.*?))?(?:&|$)/);
+    var params = new URLSearchParams(window.location.search);
+    if (match && match[1]) {
+        params.set('videoId', match[1]);
+        if (match[2]) {
+            params.set('time', match[2]);
+        } else {
+            params.delete('time'); // Important to overwrite any existing time value
         }
+    }
+    else {
+        alert("Invalid URL")
+        return;
+    }
 
-        // Regex to extract video ID and time. Needs to work for:
-        //   https://youtu.be/3fgD9k8Hkbc
-        //   https://youtu.be/3fgD9k8Hkbc?t=3839
-        //   https://www.youtube.com/watch?v=3fgD9k8Hkbc
-        //   https://www.youtube.com/watch?v=3fgD9k8Hkbc&t=54m39s
-        //   https://www.youtube.com/watch?v=3fgD9k8Hkbc&t=54m39s&bob=someting
-        var match = url.match(/(?:watch\?v=|youtu\.be\/)(.*?)(?:&|\?|$)(?:t=(.*?))?(?:&|$)/);
-        var params = new URLSearchParams(window.location.search);
-        if (match && match[1]) {
-            params.set('videoId', match[1]);
-            if (match[2]) {
-                params.set('time', match[2]);
-            } else {
-                params.delete('time'); // Important to overwrite any existing time value
-            }
-        }
-        else {
-            alert("Invalid URL")
-            return;
-        }
-
-        window.location = '?' + params.toString();
-    }, 100);
+    window.location = '?' + params.toString(); //TODO: this code is very similar to the saved position stuff - could/should it be shared/forwarding to each other?
 }
 
 function onPlayerReady() {
@@ -537,5 +536,8 @@ firstScriptTag.parentNode.insertBefore(tag, firstScriptTag);
 // Main logic begins once youtube API loads (it calls our onYouTubeIframeAPIReady() function)
 
 updateSignedInStatus();
+
 // If the user is already signed in, update the list of saved positions
+// Even though we update this when the user opens the menu, we also do it now because otherwise the size of the <select>
+// dropdown doesn't adjust properly once it's already open (you get a scrollbar which isn't so nice)
 fetchSavedPositions();

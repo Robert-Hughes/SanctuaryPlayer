@@ -13,13 +13,6 @@ I am currently trying to use Google App Engine to host it, which will provide th
 in videos they are watching, so that it syncs between PC and phone for example. I'm aiming to do this in a way that retains
 the ability for static hosting, which might still be convenient.
 
-Google App Engine TODO:
-
-* Consider shortening the URL to not have the static/ prefix? Or redirect "/" to "/static/index" so at least you don't have to type it, but 
- it will still be in the address bar so it's not great
-   - ideally it's just /, as it's a single page web-app. The other static content (javascript, images, css etc.) could remain in the static
-   folder, as users won't see/use that URL
-
 TODO:
 
 * Sync somehow between PC and phone
@@ -45,3 +38,7 @@ TODO:
 * Change Video sometimes doesn't work, need to keep retrying - could it be the background timer overwriting location?
 * The 2s offset for live videos doesn't always work - maybe we need to increase this or do something cleverer?
 * See if we can enable Samsung video enhancements (it seems to only work for certain apps, not Chrome unfortunately)
+* Make Menu text bigger
+* Button layout has changed slightly . Play and pause are a bit high and the buttons at the bottom are no longer aligned to the bottom edge
+* Avoid displaying saved positions from this device?
+* Disable selection, to prevent double clicking a lot from sometimes making the whole screen blue
