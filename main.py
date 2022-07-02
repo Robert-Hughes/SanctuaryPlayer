@@ -37,6 +37,7 @@ def handle_save_position():
     device_id = request.args.get('device_id')
     video_id = request.args.get('video_id')
     position = request.args.get('position')
+    video_title = request.args.get('video_title') # Optional
     if not user_id or not device_id or not video_id or not position:
         return ("Missing user_id or device_id or video_id or position in query args", 400)
     try:
@@ -56,6 +57,7 @@ def handle_save_position():
     entity['video_id'] = video_id
     entity["modified_time"] = modified_time
     entity["position"] = position
+    entity["video_title"] = video_title
     datastore_client.put(entity)
 
     return "OK"
@@ -77,7 +79,8 @@ def handle_get_saved_positions():
             video_id = r['video_id']
             position = r['position']
             modified_time = r['modified_time']
-            result.append({ 'device_id': device_id, 'video_id': video_id, 'position': position, 'modified_time': modified_time })
+            video_title = r.get('video_title', '') # Older enitities won't have title
+            result.append({ 'device_id': device_id, 'video_id': video_id, 'position': position, 'modified_time': modified_time, 'video_title': video_title })
         return result
 
     # Find the most recent saved positions for other videos for this user, across all their devices.

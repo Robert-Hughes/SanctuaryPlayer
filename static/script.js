@@ -151,15 +151,15 @@ function fetchSavedPositions() {
                 return response.json();
             })
             .then(response => {
-                function createOpt(x, showVideoId) {
+                function createOpt(x, showVideo) {
                     var params = new URLSearchParams(window.location.search);
                     params.set('videoId', x.video_id);
                     params.set('time', x.position);
                     
                     var opt = document.createElement("option");
                     opt.value = '?' + params.toString();
-                    opt.text = showVideoId ? 
-                        x.device_id + ": " + x.video_id + " at " + toFriendlyTimeString(x.position) : 
+                    opt.text = showVideo ? 
+                        x.device_id + ": " + (x.video_title || x.video_id) + " at " + toFriendlyTimeString(x.position) : 
                         x.device_id + ": " + toFriendlyTimeString(x.position);
                     return opt;             
                 }
@@ -421,6 +421,7 @@ function onTimer() {
                     'user_id': localStorage.getItem("user_id"),
                     'device_id': localStorage.getItem("device_id"),
                     'video_id': player.getVideoData().video_id,
+                    'video_title': player.getVideoData().title,
                     'position': effectiveCurrentTime,
                 });
                 fetch('save-position?' + params.toString(), { method: 'POST'})
