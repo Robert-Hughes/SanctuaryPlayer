@@ -11,7 +11,9 @@ easily served as static content using Google App Engine without having a complic
 which files to serve.
 
 There is an optional web server component which can save the user's progress through videos, so that this can be 
-synced between different devices. Currently this is set up to use Google App Engine.
+synced between different devices. Currently this is set up to use Google App Engine. To upload new code to App Engine:
+
+D:\Programming\Media\YouTubeNoSpoilers> python E:\Programming\google-cloud-sdk\lib\gcloud.py --project youtubenospoilers app deploy
 
 TODO:
 

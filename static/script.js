@@ -429,7 +429,7 @@ function onTimer() {
                     'device_id': localStorage.getItem("device_id"),
                     'video_id': player.getVideoData().video_id,
                     'video_title': player.getVideoData().title,
-                    'position': effectiveCurrentTime,
+                    'position': Math.round(effectiveCurrentTime), // Server saves whole numbers only
                 });
                 fetch('save-position?' + params.toString(), { method: 'POST'})
                     .then(response => {
@@ -463,6 +463,7 @@ function onYouTubeIframeAPIReady() {
         if (startTime < 10) {
              startTime = 10;
         }
+        startTime = Math.round(startTime); // Fractional numbers are invalid and won't work!
 
         seekTarget = startTime; // Treat the start time as a seek target, so the UI shows this time rather than 0 when loading
 
@@ -472,6 +473,8 @@ function onYouTubeIframeAPIReady() {
             videoId: params.get('videoId'),
             playerVars: {
                 'controls': 0,
+                // Note that if 'start' is not set (or set to something invalid), then YouTube has some kind of memory where it tries
+                // to start where you last were. We don't want this, as we handle it ourselves, so make sure to always set this, even if it's zero (see above)
                 'start': startTime,
                 // Disable fullscreen - we'll handle this ourselves so that we're able to display our own stuff
                 // over the top of the fullscreen video, and be aware when the video toggles fullscreen (which

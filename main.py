@@ -41,9 +41,9 @@ def handle_save_position():
     if not user_id or not device_id or not video_id or not position:
         return ("Missing user_id or device_id or video_id or position in query args", 400)
     try:
-        position = float(position)
+        position = int(position)
     except ValueError:
-        return ("position is not a valid floating point number", 400)
+        return ("position is not a valid int", 400)
 
     # Current timestamp
     modified_time = datetime.now(timezone.utc) # Timezone-aware with timezone set to UTC, so that it plays nicely with Google Datastore
