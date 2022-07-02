@@ -246,6 +246,14 @@ function getEffectiveCurrentTime() {
 
 // Seeks to the given time, updating our own seekTarget variable too
 function seekTo(target) {
+    // Clamp to valid values, to prevent weird display of seek times (negative, or never gets to the target time)
+    if (target < 0) {
+        target = 0;
+    }
+    if (player.getDuration() && target > player.getDuration()) { // getDuration may return 0 if not available, according to docs
+        target = player.getDuration();
+    }
+
     console.log("Seeking to " + target);
 
     seekTarget = target;

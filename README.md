@@ -18,8 +18,6 @@ TODO:
 * delete/clean up old saved position data. Perhaps expires after some time?
 * When viewing live video but behind live, turning the screen off (mobile) and on resets to live!
 * Better time format support, mainly for the display at the bottom and the "Change Time" dialog
-* If try to seek before 0, display looks weird
-* If try to seek after end of video, the orange time stays forever (as video never plays again)
 * Change Video sometimes doesn't work, need to keep retrying - could it be the background timer overwriting location?
 * The 2s offset for live videos doesn't always work - maybe we need to increase this or do something cleverer?
 * See if we can enable Samsung video enhancements (it seems to only work for certain apps, not Chrome unfortunately)
