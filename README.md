@@ -15,10 +15,6 @@ synced between different devices. Currently this is set up to use Google App Eng
 
 TODO:
 
-* delete/clean up old saved position data. Perhaps expires after some time?
-* Better time format support, mainly for the display at the bottom and the "Change Time" dialog
-* See if we can enable Samsung video enhancements (it seems to only work for certain apps, not Chrome unfortunately)
-* Disable selection, to prevent double clicking a lot from sometimes making the whole screen blue
+* Delete/clean up old saved position data. Perhaps expires after some time?
 * Loading saved positions seems to not get the time right, it's often behind by a few minutes? Maybe only on longer videos (percentage error?)
-* on mobile, refreshing the menu on open causes a flicker when you open the menu
-* The changeVideo code is very similar to the saved position stuff - could/should it be shared/forwarding to each other?
+* On mobile, refreshing the menu on open causes a flicker when you open the menu
