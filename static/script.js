@@ -90,7 +90,7 @@ function updateSignedInStatus() {
     document.getElementById("sign-in-option").style.display = isSignedIn() ? "none" : "block";
     document.getElementById("sign-out-option").style.display = isSignedIn() ? "block" : "none";
     if (isSignedIn()) {
-        document.getElementById("sign-out-option").innerText = "Sign out (current user/device: " + localStorage.getItem("user_id") + "/" + localStorage.getItem("device_id") + ")";
+        document.getElementById("sign-out-option").innerText = "Sign out (" + localStorage.getItem("user_id") + "/" + localStorage.getItem("device_id") + ")...";
     }
 }
 

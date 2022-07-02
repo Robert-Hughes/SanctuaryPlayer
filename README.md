@@ -16,6 +16,7 @@ synced between different devices. Currently this is set up to use Google App Eng
 TODO:
 
 * delete/clean up old saved position data. Perhaps expires after some time?
+* Show video title instead of ID in saved positions
 * Seems to be a delay sometimes when clicking to toggle the overlay - maybe fixed now, probably a Chrome bug?
     * This was probably because we were starting loads of timers at the same time :O. THis should be fixed now, but if we still have issues, maybe changing from
       setInterval to setTimeout might prevent multiple timer callbacks from stacking up and 'falling behind'?
