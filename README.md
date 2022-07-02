@@ -18,5 +18,4 @@ D:\Programming\Media\YouTubeNoSpoilers> python E:\Programming\google-cloud-sdk\l
 TODO:
 
 * Delete/clean up old saved position data. Perhaps expires after some time?
-* Loading saved positions seems to not get the time right, it's often behind by a few minutes? Maybe only on longer videos (percentage error?)
 * On mobile, refreshing the menu on open causes a flicker when you open the menu
