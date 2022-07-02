@@ -16,10 +16,7 @@ synced between different devices. Currently this is set up to use Google App Eng
 TODO:
 
 * delete/clean up old saved position data. Perhaps expires after some time?
-* When viewing live video but behind live, turning the screen off (mobile) and on resets to live!
 * Better time format support, mainly for the display at the bottom and the "Change Time" dialog
-* Change Video sometimes doesn't work, need to keep retrying - could it be the background timer overwriting location?
-* The 2s offset for live videos doesn't always work - maybe we need to increase this or do something cleverer?
 * See if we can enable Samsung video enhancements (it seems to only work for certain apps, not Chrome unfortunately)
 * Disable selection, to prevent double clicking a lot from sometimes making the whole screen blue
 * Loading saved positions seems to not get the time right, it's often behind by a few minutes? Maybe only on longer videos (percentage error?)

@@ -459,6 +459,11 @@ function onYouTubeIframeAPIReady() {
         if (params.has('time')) {
             startTime = decodeFriendlyTimeString(params.get('time'));
         }
+        // There seem to be issues with requesting a small start time != 0, especially for live streams. So put a lower limit on it.
+        if (startTime < 10) {
+             startTime = 10;
+        }
+
         seekTarget = startTime; // Treat the start time as a seek target, so the UI shows this time rather than 0 when loading
 
         player = new YT.Player('player', {
