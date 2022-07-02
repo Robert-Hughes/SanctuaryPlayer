@@ -16,20 +16,8 @@ synced between different devices. Currently this is set up to use Google App Eng
 TODO:
 
 * delete/clean up old saved position data. Perhaps expires after some time?
-* Seems to be a delay sometimes when clicking to toggle the overlay - maybe fixed now, probably a Chrome bug?
-    * This was probably because we were starting loads of timers at the same time :O. THis should be fixed now, but if we still have issues, maybe changing from
-      setInterval to setTimeout might prevent multiple timer callbacks from stacking up and 'falling behind'?
-* On mobile, the height of the page is wrong when the browser hides the address bar.
-    - to repro, load page then go into full screen and out again (possibly twice). 
-    - the address bar can be brought back by scrolling the page from the white bit at the bottom
 * When viewing live video but behind live, turning the screen off (mobile) and on resets to live!
-* Support youtube vids embedded on sites like eventvods.com? Or could just use reddit links?
-    - difficult due to cross-site request limitations - would need to access endpoint at https://eventvods.com/api/match/61042f7688832717bf410b2f
-    - could be done now with the web server!
-    - possibly less important now that we have YouTubeLiveMonitor?
 * Better time format support, mainly for the display at the bottom and the "Change Time" dialog
-* Seeking while video still loading on first load doesn't update UI properly? (At least if the video has a specified start time). Can limit network on DevTools to help repro.
-   - same thing before pressing initial play (if autoplay is disabled)?
 * If try to seek before 0, display looks weird
 * If try to seek after end of video, the orange time stays forever (as video never plays again)
 * Change Video sometimes doesn't work, need to keep retrying - could it be the background timer overwriting location?
@@ -37,4 +25,5 @@ TODO:
 * See if we can enable Samsung video enhancements (it seems to only work for certain apps, not Chrome unfortunately)
 * Disable selection, to prevent double clicking a lot from sometimes making the whole screen blue
 * Loading saved positions seems to not get the time right, it's often behind by a few minutes? Maybe only on longer videos (percentage error?)
-* Show video title somwhere - often useful to check what day I'm on
+* on mobile, refreshing the menu on open causes a flicker when you open the menu
+* The changeVideo code is very similar to the saved position stuff - could/should it be shared/forwarding to each other?

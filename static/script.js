@@ -55,7 +55,6 @@ function onMenuClick(e) {
     }
 
     // Update the list of saved positions each time the menu is opened, so that it is up-to-date (otherwise would need to refresh the page)
-    //TODO: on mobile this causes a flicker when you open the menu
     fetchSavedPositions();
 
     e.stopPropagation(); // Otherwise it goes through to the onOverlayClick/onOverlayControlsClick and resets the timer!
@@ -213,7 +212,7 @@ function changeVideo() {
         return;
     }
 
-    window.location = '?' + params.toString(); //TODO: this code is very similar to the saved position stuff - could/should it be shared/forwarding to each other?
+    window.location = '?' + params.toString();
 }
 
 function onPlayerReady() {
@@ -391,13 +390,13 @@ function changeTime() {
 }
 
 function onTimer() {
-    if (player && player.getPlayerState() != YT.PlayerState.UNSTARTED)  // Video may not yet have been loaded //TODO: sometimes the state is UNSTARTED after coming out of sleep? And this causes seeking to not show the target time correctly
+    var effectiveCurrentTime = getEffectiveCurrentTime();
+
+    document.getElementById("current-time-span").innerText = toFriendlyTimeStringColons(effectiveCurrentTime);
+    document.getElementById("current-time-span").style.backgroundColor = isSeeking() ? 'orange' : 'white';
+
+    if (player && player.getPlayerState() != YT.PlayerState.UNSTARTED)  // Video may not yet have been loaded
     {
-        var effectiveCurrentTime = getEffectiveCurrentTime();
-
-        document.getElementById("current-time-span").innerText = toFriendlyTimeStringColons(effectiveCurrentTime);
-        document.getElementById("current-time-span").style.backgroundColor = isSeeking() ? 'orange' : 'white';
-
         // Update URL to reflect the current time in the video, so refreshing the page (or closing and re-opening
         // the browser will resume the video at the current time).
         // This doesn't behave quite like we want with the Chrome global history though (it has one entry per timestamp!).
