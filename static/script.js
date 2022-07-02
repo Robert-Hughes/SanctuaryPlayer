@@ -134,12 +134,13 @@ function fetchSavedPositions() {
     {
         var params = new URLSearchParams({
             'user_id': localStorage.getItem("user_id"),
+            'device_id': localStorage.getItem("device_id"),
         });
         // If a video has already been selected, include this in the request, so that we also get data about most recent positions for this particular video
         // Note that we get this from the URL rather than the YouTube player object, because that might not yet have been initialised.
         var urlParams = new URLSearchParams(window.location.search);
         if (urlParams.has('videoId')) {
-            params.append("video_id", urlParams.get("videoId"));
+            params.append("current_video_id", urlParams.get("videoId"));
         }
     
         fetch("get-saved-positions?" + params.toString())
@@ -163,15 +164,20 @@ function fetchSavedPositions() {
                     return opt;             
                 }
 
-                document.getElementById("saved-positions-most-recent").innerHTML = "";
-                for (var x of response.most_recent) {
+                document.getElementById("saved-positions-other-videos").innerHTML = "";
+                document.getElementById("saved-positions-other-videos").style.display = response.other_videos.length > 0 ? "block" : "none";
+                for (var x of response.other_videos) {
                     var opt = createOpt(x, true);
-                    document.getElementById("saved-positions-most-recent").appendChild(opt);
+                    document.getElementById("saved-positions-other-videos").appendChild(opt);
                 }
                 document.getElementById("saved-positions-this-video").innerHTML = "";
-                for (var x of response.video) {
-                    var opt = createOpt(x, false);
-                    document.getElementById("saved-positions-this-video").appendChild(opt);                    
+                document.getElementById("saved-positions-this-video").style.display = response.this_video && response.this_video.length > 0 ? "block" : "none";
+                if (response.this_video)
+                {
+                    for (var x of response.this_video) {
+                        var opt = createOpt(x, false);
+                        document.getElementById("saved-positions-this-video").appendChild(opt);                    
+                    }
                 }
             })
             .catch((error) => {

@@ -62,20 +62,14 @@ def handle_save_position():
 
 @app.route("/get-saved-positions", methods=['GET'])
 def handle_get_saved_positions():
-    # Get user ID from request args
+    # Get parameters from request args
     user_id = request.args.get('user_id')
-    if not user_id:
-        return ("Missing user_id in query args", 400)
+    device_id = request.args.get('device_id')
+    if not user_id or not device_id:
+        return ("Missing user_id or device_id in query args", 400)
+    # Video ID is optional
+    current_video_id = request.args.get('current_video_id')
     
-    # Find the most recent saved positions for any video for this user, across all their devices.
-    # This basically shows what you were last watching on each device, independent of what you're watching now.
-    query = datastore_client.query(kind='SavedPosition')
-    query.add_filter('user_id', '=', user_id)
-    query.order = ['device_id', '-modified_time']
-    query.distinct_on = ['device_id']
-    query_results = list(query.fetch())
-
-    json = {}
     def to_json(entities):
         result = []
         for r in entities:
@@ -85,19 +79,33 @@ def handle_get_saved_positions():
             modified_time = r['modified_time']
             result.append({ 'device_id': device_id, 'video_id': video_id, 'position': position, 'modified_time': modified_time })
         return result
-    json['most_recent'] = to_json(query_results)           
+
+    # Find the most recent saved positions for other videos for this user, across all their devices.
+    # This basically shows what you were last watching on each device, independent of what you're watching now.
+    # We can't exclude the current videos using this query (limitation of Datastore), so we do it manually once we get the results.
+    query = datastore_client.query(kind='SavedPosition')
+    query.add_filter('user_id', '=', user_id)
+    query.order = ['device_id', '-modified_time']
+    query.distinct_on = ['device_id']
+    query_results = list(query.fetch())
+    if current_video_id:
+        query_results = [r for r in query_results if r['video_id'] != current_video_id]
+
+    json = { 'other_videos': to_json(query_results) }
             
-    # Additionally, if a video_id was provided, show all the saved positions for this video across different devices.
-    # This shows where you were up to on this video on different devices, even if it wasn't the most recent video you watched that device
-    # Video ID from query args (optional)
-    video_id = request.args.get('video_id')
-    if video_id:
+    # Additionally, if a current_video_id was provided, show all the saved positions for this video on other devices.
+    # This shows where you were up to on this video on different devices, even if it wasn't the most recent video you watched that device.
+    # Note that we exclude the current device, because the saved position on the current device will be the position the user is already at,
+    # so no point showing them that!
+    # We can't exclude the current device using this query (limitation of Datastore), so we do it manually once we get the results.
+    if current_video_id:
         query = datastore_client.query(kind='SavedPosition')
         query.add_filter('user_id', '=', user_id)
-        query.add_filter('video_id', '=', video_id)
+        query.add_filter('video_id', '=', current_video_id)
         query.order = ['-modified_time']
         query_results = list(query.fetch())
+        query_results = [r for r in query_results if r['device_id'] != device_id]
 
-        json['video'] = to_json(query_results)           
+        json['this_video'] = to_json(query_results)           
 
     return json

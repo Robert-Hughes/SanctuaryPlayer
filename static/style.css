@@ -60,6 +60,10 @@ body {
     font-size: xx-large;
 }
 
+#saved-positions-this-video,#saved-positions-other-videos {
+    display: none; /* Initially hidden, until we fetch from server */
+}
+
 #player-overlay-controls-mid {
     display: flex;
 }
