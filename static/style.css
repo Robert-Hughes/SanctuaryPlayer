@@ -77,6 +77,24 @@ body {
     display: none; /* Initially hidden, until we fetch from server */
 }
 
+@keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+
+.spinner {
+    display: inline-block;
+    width: 1em;
+    height: 1em;
+    border-top: 1px black solid;
+    border-radius: 50%;
+    vertical-align: text-bottom;
+    animation-name: spin;
+    animation-duration: 1s;
+    animation-iteration-count: infinite;
+    animation-timing-function: linear;
+}
+
 #saved-positions-this-video,#saved-positions-other-videos {
     padding-left: 30px;
 }

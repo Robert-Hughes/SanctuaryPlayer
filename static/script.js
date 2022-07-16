@@ -124,6 +124,8 @@ function fetchSavedPositions() {
             params.append("current_video_id", urlParams.get("videoId"));
         }
     
+        document.getElementById("saved-positions-other-videos-loading").style.display = "inline-block";
+        document.getElementById("saved-positions-this-video-loading").style.display = "inline-block";
         fetch("get-saved-positions?" + params.toString())
             .then(response => {
                 if (!response.ok) {
@@ -169,6 +171,10 @@ function fetchSavedPositions() {
             })
             .catch((error) => {
                 console.error('Error getting positions from server:', error);
+            })
+            .finally(() => {
+                document.getElementById("saved-positions-other-videos-loading").style.display = "none";
+                document.getElementById("saved-positions-this-video-loading").style.display = "none";        
             });
     }
 }
