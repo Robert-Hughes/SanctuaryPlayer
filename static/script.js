@@ -367,8 +367,8 @@ function toggleFullscreen(event) {
         document.exitFullscreen();
     }
     else {
-        // Make the whole mid-container fullscreen, so the overlay still works
-        document.getElementById("mid-container").requestFullscreen();
+        // Make the whole page fullscreen, so the overlay still works
+        document.getElementById("root").requestFullscreen();
     }
 }
 

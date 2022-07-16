@@ -10,56 +10,41 @@
 
 <body>
     <div id="root">
-        <div id="top-container">
-        </div>
-
-        <div id="mid-container">
-            <div id="player"></div>
-            <div id="loading-status">Please select a video</div>
-            <div id="blocker-box">Hiding related videos</div>
-            <!-- Use an overlay to display things and intercept mouse clicks on the player -->
-            <div id="player-overlay">
-                <div id="player-overlay-controls">
-                    <div id="player-overlay-controls-top">
-                        <select id="menu">
-                            <option>-- Menu --</option>
-                            <option id="change-video-option">Change Video...</option>
-                            <option id="sign-in-option">Sign in...</option>
-                            <optgroup id="saved-positions-this-video" label="Saved positions (this video)"></optgroup>
-                            <optgroup id="saved-positions-other-videos" label="Saved positions (other videos)"></optgroup>
-                            <option id="sign-out-option">Sign out...</option>
-                        </select>
-                      <!--  <span id="quality-text">Quality: </span>-->
+        <div id="player"></div>
+        <div id="loading-status">Please select a video</div>
+        <div id="blocker-box">Hiding related videos</div>
+        <!-- Use an overlay to display things and intercept mouse clicks on the player -->
+        <div id="player-overlay">
+            <div id="player-overlay-controls">
+                <div id="player-overlay-controls-top">
+                    <select id="menu">
+                        <option>-- Menu --</option>
+                        <option id="change-video-option">Change Video...</option>
+                        <option id="sign-in-option">Sign in...</option>
+                        <optgroup id="saved-positions-this-video" label="Saved positions (this video)"></optgroup>
+                        <optgroup id="saved-positions-other-videos" label="Saved positions (other videos)"></optgroup>
+                        <option id="sign-out-option">Sign out...</option>
+                    </select>
+                    <!--  <span id="quality-text">Quality: </span>-->
+                </div>
+                <div id="player-overlay-controls-mid"> 
+                    <button id="play-pause-button"></button>
+                    <button id="fullscreen-button"></button>
+                </div>
+                <div id="player-overlay-controls-bot">
+                    <button class="seek-button" data-amount="-600">-10m</button>
+                    <button class="seek-button" data-amount="-60">-1m</button>
+                    <button class="seek-button" data-amount="-5">-5s</button>
+                    <div id="player-overlay-controls-bot-mid">
+                        <span id="current-time-span"></span>
+                        <select id="speed-select"></select>
                     </div>
-                    <div id="player-overlay-controls-mid"> 
-                        <button id="play-pause-button"></button>
-                        <button id="fullscreen-button"></button>
-                    </div>
-                    <div id="player-overlay-controls-bot">
-                        <button class="seek-button" data-amount="-600">-10m</button>
-                        <button class="seek-button" data-amount="-60">-1m</button>
-                        <button class="seek-button" data-amount="-5">-5s</button>
-                        <div id="player-overlay-controls-bot-mid">
-                            <span id="current-time-span"></span>
-                            <select id="speed-select"></select>
-                        </div>
-                        <button class="seek-button" data-amount="+5">+5s</button>
-                        <button class="seek-button" data-amount="+60">+1m</button>
-                        <button class="seek-button" data-amount="+600">+10m</button>
-                    </div>
+                    <button class="seek-button" data-amount="+5">+5s</button>
+                    <button class="seek-button" data-amount="+60">+1m</button>
+                    <button class="seek-button" data-amount="+600">+10m</button>
                 </div>
             </div>
         </div>
-
-        <div id="bot-container">
-            <div id="bot-left-container">
-            </div>
-            <div id="bot-center-container">                
-            </div>
-            <div id="bot-right-container">
-            </div>
-        </div>
-
     </div>
 
     <script src="static/script.js"></script>
