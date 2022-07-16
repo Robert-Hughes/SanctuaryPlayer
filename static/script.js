@@ -42,16 +42,23 @@ function toFriendlyTimeStringColons(seconds) {
 }
 
 function onMenuButtonClick(e) {
-    // Pause video once menu opens, as on mobile the menu covers the video so you wouldn't want it to keep playing
-    if (player) {
-        player.pauseVideo();
+    if (document.getElementById("menu").style.display = document.getElementById("menu").style.display == "block") {
+        // Menu already open - close it
+        document.getElementById("menu").style.display = "none";
     }
+    else { 
+        // Menu not already open - open it
 
-    // Update the list of saved positions each time the menu is opened, so that it is up-to-date (otherwise would need to refresh the page)
-    fetchSavedPositions();
+        // Pause video once menu opens, as on mobile the menu covers the video so you wouldn't want it to keep playing
+        if (player) {
+            player.pauseVideo();
+        }
 
-    // Show/hide the menu
-    document.getElementById("menu").style.display = document.getElementById("menu").style.display == "block" ? "none" : "block";
+        // Update the list of saved positions each time the menu is opened, so that it is up-to-date (otherwise would need to refresh the page)
+        fetchSavedPositions();
+
+        document.getElementById("menu").style.display = "block";
+    }
 
     e.stopPropagation(); // Otherwise it goes through to the onOverlayClick/onOverlayControlsClick and resets the timer!
 }
@@ -135,23 +142,23 @@ function fetchSavedPositions() {
                         window.location = '?' + params.toString();
                     });
                     button.innerText = showVideo ? 
-                        x.device_id + ": " + (x.video_title || x.video_id) + " at " + toFriendlyTimeString(x.position) : 
-                        x.device_id + ": " + toFriendlyTimeString(x.position);
+                        x.device_id + ": " + (x.video_title || x.video_id) + " at " + toFriendlyTimeStringColons(x.position) : 
+                        x.device_id + ": " + toFriendlyTimeStringColons(x.position);
                     return button;             
                 }
 
-                while (document.getElementById("saved-positions-other-videos").lastElementChild.tagName == "BUTTON") {
+                while (document.getElementById("saved-positions-other-videos").lastElementChild?.tagName == "BUTTON") {
                     document.getElementById("saved-positions-other-videos").lastElementChild.remove();   
                 }
-                document.getElementById("saved-positions-other-videos").style.display = response.other_videos.length > 0 ? "block" : "none";
+                document.getElementById("saved-positions-other-videos-header").style.display = response.other_videos.length > 0 ? "block" : "none";
                 for (var x of response.other_videos) {
                     var opt = createButton(x, true);
                     document.getElementById("saved-positions-other-videos").appendChild(opt);
                 }
-                while (document.getElementById("saved-positions-this-video").lastElementChild.tagName == "BUTTON") {
+                while (document.getElementById("saved-positions-this-video").lastElementChild?.tagName == "BUTTON") {
                     document.getElementById("saved-positions-this-video").lastElementChild.remove();   
                 }
-                document.getElementById("saved-positions-this-video").style.display = response.this_video && response.this_video.length > 0 ? "block" : "none";
+                document.getElementById("saved-positions-this-video-header").style.display = response.this_video && response.this_video.length > 0 ? "block" : "none";
                 if (response.this_video)
                 {
                     for (var x of response.this_video) {

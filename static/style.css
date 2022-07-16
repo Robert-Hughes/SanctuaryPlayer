@@ -69,10 +69,16 @@ body {
 #menu button {
     display: block;
     font-size: xx-large;
+    width: 100%;
+    text-align: left;
+}
+
+#saved-positions-this-video-header,#saved-positions-other-videos-header {
+    display: none; /* Initially hidden, until we fetch from server */
 }
 
 #saved-positions-this-video,#saved-positions-other-videos {
-    display: none; /* Initially hidden, until we fetch from server */
+    padding-left: 30px;
 }
 
 #player-overlay-controls-mid {
