@@ -17,14 +17,14 @@
         <div id="player-overlay">
             <div id="player-overlay-controls">
                 <div id="player-overlay-controls-top">
-                    <select id="menu">
-                        <option>-- Menu --</option>
-                        <option id="change-video-option">Change Video...</option>
-                        <option id="sign-in-option">Sign in...</option>
-                        <optgroup id="saved-positions-this-video" label="Saved positions (this video)"></optgroup>
-                        <optgroup id="saved-positions-other-videos" label="Saved positions (other videos)"></optgroup>
-                        <option id="sign-out-option">Sign out...</option>
-                    </select>
+                    <button id="menu-button">Menu</button>
+                    <div id="menu">
+                        <button id="change-video-button">Change Video...</button>
+                        <button id="sign-in-button">Sign in...</button>
+                        <fieldset id="saved-positions-this-video"><legend>Saved positions (this video)</legend></fieldset>
+                        <fieldset id="saved-positions-other-videos"><legend>Saved positions (other videos)</legend></fieldset>
+                        <button id="sign-out-button">Sign out...</button>
+                    </div>
                     <!--  <span id="quality-text">Quality: </span>-->
                 </div>
                 <div id="player-overlay-controls-mid"> 

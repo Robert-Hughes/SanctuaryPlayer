@@ -21,3 +21,4 @@ TODO:
    - For example if signed in on a device that only used once, it will now always be there!
 * On mobile, refreshing the menu on open causes a flicker when you open the menu
 * SHow indication that hte menu is refreshing when you open it, so you know to wait for latest positions to load
+* Fetches saved position on menu close as well! (if you click the button!)

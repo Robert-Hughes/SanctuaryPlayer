@@ -41,14 +41,7 @@ function toFriendlyTimeStringColons(seconds) {
     return hours + ':' + minutes.toString().padStart(2, '0') + ':' + seconds.toString().padStart(2, '0');
 }
 
-function onMenuClick(e) {
-    // We don't want the overlay UI to disappear while the user has the menu open
-    // This is a bit of a hack because I can't find a proper way to detect if a <select> dropdown is open,
-    // so instead we just disable the timer for now. 
-    if (overlayControlsTimeoutId != null) {
-        window.clearTimeout(overlayControlsTimeoutId);
-    }
-
+function onMenuButtonClick(e) {
     // Pause video once menu opens, as on mobile the menu covers the video so you wouldn't want it to keep playing
     if (player) {
         player.pauseVideo();
@@ -57,28 +50,10 @@ function onMenuClick(e) {
     // Update the list of saved positions each time the menu is opened, so that it is up-to-date (otherwise would need to refresh the page)
     fetchSavedPositions();
 
+    // Show/hide the menu
+    document.getElementById("menu").style.display = document.getElementById("menu").style.display == "block" ? "none" : "block";
+
     e.stopPropagation(); // Otherwise it goes through to the onOverlayClick/onOverlayControlsClick and resets the timer!
-}
-
-function onMenuChange() {
-    var selectedOption = document.getElementById("menu").selectedOptions[0];
-    if (!selectedOption) return;
-
-    if (selectedOption.id == "change-video-option") {
-        changeVideo();
-    }
-    else if (selectedOption.id == "sign-in-option") {
-        signIn();
-    }
-    else if (selectedOption.id == "sign-out-option") {
-        signOut();
-    }
-    else if (selectedOption.value) {
-        window.location = selectedOption.value;
-    }
-
-    // Reset selection, so that user can use the "menu" again (we are misuing <select> here!)
-    document.getElementById("menu").selectedIndex = 0;
 }
 
 function isSignedIn() {
@@ -86,10 +61,10 @@ function isSignedIn() {
 }
 
 function updateSignedInStatus() {
-    document.getElementById("sign-in-option").style.display = isSignedIn() ? "none" : "block";
-    document.getElementById("sign-out-option").style.display = isSignedIn() ? "block" : "none";
+    document.getElementById("sign-in-button").style.display = isSignedIn() ? "none" : "block";
+    document.getElementById("sign-out-button").style.display = isSignedIn() ? "block" : "none";
     if (isSignedIn()) {
-        document.getElementById("sign-out-option").innerText = "Sign out (" + localStorage.getItem("user_id") + "/" + localStorage.getItem("device_id") + ")...";
+        document.getElementById("sign-out-button").innerText = "Sign out (" + localStorage.getItem("user_id") + "/" + localStorage.getItem("device_id") + ")...";
     }
 }
 
@@ -150,31 +125,37 @@ function fetchSavedPositions() {
                 return response.json();
             })
             .then(response => {
-                function createOpt(x, showVideo) {
+                function createButton(x, showVideo) {
                     var params = new URLSearchParams(window.location.search);
                     params.set('videoId', x.video_id);
                     params.set('time', x.position);
                     
-                    var opt = document.createElement("option");
-                    opt.value = '?' + params.toString();
-                    opt.text = showVideo ? 
+                    var button = document.createElement("button");
+                    button.addEventListener('click', function() {
+                        window.location = '?' + params.toString();
+                    });
+                    button.innerText = showVideo ? 
                         x.device_id + ": " + (x.video_title || x.video_id) + " at " + toFriendlyTimeString(x.position) : 
                         x.device_id + ": " + toFriendlyTimeString(x.position);
-                    return opt;             
+                    return button;             
                 }
 
-                document.getElementById("saved-positions-other-videos").innerHTML = "";
+                while (document.getElementById("saved-positions-other-videos").lastElementChild.tagName == "BUTTON") {
+                    document.getElementById("saved-positions-other-videos").lastElementChild.remove();   
+                }
                 document.getElementById("saved-positions-other-videos").style.display = response.other_videos.length > 0 ? "block" : "none";
                 for (var x of response.other_videos) {
-                    var opt = createOpt(x, true);
+                    var opt = createButton(x, true);
                     document.getElementById("saved-positions-other-videos").appendChild(opt);
                 }
-                document.getElementById("saved-positions-this-video").innerHTML = "";
+                while (document.getElementById("saved-positions-this-video").lastElementChild.tagName == "BUTTON") {
+                    document.getElementById("saved-positions-this-video").lastElementChild.remove();   
+                }
                 document.getElementById("saved-positions-this-video").style.display = response.this_video && response.this_video.length > 0 ? "block" : "none";
                 if (response.this_video)
                 {
                     for (var x of response.this_video) {
-                        var opt = createOpt(x, false);
+                        var opt = createButton(x, false);
                         document.getElementById("saved-positions-this-video").appendChild(opt);                    
                     }
                 }
@@ -333,7 +314,10 @@ function hideControlsShortly() {
         window.clearTimeout(overlayControlsTimeoutId);
     }
     overlayControlsTimeoutId = window.setTimeout(function () {
-        document.getElementById("player-overlay-controls").style.display = 'none';
+        // Don't hide the controls if the menu is open
+        if (document.getElementById("menu").style.display == "none") {
+            document.getElementById("player-overlay-controls").style.display = 'none';
+        }
     }, 2000);
 }
 
@@ -346,6 +330,8 @@ function onOverlayControlsClick(event) {
     // Clicking on background of the controls -> hide the controls
     if (event.target == document.getElementById("player-overlay-controls")) {
         document.getElementById("player-overlay-controls").style.display = 'none';
+        // Also close the menu if it's open, so it isn't open the next time the user brings up the controls
+        document.getElementById("menu").style.display = 'none';
         event.stopPropagation();  // Stop the click from going up to the player-overlay, which would show the controls again!
     }
 
@@ -521,8 +507,10 @@ function onSpeedSelectChange(event) {
 }
 
 // Hookup event listeners
-document.getElementById("menu").addEventListener("click", onMenuClick);
-document.getElementById("menu").addEventListener("change", onMenuChange);
+document.getElementById("menu-button").addEventListener("click", onMenuButtonClick);
+document.getElementById("change-video-button").addEventListener("click", changeVideo);
+document.getElementById("sign-in-button").addEventListener("click", signIn);
+document.getElementById("sign-out-button").addEventListener("click", signOut);
 document.getElementById("current-time-span").addEventListener("click", changeTime);
 document.getElementById("player-overlay").addEventListener("click", onOverlayClick);
 document.getElementById("player-overlay-controls").addEventListener("click", onOverlayControlsClick);

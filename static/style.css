@@ -50,8 +50,24 @@ body {
     margin-left: auto; /* Align to the right */
 }
 
-#menu {
+#menu-button {
     width: 6em;
+    font-size: xx-large;
+}
+
+#menu {
+    display: none;
+    background-color: white;
+    position: absolute;
+    right: 0px;
+    /* Some annoying CSS to deal with the case when the menu is too tall to fit on the page, so that it can be scrolled */
+    /* This is complicated because we want the top of the menu to be just below the Menu button */
+    overflow-y: auto;
+    max-height: calc(100% - 1.5em); /* In case the menu is taller than the viewport, make it scroll. Subtract 1.5em for height of the Menu button */
+}
+
+#menu button {
+    display: block;
     font-size: xx-large;
 }
 
