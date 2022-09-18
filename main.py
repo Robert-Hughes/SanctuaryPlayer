@@ -1,13 +1,3 @@
-# Note that the name of this file is important, as Google App Engine will look for a file called main.py
-# containing a WSGI-compatible object by default - https://cloud.google.com/appengine/docs/standard/python3/runtime#application_startup
-
-# Note that static files are not served from Flask, as that isn't recommended: 
-# Docs: https://flask.palletsprojects.com/en/2.1.x/quickstart/#static-files
-# https://cloud.google.com/appengine/docs/standard/python3/serving-static-files
-# See also example: https://cloud.google.com/appengine/docs/standard/python3/building-app/writing-web-service
-# Instead we configure this in the app.yaml so that Google App Engine serves them directly, without ever
-# going to our Flask server.
-
 from copyreg import pickle
 from email.headerregistry import UniqueUnstructuredHeader
 from enum import unique
@@ -20,12 +10,9 @@ app = Flask(__name__)
 
 datastore_client = datastore.Client()
 
-# Even though we don't use Flask to serve static files (including index.html), when debugging locally
-# Flash _does_ serve static files for us, normally from the static/ subfolder. However our index.html
+# Flask serves static files from the static/ subfolder. However our index.html
 # isn't in that folder (deliberately, so that it can be easily hosted from GitHub Pages, for example),
-# so we have to handle that manually here. On the production Google App Engine server, this request
-# should never reach Flask, because Google will serve the index.html itself based on the rules in our
-# app.yaml.
+# so we have to handle that manually here.
 @app.route('/')
 def serve_index():
     return send_file("index.html")

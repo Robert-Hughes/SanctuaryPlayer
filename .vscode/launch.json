@@ -5,17 +5,18 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Flask server",
+            "name": "Web server",
             "type": "python",
             "request": "launch",
             "console": "integratedTerminal",
             "justMyCode": true,
-            "module": "flask",
+            // The gunicorn server recommended and used in the Procfile doesn't work on windows,
+            // so we use an alternative called waitress.
+            "module": "waitress",
+            "args": ["--port", "8080", "main:app"],
             "env": {
-                "FLASK_APP": "main.py",
                 "GOOGLE_APPLICATION_CREDENTIALS": "youtubenospoilers-c533d4a23862.json"
             },
-            "args": ["run", "--host=0.0.0.0"]
         }
     ]
 }

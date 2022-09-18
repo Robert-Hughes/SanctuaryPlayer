@@ -1,3 +1,4 @@
-# This file is automatically detected by Google App Engine to install our python dependencies
+# This file is automatically detected by Google Cloud Build to install our python dependencies
 Flask
 google.cloud.datastore
+gunicorn
