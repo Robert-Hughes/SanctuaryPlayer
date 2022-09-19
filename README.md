@@ -34,6 +34,5 @@ TODO:
 * Try using Cloud Firestore _client_ libraries in the javascript to directly access the database, rather than having to go via the web server.
 THis means the server doesn't need to keep handling requests while watching a video, so would drastically reduce our google cloud usage
 * If we do this, then our server doesn't need to be "smart" at all, so could just use a static serving thing (nginx?) rather than a WSGI python thing?
-* Buttons to hide the blocker panel, so can see stuff behind it if the user is willing to risk it
 * Better button sizing for very small windows, like pop-up window on phone
 * Slow-mo/frame-by-frame controls

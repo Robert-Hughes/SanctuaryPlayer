@@ -217,6 +217,8 @@ function onPlayerReady() {
     // If autoplay doesn't work (e.g. on mobile), indicate to user that they have to click play (otherwise will keep saying "loading video...")
     document.getElementById("loading-status").innerText = 'Ready to play';
     document.title = getSafeTitle();
+    // The blocker box at the top hides the video title, as it may contain spoilers, so we hide it, but show a filtered version of the title instead.
+    document.getElementById("blocker-top").innerText = getSafeTitle();
 
     for (var rate of player.getAvailablePlaybackRates()) {
         var opt = document.createElement("option");
