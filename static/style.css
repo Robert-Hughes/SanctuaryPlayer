@@ -114,6 +114,10 @@ body {
 
 #player-overlay-controls-mid {
     display: flex;
+    max-width: 100%; /* For when the window is really narrow */
+     /* For when the window is really short */
+    max-height: 50%;
+    overflow: hidden;
 }
 #player-overlay-controls-mid button {
     font-size: xx-large;
