@@ -5,6 +5,8 @@ var timerId;
  // video time, which can lag behind. This is reset to null once the seek has completed.
 var seekTarget = null; 
 var lastUploadedPosition = null; // The last video position successfully uploaded to the sever (for syncing time across devices)
+// The wall clock time when the video first started playing. Used to hide spoilers (see usages).
+var firstPlayTime = null;
 
 function decodeFriendlyTimeString(timeStr) {
     // Decode strings of the format:
@@ -51,7 +53,7 @@ function onMenuButtonClick(e) {
 
         // Pause video once menu opens, as on mobile the menu covers the video so you wouldn't want it to keep playing
         if (player) {
-            player.pauseVideo();
+            pause();
         }
 
         // Update the list of saved positions each time the menu is opened, so that it is up-to-date (otherwise would need to refresh the page)
@@ -276,11 +278,16 @@ function onPlayerStateChange(event) {
     // Toggle visibility of blocker box to hide related videos bar at bottom, which can spoil future games.
     // Also hide the video title, as it may have something like "X vs Y Game 5", which tells you it goes to game 5
     if (event.data == YT.PlayerState.PAUSED) {
-        document.getElementById('blocker-bottom').style.display = 'block';
-        document.getElementById('blocker-top').style.display = 'block';
+        // Even though we show the pause blockers just before pausing the video, we also do it here just in case the video
+        // gets paused through other means (not initiated by us)
+        showPauseBlockers();
         document.getElementById('play-pause-button').style.backgroundImage = "url('static/play.png')";
     }
     else if (event.data == YT.PlayerState.PLAYING) {
+        if (!firstPlayTime) {
+            firstPlayTime = performance.now();
+        }
+
         // Start background refresh timer if this is the first time the video has been played.
         // Don't start it before now, otherwise the player.getCurrentTime() might return 0 and we don't want
         // to report that.
@@ -295,15 +302,22 @@ function onPlayerStateChange(event) {
         seekTarget = null;
 
         document.getElementById('play-pause-button').style.backgroundImage = "url('static/pause.png')";
-        // Hide after a short delay, as it takes a short time for the related videos bar to disappear
+        // Hide the blocker boxes after a short delay, as it takes a short time for the related videos bar to disappear
         window.setTimeout(function () {
             // Make sure video hasn't been paused again during the timer
             if (player.getPlayerState() == YT.PlayerState.PLAYING) {
                 document.getElementById('blocker-bottom').style.display = 'none';
-                document.getElementById('blocker-top').style.display = 'none';
                 document.getElementById('blocker-full').style.display = 'none';
             }
         }, 250);
+        // Hide the title blocker after a _longer_ delay, if the video was recently started. The player displays the title 
+        // for a few seconds after first playing it, so we need to keep our blocker for longer in this case.
+        window.setTimeout(function () {
+            // Make sure video hasn't been paused again during the timer
+            if (player.getPlayerState() == YT.PlayerState.PLAYING) {
+                document.getElementById('blocker-top').style.display = 'none';
+            }                
+        }, (performance.now() - firstPlayTime < 5000) ? 5000 : 250);        
     }
     else if (event.data == YT.PlayerState.ENDED) {
         // Hide related videos that fill the player area at the end of the video
@@ -363,11 +377,23 @@ function onOverlayControlsClick(event) {
 
 function togglePlayPause(event) {
     if (player.getPlayerState() == YT.PlayerState.PLAYING) {
-        player.pauseVideo();
+        pause();
     }
     else {
         player.playVideo();
     }
+}
+
+function pause() {
+    // Before telling the player to pause, show the blockers. This ensures that they are visible before the player shows the title etc.,
+    // so we don't catch a frame that might contain a spoiler.
+    showPauseBlockers();
+    player.pauseVideo();
+}
+
+function showPauseBlockers() {
+    document.getElementById('blocker-bottom').style.display = 'block';
+    document.getElementById('blocker-top').style.display = 'block';
 }
 
 function toggleFullscreen(event) {
@@ -387,7 +413,7 @@ function seekButtonClicked(e) {
 
 function changeTime() {
     if (player) {
-        player.pauseVideo();
+        pause();
     }
 
     // Show the prompt on a timeout, so that the pause command above has time to take effect.
