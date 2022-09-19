@@ -25,15 +25,28 @@ body {
     right: 0px;
     position: absolute;
 }
-#blocker-box {
+
+.blocker {
     width: 100%;
-    height: 50%; /* This is varied at runtime based on what we need to block */
     background: black;
     position: absolute;
-    bottom: 0px;
-    display: block; /* Initially displayed so that when the video loads but hasn't started playing, the related videos are hidden */
     color: white;
     pointer-events: none;
+    display: none;
+}
+#blocker-top {
+    top: 0px;
+    height: 50px;
+    display: block; /* Initially displayed so that when the video loads but hasn't started playing, the title is hidden */
+}
+#blocker-bottom {
+    height: 50%;
+    bottom: 0px;
+    display: block; /* Initially displayed so that when the video loads but hasn't started playing, the related videos are hidden */
+}
+#blocker-full {
+    height: 100%;
+    bottom: 0px;
 }
 
 #player-overlay-controls {

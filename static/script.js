@@ -274,10 +274,10 @@ function getSafeTitle() {
 function onPlayerStateChange(event) {
     console.log("onPlayerStateChange: " + event.data);
     // Toggle visibility of blocker box to hide related videos bar at bottom, which can spoil future games.
+    // Also hide the video title, as it may have something like "X vs Y Game 5", which tells you it goes to game 5
     if (event.data == YT.PlayerState.PAUSED) {
-        document.getElementById('blocker-box').style.display = 'block';
-        document.getElementById('blocker-box').style.height = '50%';
-        document.getElementById('blocker-box').innerText = 'Video paused. Hiding related videos.';
+        document.getElementById('blocker-bottom').style.display = 'block';
+        document.getElementById('blocker-top').style.display = 'block';
         document.getElementById('play-pause-button').style.backgroundImage = "url('static/play.png')";
     }
     else if (event.data == YT.PlayerState.PLAYING) {
@@ -299,15 +299,15 @@ function onPlayerStateChange(event) {
         window.setTimeout(function () {
             // Make sure video hasn't been paused again during the timer
             if (player.getPlayerState() == YT.PlayerState.PLAYING) {
-                document.getElementById('blocker-box').style.display = 'none';
+                document.getElementById('blocker-bottom').style.display = 'none';
+                document.getElementById('blocker-top').style.display = 'none';
+                document.getElementById('blocker-full').style.display = 'none';
             }
         }, 250);
     }
     else if (event.data == YT.PlayerState.ENDED) {
         // Hide related videos that fill the player area at the end of the video
-        document.getElementById('blocker-box').style.display = 'block';
-        document.getElementById('blocker-box').style.height = '100%';
-        document.getElementById('blocker-box').innerText = 'End of video. Hiding related videos.';
+        document.getElementById('blocker-full').style.display = 'block';
         document.getElementById('play-pause-button').style.backgroundImage = "url('static/play.png')";
     }
 
