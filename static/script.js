@@ -214,7 +214,7 @@ function onPlayerReady() {
 
     // If autoplay doesn't work (e.g. on mobile), indicate to user that they have to click play (otherwise will keep saying "loading video...")
     document.getElementById("loading-status").innerText = 'Ready to play';
-    document.title = player.getVideoData().title;
+    document.title = getSafeTitle();
 
     for (var rate of player.getAvailablePlaybackRates()) {
         var opt = document.createElement("option");
@@ -260,6 +260,15 @@ function seekRelative(offset) {
     var base = getEffectiveCurrentTime();
     var target = base + offset;
     seekTo(target);
+}
+
+// Gets the video title, filtering out potential spoilers
+function getSafeTitle() {
+    var title = player.getVideoData().title;
+    // The video title may have something like "X vs Y Game 5", which tells you it goes to game 5, so hide this
+       var r = /Game \d+/ig;
+    title = title.replace(r, "Game _");
+    return title;
 }
 
 function onPlayerStateChange(event) {
@@ -427,7 +436,7 @@ function onTimer() {
                     'user_id': localStorage.getItem("user_id"),
                     'device_id': localStorage.getItem("device_id"),
                     'video_id': player.getVideoData().video_id,
-                    'video_title': player.getVideoData().title,
+                    'video_title': getSafeTitle(),
                     'position': Math.round(effectiveCurrentTime), // Server saves whole numbers only
                 });
                 fetch('save-position?' + params.toString(), { method: 'POST'})
