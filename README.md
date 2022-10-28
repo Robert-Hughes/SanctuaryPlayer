@@ -33,3 +33,5 @@ TODO:
 THis means the server doesn't need to keep handling requests while watching a video, so would drastically reduce our google cloud usage
 * If we do this, then our server doesn't need to be "smart" at all, so could just use a static serving thing (nginx?) rather than a WSGI python thing?
 * Slow-mo/frame-by-frame controls
+* When video "reloads" while playing (e.g. due to lost connection?), the title appears briefly (not hidden by our blocker box)
+* Option to hide the blocker boxes if the user wants to (per blocker box, or all of them?)

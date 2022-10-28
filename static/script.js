@@ -269,17 +269,39 @@ function seekRelative(offset) {
 // Gets the video title, filtering out potential spoilers
 function getSafeTitle() {
     var title = player.getVideoData().title;
+    
     // The video title may have something like "X vs Y Game 5", which tells you it goes to game 5, so hide this
-       var r = /Game \d+/ig;
+    var r = /Game \d+/ig;
     title = title.replace(r, "Game _");
+
+    // Team names in title (e.g. EG vs LLL) can ruin the teams playing in the last game of the day which could be a spoiler
+    // if it's tiebreaker that may or may not happen depending on other games. (if the title is updated throughout live video's
+    // original broadcast, then the title we see afterwards is the final title).
+    // Examples:
+    // GAM vs. DRX | Worlds Game 3
+    // GAM vs. DRX
+    // Team 1 vs. Team 2
+    // Team OGOBAG vs tramula big face | Champions match
+    // Today | A A vs B B | Now
+    // Nothing to see here!
+    // This is a game between A vs B    
+    var r = /\b[^|\n]+vs[^|\n]+\b/ig;
+    title = title.replace(r, "_ vs _");
+
     return title;
 }
 
 function onPlayerStateChange(event) {
     console.log("onPlayerStateChange: " + event.data);
+    if (event.data == YT.PlayerState.UNSTARTED) {
+        // Speculative (untested) fix to make the title blocker box stay on screen for longer
+        // when video "reloads" while playing (e.g. due to lost connection?), the YouTube title appears briefly (not hidden by our blocker box),
+        // so could be a spoiler.
+        firstPlayTime = null;
+    }
     // Toggle visibility of blocker box to hide related videos bar at bottom, which can spoil future games.
     // Also hide the video title, as it may have something like "X vs Y Game 5", which tells you it goes to game 5
-    if (event.data == YT.PlayerState.PAUSED) {
+    else if (event.data == YT.PlayerState.PAUSED) {
         // Even though we show the pause blockers just before pausing the video, we also do it here just in case the video
         // gets paused through other means (not initiated by us)
         showPauseBlockers();
