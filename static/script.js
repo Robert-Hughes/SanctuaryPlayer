@@ -3,7 +3,7 @@ var overlayControlsTimeoutId;
 var timerId;
  // During seek operations, we store the target time so that repeated seeks can offset relative to this rather than the current
  // video time, which can lag behind. This is reset to null once the seek has completed.
-var seekTarget = null; 
+var seekTarget = null;
 var lastUploadedPosition = null; // The last video position successfully uploaded to the sever (for syncing time across devices)
 // The wall clock time when the video first started playing. Used to hide spoilers (see usages).
 var firstPlayTime = null;
@@ -48,7 +48,7 @@ function onMenuButtonClick(e) {
         // Menu already open - close it
         document.getElementById("menu").style.display = "none";
     }
-    else { 
+    else {
         // Menu not already open - open it
 
         // Pause video once menu opens, as on mobile the menu covers the video so you wouldn't want it to keep playing
@@ -83,7 +83,7 @@ function signIn() {
         localStorage.getItem("user_id") ?? "");
     if (userId) {
         // User entered a non-empty string - sign in
-        var deviceId = prompt("Please enter a Device ID. This can be anything you want. This is used to distinguish this device from any others you sign in on.", 
+        var deviceId = prompt("Please enter a Device ID. This can be anything you want. This is used to distinguish this device from any others you sign in on.",
                               localStorage.getItem("device_id") ?? "Device 1");
         if (deviceId)
         {
@@ -97,7 +97,7 @@ function signIn() {
             fetchSavedPositions();
 
             // This will make the position saved again immediately, even if we just saved it with a different account/device
-            lastUploadedPosition = null;            
+            lastUploadedPosition = null;
         }
     }
 }
@@ -125,7 +125,7 @@ function fetchSavedPositions() {
         if (urlParams.has('videoId')) {
             params.append("current_video_id", urlParams.get("videoId"));
         }
-    
+
         document.getElementById("saved-positions-other-videos-loading").style.display = "inline-block";
         document.getElementById("saved-positions-this-video-loading").style.display = "inline-block";
         fetch("get-saved-positions?" + params.toString())
@@ -140,19 +140,19 @@ function fetchSavedPositions() {
                     var params = new URLSearchParams(window.location.search);
                     params.set('videoId', x.video_id);
                     params.set('time', x.position);
-                    
+
                     var button = document.createElement("button");
                     button.addEventListener('click', function() {
                         window.location = '?' + params.toString();
                     });
-                    button.innerText = showVideo ? 
-                        x.device_id + ": " + (x.video_title || x.video_id) + " at " + toFriendlyTimeStringColons(x.position) : 
+                    button.innerText = showVideo ?
+                        x.device_id + ": " + (x.video_title || x.video_id) + " at " + toFriendlyTimeStringColons(x.position) :
                         x.device_id + ": " + toFriendlyTimeStringColons(x.position);
-                    return button;             
+                    return button;
                 }
 
                 while (document.getElementById("saved-positions-other-videos").lastElementChild?.tagName == "BUTTON") {
-                    document.getElementById("saved-positions-other-videos").lastElementChild.remove();   
+                    document.getElementById("saved-positions-other-videos").lastElementChild.remove();
                 }
                 document.getElementById("saved-positions-other-videos-header").style.display = response.other_videos.length > 0 ? "block" : "none";
                 for (var x of response.other_videos) {
@@ -160,14 +160,14 @@ function fetchSavedPositions() {
                     document.getElementById("saved-positions-other-videos").appendChild(opt);
                 }
                 while (document.getElementById("saved-positions-this-video").lastElementChild?.tagName == "BUTTON") {
-                    document.getElementById("saved-positions-this-video").lastElementChild.remove();   
+                    document.getElementById("saved-positions-this-video").lastElementChild.remove();
                 }
                 document.getElementById("saved-positions-this-video-header").style.display = response.this_video && response.this_video.length > 0 ? "block" : "none";
                 if (response.this_video)
                 {
                     for (var x of response.this_video) {
                         var opt = createButton(x, false);
-                        document.getElementById("saved-positions-this-video").appendChild(opt);                    
+                        document.getElementById("saved-positions-this-video").appendChild(opt);
                     }
                 }
             })
@@ -176,7 +176,7 @@ function fetchSavedPositions() {
             })
             .finally(() => {
                 document.getElementById("saved-positions-other-videos-loading").style.display = "none";
-                document.getElementById("saved-positions-this-video-loading").style.display = "none";        
+                document.getElementById("saved-positions-this-video-loading").style.display = "none";
             });
     }
 }
@@ -269,7 +269,7 @@ function seekRelative(offset) {
 // Gets the video title, filtering out potential spoilers
 function getSafeTitle() {
     var title = player.getVideoData().title;
-    
+
     // The video title may have something like "X vs Y Game 5", which tells you it goes to game 5, so hide this
     var r = /Game \d+/ig;
     title = title.replace(r, "Game _");
@@ -284,7 +284,7 @@ function getSafeTitle() {
     // Team OGOBAG vs tramula big face | Champions match
     // Today | A A vs B B | Now
     // Nothing to see here!
-    // This is a game between A vs B    
+    // This is a game between A vs B
     var r = /\b[^|\n]+vs[^|\n]+\b/ig;
     title = title.replace(r, "_ vs _");
 
@@ -309,6 +309,15 @@ function onPlayerStateChange(event) {
     }
     else if (event.data == YT.PlayerState.PLAYING) {
         if (!firstPlayTime) {
+            // There appears to be a bug when a specific start time is requested, where the player will sometimes jump to a different time
+            // in the video when first playing. I think this might be a 'feature' where the player remembers where you were in the video
+            // and tries to restore it, but it gets in our way. This is a pretty hacky check for this bug which forces a re-seek.
+            if (isSeeking() && Math.abs(player.getCurrentTime() - seekTarget) > 10)
+            {
+                console.log("Re-seeking to start time to workaround bug (player time: " + player.getCurrentTime() + ", seekTarget: " + seekTarget);
+                player.seekTo(seekTarget);
+            }
+
             firstPlayTime = performance.now();
         }
 
@@ -316,7 +325,7 @@ function onPlayerStateChange(event) {
         // Don't start it before now, otherwise the player.getCurrentTime() might return 0 and we don't want
         // to report that.
         if (timerId == null) {
-            timerId = window.setInterval(onTimer, 500);           
+            timerId = window.setInterval(onTimer, 500);
             document.getElementById("loading-status").style.display = 'none';
         }
 
@@ -334,14 +343,14 @@ function onPlayerStateChange(event) {
                 document.getElementById('blocker-full').style.display = 'none';
             }
         }, 250);
-        // Hide the title blocker after a _longer_ delay, if the video was recently started. The player displays the title 
+        // Hide the title blocker after a _longer_ delay, if the video was recently started. The player displays the title
         // for a few seconds after first playing it, so we need to keep our blocker for longer in this case.
         window.setTimeout(function () {
             // Make sure video hasn't been paused again during the timer
             if (player.getPlayerState() == YT.PlayerState.PLAYING) {
                 document.getElementById('blocker-top').style.display = 'none';
-            }                
-        }, (performance.now() - firstPlayTime < 5000) ? 5000 : 250);        
+            }
+        }, (performance.now() - firstPlayTime < 5000) ? 5000 : 250);
     }
     else if (event.data == YT.PlayerState.ENDED) {
         // Hide related videos that fill the player area at the end of the video
@@ -511,13 +520,12 @@ function onYouTubeIframeAPIReady() {
     // Load video immediately if provided in URL
     var params = new URLSearchParams(window.location.search);
     if (params.has('videoId')) {
-        // Default to a very short time into the video rather than 0, because for live stream videos, 0 seems to be interpreted as starting from
-        // live, which could be a spoiler.
-        var startTime = 2;  
+        var startTime = 0;
         if (params.has('time')) {
             startTime = decodeFriendlyTimeString(params.get('time'));
         }
         // There seem to be issues with requesting a small start time != 0, especially for live streams. So put a lower limit on it.
+        // Also for live stream videos, 0 seems to be interpreted as starting from live, which could be a spoiler.
         if (startTime < 10) {
              startTime = 10;
         }
@@ -532,7 +540,7 @@ function onYouTubeIframeAPIReady() {
             playerVars: {
                 'controls': 0,
                 // Note that if 'start' is not set (or set to something invalid), then YouTube has some kind of memory where it tries
-                // to start where you last were. We don't want this, as we handle it ourselves, so make sure to always set this, even if it's zero (see above)
+                // to start where you last were. We don't want this, as we handle it ourselves, so make sure to always set this, even if no start time was provided (so we default to the beginning)
                 'start': startTime,
                 // Disable fullscreen - we'll handle this ourselves so that we're able to display our own stuff
                 // over the top of the fullscreen video, and be aware when the video toggles fullscreen (which
@@ -569,7 +577,7 @@ function onKeyDown(event) {
             break;
         case 'Space':
             togglePlayPause();
-            event.preventDefault();  
+            event.preventDefault();
             break;
     }
 }

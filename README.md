@@ -35,3 +35,4 @@ THis means the server doesn't need to keep handling requests while watching a vi
 * Slow-mo/frame-by-frame controls
 * When video "reloads" while playing (e.g. due to lost connection?), the title appears briefly (not hidden by our blocker box)
 * Option to hide the blocker boxes if the user wants to (per blocker box, or all of them?)
+* The "loading" spinner on the menu can make the horizontal scroll bar appear
