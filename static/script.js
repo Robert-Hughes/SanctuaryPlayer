@@ -369,7 +369,7 @@ function onPlaybackQualityChange(event)
 
 function onPlaybackRateChange(event)
 {
-    console.log("onPlaybackRateChange" + event.data);
+    console.log("onPlaybackRateChange: " + event.data);
     document.getElementById("speed-select").value = player.getPlaybackRate();
 }
 
@@ -577,6 +577,15 @@ function onKeyDown(event) {
             break;
         case 'Space':
             togglePlayPause();
+            event.preventDefault();
+            break;
+        case 'ArrowUp':
+            var currentIdx = player.getAvailablePlaybackRates().indexOf(player.getPlaybackRate());
+            player.setPlaybackRate(player.getAvailablePlaybackRates()[currentIdx + 1]);
+            break;
+        case 'ArrowDown':
+            var currentIdx = player.getAvailablePlaybackRates().indexOf(player.getPlaybackRate());
+            player.setPlaybackRate(player.getAvailablePlaybackRates()[currentIdx - 1]);
             event.preventDefault();
             break;
     }
