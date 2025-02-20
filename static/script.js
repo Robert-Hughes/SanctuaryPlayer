@@ -285,7 +285,9 @@ function getSafeTitle() {
     // Today | A A vs B B | Now
     // Nothing to see here!
     // This is a game between A vs B
-    var r = /\b[^|\n]+vs[^|\n]+\b/ig;
+    // BAG v TAG
+    // Not gonna match chavs is it
+    var r = /\b[^|\n]+\bvs?\b[^|\n]+\b/ig;
     title = title.replace(r, "_ vs _");
 
     return title;
@@ -477,7 +479,6 @@ function onTimer() {
         // This doesn't behave quite like we want with the Chrome global history though (it has one entry per timestamp!).
         // See this firefox bug report for some discussion: https://bugzilla.mozilla.org/show_bug.cgi?id=753264
         var params = new URLSearchParams(window.location.search);
-        params.set('videoId', player.getVideoData().video_id);
         params.set('time', toFriendlyTimeString(effectiveCurrentTime));
         newState = params.toString();
         // Only call the API if the position has changed since last time. This avoids unecessary calls, for example when the video is paused
