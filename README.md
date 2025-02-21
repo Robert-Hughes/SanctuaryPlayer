@@ -4,17 +4,19 @@ For example it doesn't show the length of the video being watched and it doesn't
 It consists of a single static HTML page along with javascript and css, and so can be run locally from the filesystem,
 from a simple web server, or from GitHub's hosting feature if the code is pushed there: https://robert-hughes.github.io/YouTubeNoSpoilers/
 
-The index.html is in the root so that when served from GitHub Pages, the URL is shorter (can be accessed with just a /). 
-The other static files (.js, .css, images) are in a 'static' subfolder, so that it can be 
+The index.html is in the root so that when served from GitHub Pages, the URL is shorter (can be accessed with just a /).
+The other static files (.js, .css, images) are in a 'static' subfolder, so that it can be
 easily served as static content using Flask. Even though serving static files from Flask isn't recommended, the recommended
 approach seems to be get a higher level web server (e.g. nginx) to do that, which might be overly
 complicated for our simple app.
 https://flask.palletsprojects.com/en/2.1.x/quickstart/#static-files
 
-There is an optional web server component which can save the user's progress through videos, so that this can be 
+There is an optional web server component which can save the user's progress through videos, so that this can be
 synced between different devices. Currently this is set up to use Google Cloud Run. We used to use Google App Engine,
 but migrated as Cloud Run seems to result in lower usage of resources - see
 https://dev.to/pcraig3/cloud-run-vs-app-engine-a-head-to-head-comparison-using-facts-and-science-1225.
+
+This is currently hosted on https://youtubenospoilers.robdh.uk/
 
 Google Cloud Run deploy command:
 
