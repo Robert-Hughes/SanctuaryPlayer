@@ -182,32 +182,60 @@ function fetchSavedPositions() {
 }
 
 function changeVideo() {
-    var url = prompt("Please enter YouTube video URL:");
-    if (!url) {
+    var userValue = prompt("Please enter YouTube video URL or video ID:");
+    if (!userValue) {
         return;
     }
 
-    // Regex to extract video ID and time. Needs to work for:
+    // Extract video ID and time from URL/string. Needs to work for:
+    //   3fgD9k8Hkbc
     //   https://youtu.be/3fgD9k8Hkbc
     //   https://youtu.be/3fgD9k8Hkbc?t=3839
     //   https://www.youtube.com/watch?v=3fgD9k8Hkbc
     //   https://www.youtube.com/watch?v=3fgD9k8Hkbc&t=54m39s
     //   https://www.youtube.com/watch?v=3fgD9k8Hkbc&t=54m39s&bob=someting
-    var match = url.match(/(?:watch\?v=|youtu\.be\/)(.*?)(?:&|\?|$)(?:t=(.*?))?(?:&|$)/);
-    var params = new URLSearchParams(window.location.search);
-    if (match && match[1]) {
-        params.set('videoId', match[1]);
-        if (match[2]) {
-            params.set('time', match[2]);
-        } else {
-            params.delete('time'); // Important to overwrite any existing time value
+    //   https://youtube.com/watch?v=jDqFz0ZzoZo&si=3b7duJGqF-SKQqKI
+    videoIdRegex = /\b[A-Za-z0-9-_]{11}\b/
+    var videoId = null;
+    var time = null;
+
+    // First try parsing it as a URL
+    url = URL.parse(userValue);
+    if (url) {
+        // The video ID could be the last part of the path, or it could be a query string paramater
+        videoId = url.searchParams.get("v");
+        if (videoId == null) {
+            var lastPart = url.pathname.split("/").pop();
+            var match = lastPart.match(videoIdRegex);
+            if (match) {
+                videoId = match[0];
+            }
         }
+
+        // time is always a query string parameter
+        time = url.searchParams.get("t");
+    } else {
+        // Fallback to a simpler regex search, just to get the video ID (no time)
+        var match = userValue.match(videoIdRegex);
+        if (match) {
+            videoId = match[0];
+        }
+        time = null;
     }
-    else {
-        alert("Invalid URL")
+
+    if (videoId == null) {
+        alert("Unknown URL/video ID format")
         return;
     }
 
+    // Modify the current page's URL with the new video/time
+    var params = new URLSearchParams(window.location.search);
+    params.set('videoId', videoId);
+    if (time != null) {
+        params.set('time', time);
+    } else {
+        params.delete('time'); // Important to overwrite any existing time value, so it doesn't start halfway through!
+    }
     window.location = '?' + params.toString();
 }
 
