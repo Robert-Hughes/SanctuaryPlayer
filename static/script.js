@@ -214,21 +214,28 @@ function changeVideo() {
 function onPlayerReady() {
     console.log("onPlayerReady");
 
-    // If autoplay doesn't work (e.g. on mobile), indicate to user that they have to click play (otherwise will keep saying "loading video...")
-    document.getElementById("loading-status").innerText = 'Ready to play';
-    document.title = getSafeTitle();
-    // The blocker box at the top hides the video title, as it may contain spoilers, so we hide it, but show a filtered version of the title instead.
-    document.getElementById("blocker-top").innerText = getSafeTitle();
+    // Even though this is the 'on ready' callback, there might have been an error loading the video, for example
+    // if the videoId was invalid. Check if the video metadata loaded properly, which seems to be a good indication for a
+    // successful load
+    if (player.getVideoData().video_id) {
+        // If autoplay doesn't work (e.g. on mobile), indicate to user that they have to click play (otherwise will keep saying "loading video...")
+        document.getElementById("loading-status").innerText = 'Ready to play';
+        document.title = getSafeTitle();
+        // The blocker box at the top hides the video title, as it may contain spoilers, so we hide it, but show a filtered version of the title instead.
+        document.getElementById("blocker-top").innerText = getSafeTitle();
 
-    for (var rate of player.getAvailablePlaybackRates()) {
-        var opt = document.createElement("option");
-        opt.value = rate;
-        opt.text = rate + "x";
-        document.getElementById("speed-select").options.add(opt);
+        for (var rate of player.getAvailablePlaybackRates()) {
+            var opt = document.createElement("option");
+            opt.value = rate;
+            opt.text = rate + "x";
+            document.getElementById("speed-select").options.add(opt);
+        }
+        document.getElementById("speed-select").value = player.getPlaybackRate();
+
+        onTimer();
+    } else {
+        document.getElementById("loading-status").innerText = 'Error!';
     }
-    document.getElementById("speed-select").value = player.getPlaybackRate();
-
-    onTimer();
 }
 
 // Note we use this in preference to checking the PlayerState, because when the video is paused and we seek, the player
