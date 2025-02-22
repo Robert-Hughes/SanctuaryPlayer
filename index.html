@@ -5,18 +5,19 @@
     <link rel="shortcut icon" href="static/icon.png" />
     <link rel="stylesheet" href="static/style.css">
     <!-- Attempt to fix issue where the page sometimes loads already zoomed in on mobile -->
-    <meta name="viewport" content="width=device-width, initial-scale=1.0"> 
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
 </head>
 
 <body>
     <div id="root">
+        <!-- The YouTube API will replace this div with its iframe once we load a video -->
         <div id="player"></div>
 
         <div id="blocker-top" class="blocker">Hiding video title</div>
         <div id="blocker-bottom" class="blocker">Hiding related videos.</div>
         <div id="blocker-full" class="blocker">End of video. Hiding related videos.</div>
 
-        <div id="loading-status">Please select a video</div>
+        <div id="loading-status">Please select a video from the Menu ➔</div>
 
         <!-- Use an overlay to display things and intercept mouse clicks on the player -->
         <div id="player-overlay">
@@ -36,7 +37,7 @@
                     </div>
                     <!--  <span id="quality-text">Quality: </span>-->
                 </div>
-                <div id="player-overlay-controls-mid"> 
+                <div id="player-overlay-controls-mid">
                     <button id="play-pause-button"></button>
                     <button id="fullscreen-button"></button>
                 </div>

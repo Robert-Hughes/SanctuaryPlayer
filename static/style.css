@@ -14,8 +14,13 @@ body {
 }
 
 #loading-status {
-    top: 0px;
+    /* As well as being displayed when no video is loaded yet, this needs to display properly on top of the blockers when
+       there is an error loading a video. So it needs absolute position etc. so it's on top */
     position: absolute;
+    top: 0px;
+    left: 0px;
+    right: 0px;
+    text-align: center;
     background:white;
 }
 #player-overlay {
@@ -37,12 +42,10 @@ body {
 #blocker-top {
     top: 0px;
     height: 50px;
-    display: block; /* Initially displayed so that when the video loads but hasn't started playing, the title is hidden */
 }
 #blocker-bottom {
     height: 50%;
     bottom: 0px;
-    display: block; /* Initially displayed so that when the video loads but hasn't started playing, the related videos are hidden */
 }
 #blocker-full {
     height: 100%;
@@ -113,7 +116,7 @@ body {
 }
 
 #player-overlay-controls-mid {
-    display: flex;
+    display: none; /* Initially hidden until a video is loaded */
     max-width: 100%; /* For when the window is really narrow */
      /* For when the window is really short */
     max-height: 50%;
@@ -125,18 +128,18 @@ body {
     height: 5em;
 }
 #play-pause-button {
-    background-image: url('play.png'); 
-    background-size: cover; 
+    background-image: url('play.png');
+    background-size: cover;
     background-color: white;
 }
 #fullscreen-button {
-    background-image: url('fullscreen.png'); 
-    background-size: cover; 
+    background-image: url('fullscreen.png');
+    background-size: cover;
     background-color: white;
 }
 
 #player-overlay-controls-bot {
-    display: flex;
+    display: none; /* Initially hidden until a video is loaded */
     align-items: flex-end;
     justify-content: center; /* Only makes a difference once wrapped */
     width: 100%; /* Otherwise it can become wider than the parent and the shrinking properties on the children don't work as we want */

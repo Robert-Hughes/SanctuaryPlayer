@@ -44,7 +44,7 @@ function toFriendlyTimeStringColons(seconds) {
 }
 
 function onMenuButtonClick(e) {
-    if (document.getElementById("menu").style.display = document.getElementById("menu").style.display == "block") {
+    if (window.getComputedStyle(document.getElementById("menu")).display == "block") {
         // Menu already open - close it
         document.getElementById("menu").style.display = "none";
     }
@@ -246,11 +246,14 @@ function onPlayerReady() {
     // if the videoId was invalid. Check if the video metadata loaded properly, which seems to be a good indication for a
     // successful load
     if (player.getVideoData().video_id) {
-        // If autoplay doesn't work (e.g. on mobile), indicate to user that they have to click play (otherwise will keep saying "loading video...")
-        document.getElementById("loading-status").innerText = 'Ready to play';
+        document.getElementById("loading-status").style.display = "none";
         document.title = getSafeTitle();
         // The blocker box at the top hides the video title, as it may contain spoilers, so we hide it, but show a filtered version of the title instead.
         document.getElementById("blocker-top").innerText = getSafeTitle();
+
+        // Show the video controls, now that they will work
+        document.getElementById("player-overlay-controls-mid").style.display = 'flex';
+        document.getElementById("player-overlay-controls-bot").style.display = 'flex';
 
         for (var rate of player.getAvailablePlaybackRates()) {
             var opt = document.createElement("option");
@@ -421,19 +424,30 @@ function hideControlsShortly() {
     }
     overlayControlsTimeoutId = window.setTimeout(function () {
         // Don't hide the controls if the menu is open
-        if (document.getElementById("menu").style.display == "none") {
+        if (window.getComputedStyle(document.getElementById("menu")).display == "none") {
             document.getElementById("player-overlay-controls").style.display = 'none';
         }
     }, 2000);
 }
 
 function onOverlayClick(event) {
+    // Don't do anything until the video has actually loaded though, as the Menu button needs to be easy to find
+    if (!player || !player.getVideoData().video_id) {
+        return;
+    }
+
+    // Clicking anywhere on the video (which has our overlay on top) -> show the controls
     document.getElementById("player-overlay-controls").style.display = 'flex';
     hideControlsShortly();
 }
 
 function onOverlayControlsClick(event) {
-    // Clicking on background of the controls -> hide the controls
+    // Don't do anything until the video has actually loaded though, as the Menu button needs to be easy to find
+    if (!player || !player.getVideoData().video_id) {
+        return;
+    }
+
+    // Clicking on background of the controls div (but not on any individual control) -> hide the controls.
     if (event.target == document.getElementById("player-overlay-controls")) {
         document.getElementById("player-overlay-controls").style.display = 'none';
         // Also close the menu if it's open, so it isn't open the next time the user brings up the controls
@@ -593,6 +607,8 @@ function onYouTubeIframeAPIReady() {
                 'onError': onError,
             }
         });
+
+        showPauseBlockers(); // Display blockers before the video loads so that when the video loads but hasn't started playing, the title and related videos are hidden
     }
 }
 
