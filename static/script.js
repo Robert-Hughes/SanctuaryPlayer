@@ -1,5 +1,5 @@
 var player;
-var overlayControlsTimeoutId;
+var doSomethingAfterDelayTimerIds = new Map();
 var timerId;
  // During seek operations, we store the target time so that repeated seeks can offset relative to this rather than the current
  // video time, which can lag behind. This is reset to null once the seek has completed.
@@ -7,6 +7,13 @@ var seekTarget = null;
 var lastUploadedPosition = null; // The last video position successfully uploaded to the sever (for syncing time across devices)
 // The wall clock time when the video first started playing. Used to hide spoilers (see usages).
 var firstPlayTime = null;
+
+var videoPlatform = null; // 'twitch' or 'youtube'
+var isTwitch = false;
+var isYoutube = false;
+
+var youtubeVideoIdRegex = /\b[A-Za-z0-9-_]{11}\b/; // 11 alphanumeric chars (plus some special chars)
+var twitchVideoIdRegex = /\b\d{10}\b/; // 10 numbers
 
 function decodeFriendlyTimeString(timeStr) {
     // Decode strings of the format:
@@ -61,9 +68,70 @@ function onMenuButtonClick(e) {
 
         document.getElementById("menu").style.display = "block";
     }
-
-    e.stopPropagation(); // Otherwise it goes through to the onOverlayClick/onOverlayControlsClick and resets the timer!
 }
+
+// Although we can also get the video ID from the URL, this might give us a more 'canonical' version
+function getVideoIdFromPlayer() {
+    if (isYoutube) {
+        return player.getVideoData().video_id;
+    } else if (isTwitch) {
+        return player.getVideo();
+    }
+}
+
+function isVideoLoadedSuccessfully() {
+    return !!getVideoIdFromPlayer();
+}
+
+function getAvailablePlaybackRates() {
+    if (isYoutube) {
+        return player.getAvailablePlaybackRates();
+    } else {
+        return [ "1" ]; //TODO: Twitch support
+    }
+}
+
+function getCurrentPlaybackRate() {
+    if (isYoutube) {
+        return player.getPlaybackRate();
+    } else {
+        return "1"; //TODO: Twitch support
+    }
+}
+
+function isPlaying() {
+    if (!isVideoLoadedSuccessfully()) {
+        return false;
+    }
+    if (isYoutube) {
+        return player.getPlayerState() == YT.PlayerState.PLAYING;
+    } else if (isTwitch) {
+        return player.getPlayerState().playback == "Playing";playback != "Ready";
+    }
+}
+
+function isPaused() {
+    if (!isVideoLoadedSuccessfully()) {
+        return false;
+    }
+    if (isYoutube) {
+        return player.getPlayerState() == YT.PlayerState.PAUSED;
+    } else if (isTwitch) {
+        return player.isPaused();
+    }
+}
+
+function isEnded() {
+    if (!isVideoLoadedSuccessfully()) {
+        return false;
+    }
+    if (isYoutube) {
+        return player.getPlayerState() == YT.PlayerState.ENDED;
+    } else if (isTwitch) {
+        return player.getEnded();
+    }
+}
+
 
 function isSignedIn() {
     return localStorage.getItem("user_id") != null && localStorage.getItem("user_id") != "";
@@ -195,7 +263,6 @@ function changeVideo() {
     //   https://www.youtube.com/watch?v=3fgD9k8Hkbc&t=54m39s
     //   https://www.youtube.com/watch?v=3fgD9k8Hkbc&t=54m39s&bob=someting
     //   https://youtube.com/watch?v=jDqFz0ZzoZo&si=3b7duJGqF-SKQqKI
-    videoIdRegex = /\b[A-Za-z0-9-_]{11}\b/
     var videoId = null;
     var time = null;
 
@@ -206,7 +273,7 @@ function changeVideo() {
         videoId = url.searchParams.get("v");
         if (videoId == null) {
             var lastPart = url.pathname.split("/").pop();
-            var match = lastPart.match(videoIdRegex);
+            var match = lastPart.match(youtubeVideoIdRegex);
             if (match) {
                 videoId = match[0];
             }
@@ -216,7 +283,7 @@ function changeVideo() {
         time = url.searchParams.get("t");
     } else {
         // Fallback to a simpler regex search, just to get the video ID (no time)
-        var match = userValue.match(videoIdRegex);
+        var match = userValue.match(youtubeVideoIdRegex);
         if (match) {
             videoId = match[0];
         }
@@ -245,7 +312,7 @@ function onPlayerReady() {
     // Even though this is the 'on ready' callback, there might have been an error loading the video, for example
     // if the videoId was invalid. Check if the video metadata loaded properly, which seems to be a good indication for a
     // successful load
-    if (player.getVideoData().video_id) {
+    if (isVideoLoadedSuccessfully()) {
         document.getElementById("loading-status").style.display = "none";
         document.title = getSafeTitle();
         // The blocker box at the top hides the video title, as it may contain spoilers, so we hide it, but show a filtered version of the title instead.
@@ -255,15 +322,21 @@ function onPlayerReady() {
         document.getElementById("player-overlay-controls-mid").style.display = 'flex';
         document.getElementById("player-overlay-controls-bot").style.display = 'flex';
 
-        for (var rate of player.getAvailablePlaybackRates()) {
+        for (var rate of getAvailablePlaybackRates()) {
             var opt = document.createElement("option");
             opt.value = rate;
             opt.text = rate + "x";
             document.getElementById("speed-select").options.add(opt);
         }
-        document.getElementById("speed-select").value = player.getPlaybackRate();
+        document.getElementById("speed-select").value = getCurrentPlaybackRate();
 
+        // Update UI immediately, rather than waiting for the first tick
         onTimer();
+
+        // Start background refresh timer
+        // Note we don't start it before now, otherwise the player.getCurrentTime() might return 0 and we don't want
+        // to report that.
+        timerId = window.setInterval(onTimer, 500);
     } else {
         document.getElementById("loading-status").innerText = 'Error!';
     }
@@ -277,7 +350,7 @@ function isSeeking() {
 }
 
 function getEffectiveCurrentTime() {
-    return isSeeking() ? seekTarget : player.getCurrentTime();
+    return isSeeking() ? seekTarget : player.getCurrentTime(); // Same API for both YouTube and Twitch!
 }
 
 // Seeks to the given time, updating our own seekTarget variable too
@@ -286,14 +359,18 @@ function seekTo(target) {
     if (target < 0) {
         target = 0;
     }
-    if (player.getDuration() && target > player.getDuration()) { // getDuration may return 0 if not available, according to docs
+    if (player.getDuration() && target > player.getDuration()) { // getDuration may return 0 if not available, according to docs. It's the same API for Twitch and YouTube.
         target = player.getDuration();
     }
 
     console.log("Seeking to " + target);
 
     seekTarget = target;
-    player.seekTo(target);
+    if (isYoutube) {
+        player.seekTo(target);
+    } else if (isTwitch) {
+        player.seek(target);
+    }
 
     onTimer(); // Update UI
 }
@@ -306,7 +383,12 @@ function seekRelative(offset) {
 
 // Gets the video title, filtering out potential spoilers
 function getSafeTitle() {
-    var title = player.getVideoData().title;
+    var title = null;
+    if (isYoutube) {
+        title = player.getVideoData().title;
+    } else if (isTwitch) {
+        title = player && player.getVideo(); //TODO: find a way to get the title, just using ID for now
+    }
 
     // The video title may have something like "X vs Y Game 5", which tells you it goes to game 5, so hide this
     var r = /Game \d+/ig;
@@ -331,9 +413,16 @@ function getSafeTitle() {
     return title;
 }
 
-function onPlayerStateChange(event) {
-    console.log("onPlayerStateChange: " + event.data);
-    if (event.data == YT.PlayerState.UNSTARTED) {
+function onPlayerStateChange() {
+    // Note that during this function, querying the player's state will result in the new state, not the old state
+    // (This happens natively for the YouTube API, and we simulate this for the Twitch API by deferring the call).
+    if (isYoutube) {
+        console.log("onPlayerStateChange: " + player.getPlayerState());
+    } else if (isTwitch) {
+        console.log("onPlayerStateChange");
+    }
+
+    if (videoPlatform == "youtube" && player.getPlayerState() == YT.PlayerState.UNSTARTED) {
         // Speculative (untested) fix to make the title blocker box stay on screen for longer
         // when video "reloads" while playing (e.g. due to lost connection?), the YouTube title appears briefly (not hidden by our blocker box),
         // so could be a spoiler.
@@ -341,14 +430,14 @@ function onPlayerStateChange(event) {
     }
     // Toggle visibility of blocker box to hide related videos bar at bottom, which can spoil future games.
     // Also hide the video title, as it may have something like "X vs Y Game 5", which tells you it goes to game 5
-    else if (event.data == YT.PlayerState.PAUSED) {
+    else if (isPaused()) {
         // Even though we show the pause blockers just before pausing the video, we also do it here just in case the video
         // gets paused through other means (not initiated by us)
         showPauseBlockers();
         document.getElementById('play-pause-button').style.backgroundImage = "url('static/play.png')";
     }
-    else if (event.data == YT.PlayerState.PLAYING) {
-        if (!firstPlayTime) {
+    else if (isPlaying()) {
+        if (isYoutube && !firstPlayTime) {
             // There appears to be a bug when a specific start time is requested, where the player will sometimes jump to a different time
             // in the video when first playing. I think this might be a 'feature' where the player remembers where you were in the video
             // and tries to restore it, but it gets in our way. This is a pretty hacky check for this bug which forces a re-seek.
@@ -361,43 +450,45 @@ function onPlayerStateChange(event) {
             firstPlayTime = performance.now();
         }
 
-        // Start background refresh timer if this is the first time the video has been played.
-        // Don't start it before now, otherwise the player.getCurrentTime() might return 0 and we don't want
-        // to report that.
-        if (timerId == null) {
-            timerId = window.setInterval(onTimer, 500);
-            document.getElementById("loading-status").style.display = 'none';
-        }
-
-        // Clear seek time if we were seeking - the video is now playing so the seek must be finished.
-        // This doesn't pick up the case where we seek while paused, but this isn't a big issue and we have no
-        // good way to detect seek completion when paused other than checking the time, which could be error-prone.
-        seekTarget = null;
-
         document.getElementById('play-pause-button').style.backgroundImage = "url('static/pause.png')";
-        // Hide the blocker boxes after a short delay, as it takes a short time for the related videos bar to disappear
-        window.setTimeout(function () {
+
+        // Hide the blocker boxes after a short delay, as the UI elements that we're covering take a little time to disappear
+
+        // Bottom blocker - related videos bar (YouTube) or video length (Twitch)
+        var delay = isYoutube ? 250 : isTwitch ? 5500 : 0;  // Twitch takes longer to hide the video length bar
+        doSomethingAfterDelay("hideBottomBlocker", delay, function() {
             // Make sure video hasn't been paused again during the timer
-            if (player.getPlayerState() == YT.PlayerState.PLAYING) {
+            if (isPlaying()) {
                 document.getElementById('blocker-bottom').style.display = 'none';
+            }
+        });
+
+        // Full blocker - related videos shown at end-of-video
+        doSomethingAfterDelay("hideFullBlocker", 250, function () {
+            // Make sure video hasn't been paused again during the timer
+            if (isPlaying()) {
                 document.getElementById('blocker-full').style.display = 'none';
             }
-        }, 250);
+        });
+
+        // Top blocker - video title
         // Hide the title blocker after a _longer_ delay, if the video was recently started. The player displays the title
         // for a few seconds after first playing it, so we need to keep our blocker for longer in this case.
-        window.setTimeout(function () {
+        var delay = isYoutube ? ((performance.now() - firstPlayTime < 5000) ? 5000 : 250) : isTwitch ? 5500 : 0;
+        doSomethingAfterDelay("hideTopBlocker", delay, function () {
             // Make sure video hasn't been paused again during the timer
-            if (player.getPlayerState() == YT.PlayerState.PLAYING) {
+            if (isPlaying()) {
                 document.getElementById('blocker-top').style.display = 'none';
             }
-        }, (performance.now() - firstPlayTime < 5000) ? 5000 : 250);
+        });
     }
-    else if (event.data == YT.PlayerState.ENDED) {
+    else if (isEnded()) {
         // Hide related videos that fill the player area at the end of the video
         document.getElementById('blocker-full').style.display = 'block';
         document.getElementById('play-pause-button').style.backgroundImage = "url('static/play.png')";
     }
 
+    // Keep the UI responsive to changes in player state (rather than waiting for the next tick)
     onTimer();
 }
 
@@ -419,20 +510,29 @@ function onError(event)
 }
 
 function hideControlsShortly() {
-    if (overlayControlsTimeoutId != null) {
-        window.clearTimeout(overlayControlsTimeoutId);
-    }
-    overlayControlsTimeoutId = window.setTimeout(function () {
+    doSomethingAfterDelay("hideControls", 2000, function() {
         // Don't hide the controls if the menu is open
         if (window.getComputedStyle(document.getElementById("menu")).display == "none") {
             document.getElementById("player-overlay-controls").style.display = 'none';
         }
-    }, 2000);
+    });
+}
+
+// Helper function to run a callback after a delay, but also handles
+// cancelling any previous request with the same unique name.
+// This is useful for things like hiding the controls after a delay, where we want to reset the timer each time the user interacts with the video.
+function doSomethingAfterDelay(uniqueName, delay, callback) {
+    timerId = doSomethingAfterDelayTimerIds.get(uniqueName);
+    if (timerId != undefined) {
+        window.clearTimeout(timerId);
+    }
+    timerId = window.setTimeout(callback, delay);
+    doSomethingAfterDelayTimerIds.set(uniqueName, timerId);
 }
 
 function onOverlayClick(event) {
     // Don't do anything until the video has actually loaded though, as the Menu button needs to be easy to find
-    if (!player || !player.getVideoData().video_id) {
+    if (!isVideoLoadedSuccessfully()) {
         return;
     }
 
@@ -443,7 +543,7 @@ function onOverlayClick(event) {
 
 function onOverlayControlsClick(event) {
     // Don't do anything until the video has actually loaded though, as the Menu button needs to be easy to find
-    if (!player || !player.getVideoData().video_id) {
+    if (!isVideoLoadedSuccessfully()) {
         return;
     }
 
@@ -459,12 +559,19 @@ function onOverlayControlsClick(event) {
     hideControlsShortly();
 }
 
-function togglePlayPause(event) {
-    if (player.getPlayerState() == YT.PlayerState.PLAYING) {
+function togglePlayPause() {
+    if (isPlaying()) {
         pause();
+    } else {
+        play();
     }
-    else {
+}
+
+function play() {
+    if (isYoutube) {
         player.playVideo();
+    } else if (isTwitch) {
+        player.play();
     }
 }
 
@@ -472,7 +579,12 @@ function pause() {
     // Before telling the player to pause, show the blockers. This ensures that they are visible before the player shows the title etc.,
     // so we don't catch a frame that might contain a spoiler.
     showPauseBlockers();
-    player.pauseVideo();
+
+    if (isYoutube) {
+        player.pauseVideo();
+    } else if (isTwitch) {
+        player.pause();
+    }
 }
 
 function showPauseBlockers() {
@@ -521,68 +633,81 @@ function onTimer() {
     document.getElementById("current-time-span").innerText = toFriendlyTimeStringColons(effectiveCurrentTime);
     document.getElementById("current-time-span").style.backgroundColor = isSeeking() ? 'orange' : 'white';
 
-    if (player && player.getPlayerState() != YT.PlayerState.UNSTARTED)  // Video may not yet have been loaded
+    // Clear seek time if we were seeking and have now reached the target.
+    // We allow a little leeway as there the player might not seek to exactly the time we requested
+    // The Twitch player seems to be quite laggy with reporting time updates, so even after the video has visually
+    // finished seeking and the player state change callback is fired, the getCurrentTime() still reports the old value,
+    // so we can't check this in onPlayerStateChange() like we used to.
+    if (isSeeking() && Math.abs(player.getCurrentTime() - seekTarget) < 2.0)
     {
-        // Update URL to reflect the current time in the video, so refreshing the page (or closing and re-opening
-        // the browser will resume the video at the current time).
-        // This doesn't behave quite like we want with the Chrome global history though (it has one entry per timestamp!).
-        // See this firefox bug report for some discussion: https://bugzilla.mozilla.org/show_bug.cgi?id=753264
-        var params = new URLSearchParams(window.location.search);
-        params.set('time', toFriendlyTimeString(effectiveCurrentTime));
-        newState = params.toString();
-        // Only call the API if the position has changed since last time. This avoids unecessary calls, for example when the video is paused
-        if (window.history.state != newState)
-        {
-            window.history.replaceState(newState, '', '?' + params.toString());
-        }
+        seekTarget = null;
+    }
 
-        // If the user is signed in, also upload the current position to the web server, so that it can be synced with other devices
-        if (isSignedIn())
-        {
-            // Don't upload too often to avoid overloading the server. Especially if we're paused!
-            if (lastUploadedPosition == null || Math.abs(effectiveCurrentTime - lastUploadedPosition) > 10.0) {
-                var params = new URLSearchParams({
-                    'user_id': localStorage.getItem("user_id"),
-                    'device_id': localStorage.getItem("device_id"),
-                    'video_id': player.getVideoData().video_id,
-                    'video_title': getSafeTitle(),
-                    'position': Math.round(effectiveCurrentTime), // Server saves whole numbers only
+    // Update URL to reflect the current time in the video, so refreshing the page (or closing and re-opening
+    // the browser will resume the video at the current time).
+    // This doesn't behave quite like we want with the Chrome global history though (it has one entry per timestamp!).
+    // See this firefox bug report for some discussion: https://bugzilla.mozilla.org/show_bug.cgi?id=753264
+    var params = new URLSearchParams(window.location.search);
+    params.set('time', toFriendlyTimeString(effectiveCurrentTime));
+    newState = params.toString();
+    // Only call the API if the position has changed since last time. This avoids unecessary calls, for example when the video is paused
+    if (window.history.state != newState)
+    {
+        window.history.replaceState(newState, '', '?' + params.toString());
+    }
+
+    // If the user is signed in, also upload the current position to the web server, so that it can be synced with other devices
+    if (isSignedIn())
+    {
+        // Don't upload too often to avoid overloading the server. Especially if we're paused!
+        if (lastUploadedPosition == null || Math.abs(effectiveCurrentTime - lastUploadedPosition) > 10.0) {
+            var params = new URLSearchParams({
+                'user_id': localStorage.getItem("user_id"),
+                'device_id': localStorage.getItem("device_id"),
+                'video_id': getVideoIdFromPlayer(),
+                'video_title': getSafeTitle(),
+                'position': Math.round(effectiveCurrentTime), // Server saves whole numbers only
+            });
+            fetch('save-position?' + params.toString(), { method: 'POST'})
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error('save-position response was not OK');
+                    }
+                    lastUploadedPosition = params.get('position') // Note we use this rather than effectiveCurrentTime, which might have advanced in the meantime (as this is an async callback)
+                })
+                .catch((error) => {
+                    console.error('Error saving position to server:', error);
                 });
-                fetch('save-position?' + params.toString(), { method: 'POST'})
-                    .then(response => {
-                        if (!response.ok) {
-                            throw new Error('save-position response was not OK');
-                        }
-                        lastUploadedPosition = params.get('position') // Note we use this rather than effectiveCurrentTime, which might have advanced in the meantime (as this is an async callback)
-                    })
-                    .catch((error) => {
-                        console.error('Error saving position to server:', error);
-                    });
-            }
         }
     }
 }
 
-// This function is called automatically when the youtube iframe script API loads
-// (see the <script> element on the HTML page).
+// This function is called automatically when the youtube iframe script API loads.
+// Note that this is only called if a video needs to be loaded (i.e. the URL has a video ID).
 function onYouTubeIframeAPIReady() {
     console.log("onYouTubeIframeAPIReady");
-    // Load video immediately if provided in URL
+    onAPIReady();
+}
+
+// This function is called when the YouTube or Twitch API script loads
+// Note that this is only called if a video needs to be loaded (i.e. the URL has a video ID).
+function onAPIReady() {
+    // Load video
     var params = new URLSearchParams(window.location.search);
-    if (params.has('videoId')) {
-        var startTime = 0;
-        if (params.has('time')) {
-            startTime = decodeFriendlyTimeString(params.get('time'));
-        }
-        // There seem to be issues with requesting a small start time != 0, especially for live streams. So put a lower limit on it.
-        // Also for live stream videos, 0 seems to be interpreted as starting from live, which could be a spoiler.
-        if (startTime < 10) {
-             startTime = 10;
-        }
-        startTime = Math.round(startTime); // Fractional numbers are invalid and won't work!
+    var startTime = 0;
+    if (params.has('time')) {
+        startTime = decodeFriendlyTimeString(params.get('time'));
+    }
+    // There seem to be issues with requesting a small start time != 0, especially for live streams. So put a lower limit on it.
+    // Also for live stream videos, 0 seems to be interpreted as starting from live, which could be a spoiler.
+    if (isYoutube && startTime < 10) {
+        startTime = 10;
+    }
+    startTime = Math.round(startTime); // Fractional numbers are invalid and won't work!
 
-        seekTarget = startTime; // Treat the start time as a seek target, so the UI shows this time rather than 0 when loading
+    seekTarget = startTime; // Treat the start time as a seek target, so the UI shows this time rather than 0 when loading
 
+    if (isYoutube) {
         player = new YT.Player('player', {
             height: '100%',
             width: '100%',
@@ -607,9 +732,57 @@ function onYouTubeIframeAPIReady() {
                 'onError': onError,
             }
         });
-
-        showPauseBlockers(); // Display blockers before the video loads so that when the video loads but hasn't started playing, the title and related videos are hidden
+    } else if (isTwitch) {
+        var params = new URLSearchParams(window.location.search);
+        var options = {
+            height: '100%',
+            width: '100%',
+            video: params.get('videoId'),
+            time: startTime,
+            // Turn off autoplay because a) it doesn't work for mobile so it's inconsistent and b) can be annoying especially if tab reloads in the background
+            autoplay: false,
+        };
+        player = new Twitch.Player("player", options);
+        // List of Twich Player events (copied from the Twitch API javascript source):
+        //    AUTHENTICATE
+        //    CAPTIONS
+        //    ENDED
+        //    ERROR
+        //    OFFLINE
+        //    ONLINE
+        //    PAUSE
+        //    PLAY
+        //    PLAYBACK_BLOCKED
+        //    PLAYING
+        //    VIDEO_PAUSE
+        //    VIDEO_PLAY
+        //    VIDEO_READY
+        //    READY
+        //    SEEK
+        //  List of errors:
+        //      ABORTED
+        //      NETWORK
+        //      DECODE
+        //      FORMAT_NOT_SUPPORTED
+        //      CONTENT_NOT_AVAILABLE
+        //      RENDERER_NOT_AVAILABLE
+        player.addEventListener(Twitch.Player.VIDEO_READY, onPlayerReady);
+        // For consistency with the YouTube onStateChange callback, we want our onPlayerStateChange() function
+        // to be called after the new state has taken effect (such that during onPlayerStateChange(), querying the player's
+        //  state will result in the new state, not the old state.
+        // This happens natively for the YouTube API, and we simulate this for the Twitch API by deferring the call.
+        player.addEventListener(Twitch.Player.VIDEO_PLAY, function() { window.setTimeout(onPlayerStateChange, 10); } );
+        player.addEventListener(Twitch.Player.VIDEO_PAUSE, function() { window.setTimeout(onPlayerStateChange, 10); });
+        //TODO: if error loading video, e.g. video ID invalid, then we need to catch this. The below thing doesn't seem to work!
+        player.addEventListener(Twitch.Player.ERROR, function(x) { console.log("Twitch error: " + x); });
+        //TODO: better handling of ENDED - if ends naturally then the blocker doesn't always appear
+        // also, if refresh the video when it's at the end, the blocker doesn't appear either!
+        // also seeking away from the end of the video seems a bit broken
     }
+
+    // Display blockers before the video loads so that when the video loads but hasn't started playing,
+    // the title and related videos (YouTube) and video length bar (Twitch) are hidden
+    showPauseBlockers();
 }
 
 function onKeyDown(event) {
@@ -632,12 +805,13 @@ function onKeyDown(event) {
             event.preventDefault();
             break;
         case 'ArrowUp':
-            var currentIdx = player.getAvailablePlaybackRates().indexOf(player.getPlaybackRate());
-            player.setPlaybackRate(player.getAvailablePlaybackRates()[currentIdx + 1]);
+            //TODO: Twitch
+            var currentIdx = getAvailablePlaybackRates().indexOf(getCurrentPlaybackRate());
+            player.setPlaybackRate(getAvailablePlaybackRates()[currentIdx + 1]);
             break;
         case 'ArrowDown':
-            var currentIdx = player.getAvailablePlaybackRates().indexOf(player.getPlaybackRate());
-            player.setPlaybackRate(player.getAvailablePlaybackRates()[currentIdx - 1]);
+            var currentIdx = getAvailablePlaybackRates().indexOf(getCurrentPlaybackRate());
+            player.setPlaybackRate(getAvailablePlaybackRates()[currentIdx - 1]);
             event.preventDefault();
             break;
     }
@@ -647,48 +821,74 @@ function onSpeedSelectChange(event) {
     player.setPlaybackRate(parseFloat(this.value));
 }
 
-// Hookup event listeners
-document.getElementById("menu-button").addEventListener("click", onMenuButtonClick);
-document.getElementById("change-video-button").addEventListener("click", changeVideo);
-document.getElementById("sign-in-button").addEventListener("click", signIn);
-document.getElementById("sign-out-button").addEventListener("click", signOut);
-document.getElementById("current-time-span").addEventListener("click", changeTime);
-document.getElementById("player-overlay").addEventListener("click", onOverlayClick);
-document.getElementById("player-overlay-controls").addEventListener("click", onOverlayControlsClick);
-document.getElementById("play-pause-button").addEventListener("click", togglePlayPause);
-document.getElementById("fullscreen-button").addEventListener("click", toggleFullscreen);
-document.getElementById("speed-select").addEventListener("change", onSpeedSelectChange);
-document.addEventListener("keydown", onKeyDown)
-for (let button of document.getElementsByClassName("seek-button")) {
-    button.addEventListener("click", seekButtonClicked);
-}
-
-// Show start time at bottom of controls, as it may take a few seconds for the video to load
-// and we'd like the start time to be visible before then
-var params = new URLSearchParams(window.location.search);
-if (params.has('videoId')) {
-    if (params.has('time')) {
-        document.getElementById("loading-status").innerText = 'Loading video at: ' + params.get('time') + '...';
-    } else  {
-        document.getElementById("loading-status").innerText = 'Loading video...';
+function startup() {
+    // Hookup event listeners
+    document.getElementById("menu-button").addEventListener("click", onMenuButtonClick);
+    document.getElementById("change-video-button").addEventListener("click", changeVideo);
+    document.getElementById("sign-in-button").addEventListener("click", signIn);
+    document.getElementById("sign-out-button").addEventListener("click", signOut);
+    document.getElementById("current-time-span").addEventListener("click", changeTime);
+    document.getElementById("player-overlay").addEventListener("click", onOverlayClick);
+    document.getElementById("player-overlay-controls").addEventListener("click", onOverlayControlsClick);
+    document.getElementById("play-pause-button").addEventListener("click", togglePlayPause);
+    document.getElementById("fullscreen-button").addEventListener("click", toggleFullscreen);
+    document.getElementById("speed-select").addEventListener("change", onSpeedSelectChange);
+    document.addEventListener("keydown", onKeyDown)
+    for (let button of document.getElementsByClassName("seek-button")) {
+        button.addEventListener("click", seekButtonClicked);
     }
+
+    var params = new URLSearchParams(window.location.search);
+    if (params.has('videoId')) {
+        // Detect if the video ID is for Twitch or YouTube
+        if (params.get('videoId').match(youtubeVideoIdRegex)) {
+            videoPlatform = 'youtube';
+            isYoutube = true;
+
+            // Configure YouTube-specific settings
+            document.getElementById('blocker-top').style.height = "50px"; // Needs to be taller than the title bar
+            document.getElementById('blocker-bottom').style.height = "50%"; // Needs to be taller than the related videos bar
+
+            // Load the YouTube API script. Note I used to have this as a regular <script> element
+            // in the HTML <head>, but this seemed to cause issues where the API wouldn't load correctly
+            // about half the time (had to keep refreshing the page til it worked). This dynamic loading
+            // code here comes from the reference page.
+            // https://developers.google.com/youtube/iframe_api_reference
+            var tag = document.createElement('script');
+            tag.src = "https://www.youtube.com/iframe_api";
+            var firstScriptTag = document.getElementsByTagName('script')[0];
+            firstScriptTag.parentNode.insertBefore(tag, firstScriptTag);
+            // The video itself will be loaded once the youtube API loads (it calls our onYouTubeIframeAPIReady() function)
+        } else if (params.get('videoId').match(twitchVideoIdRegex)) {
+            videoPlatform = 'twitch';
+            isTwitch = true;
+
+            // Configure Twitch-specific settings
+            document.getElementById('blocker-top').style.height = "200px"; // Needs to be taller than the title bar
+            document.getElementById('blocker-bottom').style.height = "100px"; // Needs to be taller than the video length bar, but not as tall as for YouTube
+
+            var script = document.createElement('script');
+            script.src = "https://player.twitch.tv/js/embed/v1.js";
+            script.onload = onAPIReady;
+            document.body.appendChild(script)
+        } else {
+            console.log("Unknown video platform!");
+        }
+
+        // Show start time at bottom of controls, as it may take a few seconds for the video to load
+        // and we'd like the start time to be visible before then
+        if (params.has('time')) {
+            document.getElementById("loading-status").innerText = `Loading ${videoPlatform} video ${params.get('videoId')} at ${params.get('time')}...`;
+        } else  {
+            document.getElementById("loading-status").innerText = `Loading ${videoPlatform} video ${params.get('videoId')}...`;
+        }
+    }
+    updateSignedInStatus();
+
+    // If the user is already signed in, update the list of saved positions
+    // Even though we update this when the user opens the menu, we also do it now because otherwise the size of the <select>
+    // dropdown doesn't adjust properly once it's already open (you get a scrollbar which isn't so nice)
+    fetchSavedPositions();
 }
 
-// Load the YouTube API script. Note I used to have this as a regular <script> element
-// in the HTML <head>, but this seemed to cause issues where the API wouldn't load correctly
-// about half the time (had to keep refreshing the page til it worked). This dynamic loading
-// code here comes from the reference page.
-// https://developers.google.com/youtube/iframe_api_reference
-var tag = document.createElement('script');
-tag.src = "https://www.youtube.com/iframe_api";
-var firstScriptTag = document.getElementsByTagName('script')[0];
-firstScriptTag.parentNode.insertBefore(tag, firstScriptTag);
-
-// Main logic begins once youtube API loads (it calls our onYouTubeIframeAPIReady() function)
-
-updateSignedInStatus();
-
-// If the user is already signed in, update the list of saved positions
-// Even though we update this when the user opens the menu, we also do it now because otherwise the size of the <select>
-// dropdown doesn't adjust properly once it's already open (you get a scrollbar which isn't so nice)
-fetchSavedPositions();
+startup();

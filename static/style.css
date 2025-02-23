@@ -23,6 +23,12 @@ body {
     text-align: center;
     background:white;
 }
+
+#player {
+    height: 100%;
+    width: 100%;
+}
+
 #player-overlay {
     top: 0px;
     bottom: 0px;
@@ -41,10 +47,10 @@ body {
 }
 #blocker-top {
     top: 0px;
-    height: 50px;
+    /* height: This is dependent on YouTube vs. Twitch, so is set in code */
 }
 #blocker-bottom {
-    height: 50%;
+    /* height: This is dependent on YouTube vs. Twitch, so is set in code */
     bottom: 0px;
 }
 #blocker-full {

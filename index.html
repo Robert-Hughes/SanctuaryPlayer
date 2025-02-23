@@ -10,11 +10,14 @@
 
 <body>
     <div id="root">
-        <!-- The YouTube API will replace this div with its iframe once we load a video -->
+        <!-- The YouTube API will replace this div with its iframe once we load a video. -->
+        <!-- The Twitch API will place its iframe as a child of this div once we load a video. -->
         <div id="player"></div>
 
-        <div id="blocker-top" class="blocker">Hiding video title</div>
-        <div id="blocker-bottom" class="blocker">Hiding related videos.</div>
+        <div id="blocker-top" class="blocker"></div> <!-- To hide the video title, which might have spoilers -->
+        <!-- YouTube: To hide related videos which are shown at the bottom while paused, which might have spoilers -->
+        <!-- Twitch: To hide the bar at the bottom which shows the length of the video -->
+        <div id="blocker-bottom" class="blocker"></div>
         <div id="blocker-full" class="blocker">End of video. Hiding related videos.</div>
 
         <div id="loading-status">Please select a video from the Menu ➔</div>
