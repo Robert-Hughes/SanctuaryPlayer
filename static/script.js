@@ -12,8 +12,10 @@ var videoPlatform = null; // 'twitch' or 'youtube'
 var isTwitch = false;
 var isYoutube = false;
 
-var youtubeVideoIdRegex = /\b[A-Za-z0-9-_]{11}\b/; // 11 alphanumeric chars (plus some special chars)
-var twitchVideoIdRegex = /\b\d{10}\b/; // 10 numbers
+const youtubeVideoIdRegex = /\b[A-Za-z0-9-_]{11}\b/; // 11 alphanumeric chars (plus some special chars)
+const twitchVideoIdRegex = /\b\d{10}\b/; // 10 numbers
+
+//TODO: hide twitch "play" icon that appears while loading?
 
 function decodeFriendlyTimeString(timeStr) {
     // Decode strings of the format:
@@ -80,6 +82,7 @@ function getVideoIdFromPlayer() {
 }
 
 function isVideoLoadedSuccessfully() {
+    // Both YouTube and Twitch will only report the video ID once it has been loaded
     return !!getVideoIdFromPlayer();
 }
 
@@ -87,7 +90,7 @@ function getAvailablePlaybackRates() {
     if (isYoutube) {
         return player.getAvailablePlaybackRates();
     } else {
-        return [ "1" ]; //TODO: Twitch support
+        return [ "1" ]; // Twitch doesn't seem to support playback rates
     }
 }
 
@@ -95,7 +98,7 @@ function getCurrentPlaybackRate() {
     if (isYoutube) {
         return player.getPlaybackRate();
     } else {
-        return "1"; //TODO: Twitch support
+        return "1"; // Twitch doesn't seem to support playback rates
     }
 }
 
@@ -106,7 +109,7 @@ function isPlaying() {
     if (isYoutube) {
         return player.getPlayerState() == YT.PlayerState.PLAYING;
     } else if (isTwitch) {
-        return player.getPlayerState().playback == "Playing";playback != "Ready";
+        return player.getPlayerState().playback == "Playing";
     }
 }
 
@@ -131,7 +134,6 @@ function isEnded() {
         return player.getEnded();
     }
 }
-
 
 function isSignedIn() {
     return localStorage.getItem("user_id") != null && localStorage.getItem("user_id") != "";
@@ -265,6 +267,8 @@ function changeVideo() {
     //   https://youtube.com/watch?v=jDqFz0ZzoZo&si=3b7duJGqF-SKQqKI
     var videoId = null;
     var time = null;
+
+    //TODO: Twitch URLs/video IDs
 
     // First try parsing it as a URL
     url = URL.parse(userValue);
@@ -778,6 +782,7 @@ function onAPIReady() {
         //TODO: better handling of ENDED - if ends naturally then the blocker doesn't always appear
         // also, if refresh the video when it's at the end, the blocker doesn't appear either!
         // also seeking away from the end of the video seems a bit broken
+        //TODO: find a way to stop twitch from auto-loading the 'next' video after getting to the end
     }
 
     // Display blockers before the video loads so that when the video loads but hasn't started playing,
@@ -805,13 +810,18 @@ function onKeyDown(event) {
             event.preventDefault();
             break;
         case 'ArrowUp':
-            //TODO: Twitch
-            var currentIdx = getAvailablePlaybackRates().indexOf(getCurrentPlaybackRate());
-            player.setPlaybackRate(getAvailablePlaybackRates()[currentIdx + 1]);
+            var rates = getAvailablePlaybackRates();
+            var currentIdx = rates.indexOf(getCurrentPlaybackRate());
+            if (currentIdx < rates.length - 1) {
+                player.setPlaybackRate(rates[currentIdx + 1]);
+            }
             break;
         case 'ArrowDown':
-            var currentIdx = getAvailablePlaybackRates().indexOf(getCurrentPlaybackRate());
-            player.setPlaybackRate(getAvailablePlaybackRates()[currentIdx - 1]);
+            var rates = getAvailablePlaybackRates();
+            var currentIdx = rates.indexOf(getCurrentPlaybackRate());
+            if (currentIdx > 0) {
+                player.setPlaybackRate(rates[currentIdx - 1]);
+            }
             event.preventDefault();
             break;
     }
