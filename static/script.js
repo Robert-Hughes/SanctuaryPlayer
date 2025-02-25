@@ -16,6 +16,12 @@ const youtubeVideoIdRegex = /\b[A-Za-z0-9-_]{11}\b/; // 11 alphanumeric chars (p
 const twitchVideoIdRegex = /\b\d{10}\b/; // 10 numbers
 
 //TODO: hide twitch "play" icon that appears while loading?
+//TODO: youtube - loading video with a time set and then pressing play results in the time at the bottom briefly jumping to 0 before jumping to the correct time
+//TODO: Twitch - on first load it shows a weird quarter-size frame in the corner before playing the video
+//TODO: Twitch - quality support. Don't think we can do this for YouTube, but can show the current quality?
+//TODO: Twitch - seeking the video shows the video length and title - show the blockers when seeking!
+//TODO: improve display of recent videos in menu. Maybe show the video ID too, to distinguish between different videos with the same censored title (_ vs _)
+
 
 function decodeFriendlyTimeString(timeStr) {
     // Decode strings of the format:
@@ -26,6 +32,7 @@ function decodeFriendlyTimeString(timeStr) {
     //   2h1m40s
     //   2m
     //   2m1.5s
+    //TODO: 8h20 - should go to 8:20:00, but currently goes to 8:00:20
     var timeMatch = timeStr.match(/^(?:(\d+)h)?(?:(\d+)m)?(?:([\d.]+)s?)?$/);
     if (!timeMatch) {
         return null;
@@ -417,30 +424,34 @@ function getSafeTitle() {
     return title;
 }
 
-function onPlayerStateChange() {
-    // Note that during this function, querying the player's state will result in the new state, not the old state
-    // (This happens natively for the YouTube API, and we simulate this for the Twitch API by deferring the call).
-    if (isYoutube) {
-        console.log("onPlayerStateChange: " + player.getPlayerState());
-    } else if (isTwitch) {
-        console.log("onPlayerStateChange");
+function onYoutubePlayerStateChange(event) {
+    switch (event.data) {
+        case YT.PlayerState.UNSTARTED: onPlayerStateChange("unstarted"); break;
+        case YT.PlayerState.ENDED: onPlayerStateChange("ended"); break;
+        case YT.PlayerState.PLAYING: onPlayerStateChange("playing"); break;
+        case YT.PlayerState.PAUSED: onPlayerStateChange("paused"); break;
+        case YT.PlayerState.BUFFERING: onPlayerStateChange("buffering"); break;
+        case YT.PlayerState.CUED: onPlayerStateChange("cued"); break;
+        default: console.log("Unknown YouTube player state: " + event.data); break;
     }
+}
 
-    if (videoPlatform == "youtube" && player.getPlayerState() == YT.PlayerState.UNSTARTED) {
-        // Speculative (untested) fix to make the title blocker box stay on screen for longer
-        // when video "reloads" while playing (e.g. due to lost connection?), the YouTube title appears briefly (not hidden by our blocker box),
-        // so could be a spoiler.
-        firstPlayTime = null;
-    }
+function onPlayerStateChange(newStateStr) {
+    // Note that during this function, directly querying the player's state will behave differently on YouTube vs Twitch:
+    //   * For YouTube, it retrieves the new state
+    //   * For Twitch, it retrieves the old state
+    // Therefore it's best to use the newStateStr parameter where possible
+    console.log("onPlayerStateChange: " + newStateStr);
+
     // Toggle visibility of blocker box to hide related videos bar at bottom, which can spoil future games.
     // Also hide the video title, as it may have something like "X vs Y Game 5", which tells you it goes to game 5
-    else if (isPaused()) {
+    if (newStateStr == "paused") {
         // Even though we show the pause blockers just before pausing the video, we also do it here just in case the video
         // gets paused through other means (not initiated by us)
         showPauseBlockers();
         document.getElementById('play-pause-button').style.backgroundImage = "url('static/play.png')";
     }
-    else if (isPlaying()) {
+    else if (newStateStr == "playing") {
         if (isYoutube && !firstPlayTime) {
             // There appears to be a bug when a specific start time is requested, where the player will sometimes jump to a different time
             // in the video when first playing. I think this might be a 'feature' where the player remembers where you were in the video
@@ -486,10 +497,14 @@ function onPlayerStateChange() {
             }
         });
     }
-    else if (isEnded()) {
+    else if (newStateStr == "ended") {
         // Hide related videos that fill the player area at the end of the video
         document.getElementById('blocker-full').style.display = 'block';
         document.getElementById('play-pause-button').style.backgroundImage = "url('static/play.png')";
+
+        if (isTwitch) {
+            player.setVideo("0"); // Stop the player from auto-loading the next video (random hack that seems to work quite well)
+        }
     }
 
     // Keep the UI responsive to changes in player state (rather than waiting for the next tick)
@@ -730,7 +745,7 @@ function onAPIReady() {
             },
             events: {
                 'onReady': onPlayerReady,
-                'onStateChange': onPlayerStateChange,
+                'onStateChange': onYoutubePlayerStateChange,
                 'onPlaybackQualityChange': onPlaybackQualityChange,
                 'onPlaybackRateChange': onPlaybackRateChange,
                 'onError': onError,
@@ -771,15 +786,13 @@ function onAPIReady() {
         //      CONTENT_NOT_AVAILABLE
         //      RENDERER_NOT_AVAILABLE
         player.addEventListener(Twitch.Player.VIDEO_READY, onPlayerReady);
-        // For consistency with the YouTube onStateChange callback, we want our onPlayerStateChange() function
-        // to be called after the new state has taken effect (such that during onPlayerStateChange(), querying the player's
-        //  state will result in the new state, not the old state.
-        // This happens natively for the YouTube API, and we simulate this for the Twitch API by deferring the call.
-        player.addEventListener(Twitch.Player.VIDEO_PLAY, function() { window.setTimeout(onPlayerStateChange, 10); } );
-        player.addEventListener(Twitch.Player.VIDEO_PAUSE, function() { window.setTimeout(onPlayerStateChange, 10); });
+        player.addEventListener(Twitch.Player.VIDEO_PLAY, function() { onPlayerStateChange("playing"); } );
+        player.addEventListener(Twitch.Player.VIDEO_PAUSE, function() { onPlayerStateChange("paused"); });
+        player.addEventListener(Twitch.Player.ENDED, function() { onPlayerStateChange("ended"); });
         //TODO: if error loading video, e.g. video ID invalid, then we need to catch this. The below thing doesn't seem to work!
         player.addEventListener(Twitch.Player.ERROR, function(x) { console.log("Twitch error: " + x); });
         //TODO: better handling of ENDED - if ends naturally then the blocker doesn't always appear
+
         // also, if refresh the video when it's at the end, the blocker doesn't appear either!
         // also seeking away from the end of the video seems a bit broken
         //TODO: find a way to stop twitch from auto-loading the 'next' video after getting to the end
