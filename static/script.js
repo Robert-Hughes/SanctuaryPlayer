@@ -13,15 +13,21 @@ var isTwitch = false;
 var isYoutube = false;
 
 const youtubeVideoIdRegex = /\b[A-Za-z0-9-_]{11}\b/; // 11 alphanumeric chars (plus some special chars)
-const twitchVideoIdRegex = /\b\d{10}\b/; // 10 numbers
+const twitchVideoIdRegex = /\b\d{10}\b/; // 10-digit number
 
 //TODO: hide twitch "play" icon that appears while loading?
 //TODO: youtube - loading video with a time set and then pressing play results in the time at the bottom briefly jumping to 0 before jumping to the correct time
 //TODO: Twitch - on first load it shows a weird quarter-size frame in the corner before playing the video
 //TODO: Twitch - quality support. Don't think we can do this for YouTube, but can show the current quality?
-//TODO: Twitch - seeking the video shows the video length and title - show the blockers when seeking!
 //TODO: improve display of recent videos in menu. Maybe show the video ID too, to distinguish between different videos with the same censored title (_ vs _)
-
+//TODO: Youtube also has some dodgy behaviour with ended videos and seeking/pressing play
+//TODO: Twitch - when seeking, the player shows a brief pause then unpause. Seems the docs are wrong about seeking/buffering being counted as playing? OInly for longer seeks?
+//  This isn't a big issue, but if the network is slow then it looks like the video is paused when it's just buffering. Maybe we can improve the UI here?
+//TODO: TWitch - set volume to 100%, as I think it remembers from other vods and then can't be changed!
+//TODO: TWitch - "Audio for portions of this video has been muted" popup e.g. on video 2389931008
+//   Maybe we can have an option to temporarily allow interacting with the native video player (disable our overlay) so the user can dismiss it
+//TODO: Some kind of "lock" icon for making the UI harder to accidentally bring up (e.g. in shower)
+//TODO: Twitch - doesn't seem to wake lock the screen, so it turns off after a delay
 
 function decodeFriendlyTimeString(timeStr) {
     // Decode strings of the format:
@@ -383,6 +389,15 @@ function seekTo(target) {
         player.seek(target);
     }
 
+    // For Twitch where we can't hide the native UI, seeking the video makes the video length bar appear at the bottom
+    // and the video title at the top, so we have to show the blockers when seeking,
+    // Note this is only the case for shorter seeks (e.g. 5 secs), as for longer seeks we experience a brief 'pause' then 'unpause' which
+    // shows the blockers anyway.
+    if (isTwitch) {
+        showPauseBlockers();
+        hideBlockersShortly();
+    }
+
     onTimer(); // Update UI
 }
 
@@ -442,6 +457,9 @@ function onPlayerStateChange(newStateStr) {
     //   * For Twitch, it retrieves the old state
     // Therefore it's best to use the newStateStr parameter where possible
     console.log("onPlayerStateChange: " + newStateStr);
+    if (isTwitch) {
+        console.log(player.getPlayerState().playback);
+    }
 
     // Toggle visibility of blocker box to hide related videos bar at bottom, which can spoil future games.
     // Also hide the video title, as it may have something like "X vs Y Game 5", which tells you it goes to game 5
@@ -468,34 +486,7 @@ function onPlayerStateChange(newStateStr) {
         document.getElementById('play-pause-button').style.backgroundImage = "url('static/pause.png')";
 
         // Hide the blocker boxes after a short delay, as the UI elements that we're covering take a little time to disappear
-
-        // Bottom blocker - related videos bar (YouTube) or video length (Twitch)
-        var delay = isYoutube ? 250 : isTwitch ? 5500 : 0;  // Twitch takes longer to hide the video length bar
-        doSomethingAfterDelay("hideBottomBlocker", delay, function() {
-            // Make sure video hasn't been paused again during the timer
-            if (isPlaying()) {
-                document.getElementById('blocker-bottom').style.display = 'none';
-            }
-        });
-
-        // Full blocker - related videos shown at end-of-video
-        doSomethingAfterDelay("hideFullBlocker", 250, function () {
-            // Make sure video hasn't been paused again during the timer
-            if (isPlaying()) {
-                document.getElementById('blocker-full').style.display = 'none';
-            }
-        });
-
-        // Top blocker - video title
-        // Hide the title blocker after a _longer_ delay, if the video was recently started. The player displays the title
-        // for a few seconds after first playing it, so we need to keep our blocker for longer in this case.
-        var delay = isYoutube ? ((performance.now() - firstPlayTime < 5000) ? 5000 : 250) : isTwitch ? 5500 : 0;
-        doSomethingAfterDelay("hideTopBlocker", delay, function () {
-            // Make sure video hasn't been paused again during the timer
-            if (isPlaying()) {
-                document.getElementById('blocker-top').style.display = 'none';
-            }
-        });
+        hideBlockersShortly();
     }
     else if (newStateStr == "ended") {
         // Hide related videos that fill the player area at the end of the video
@@ -510,6 +501,37 @@ function onPlayerStateChange(newStateStr) {
     // Keep the UI responsive to changes in player state (rather than waiting for the next tick)
     onTimer();
 }
+
+function hideBlockersShortly() {
+    // Bottom blocker - related videos bar (YouTube) or video length (Twitch)
+    var delay = isYoutube ? 250 : isTwitch ? 5500 : 0;  // Twitch takes longer to hide the video length bar
+    doSomethingAfterDelay("hideBottomBlocker", delay, function() {
+        // Make sure video hasn't been paused again during the timer
+        if (isPlaying()) {
+            document.getElementById('blocker-bottom').style.display = 'none';
+        }
+    });
+
+    // Full blocker - related videos shown at end-of-video
+    doSomethingAfterDelay("hideFullBlocker", 250, function () {
+        // Make sure video hasn't been paused again during the timer
+        if (isPlaying()) {
+            document.getElementById('blocker-full').style.display = 'none';
+        }
+    });
+
+    // Top blocker - video title
+    // Hide the title blocker after a _longer_ delay, if the video was recently started. The player displays the title
+    // for a few seconds after first playing it, so we need to keep our blocker for longer in this case.
+    var delay = isYoutube ? ((performance.now() - firstPlayTime < 5000) ? 5000 : 250) : isTwitch ? 5500 : 0;
+    doSomethingAfterDelay("hideTopBlocker", delay, function () {
+        // Make sure video hasn't been paused again during the timer
+        if (isPlaying()) {
+            document.getElementById('blocker-top').style.display = 'none';
+        }
+    });
+}
+
 
 function onPlaybackQualityChange(event)
 {
