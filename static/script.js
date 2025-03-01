@@ -24,10 +24,12 @@ const twitchVideoIdRegex = /\b\d{10}\b/; // 10-digit number
 //TODO: Twitch - when seeking, the player shows a brief pause then unpause. Seems the docs are wrong about seeking/buffering being counted as playing? OInly for longer seeks?
 //  This isn't a big issue, but if the network is slow then it looks like the video is paused when it's just buffering. Maybe we can improve the UI here?
 //TODO: TWitch - set volume to 100%, as I think it remembers from other vods and then can't be changed!
-//TODO: TWitch - "Audio for portions of this video has been muted" popup e.g. on video 2389931008
-//   Maybe we can have an option to temporarily allow interacting with the native video player (disable our overlay) so the user can dismiss it
 //TODO: Some kind of "lock" icon for making the UI harder to accidentally bring up (e.g. in shower)
 //TODO: Twitch - doesn't seem to wake lock the screen, so it turns off after a delay
+//TODO: "https://youtubenospoilers.robdh.uk/?videoId=2392357389?t=3h35m19s" -> innfinite loading (note the URL is malformed)
+//TODO: https://youtubenospoilers.robdh.uk/?videoId=bob -> mentiosn null!
+//TODO: show the date/time the video was from, to make it easier to find follow-up videos
+//TODO: the loading status message is covered up by the blockers, so it's not visible when the video is loading!
 
 function decodeFriendlyTimeString(timeStr) {
     // Decode strings of the format:
@@ -866,10 +868,31 @@ function onSpeedSelectChange(event) {
     player.setPlaybackRate(parseFloat(this.value));
 }
 
+// Sometimes it's useful to be able to interact directly with the native video player (Youtube or Twitch).
+// For example on Twich sometimes there's a popup "Audio for portions of this video has been muted" popup which you want to dismiss.
+// Also you might want to hide all the blockers to see something on the video when paused, if you're not concerned about spoilers at that time.
+function useNativePlayerControlsClick(event) {
+    // Hide the overlay, which removes all our controls and blockers visually as well as allowing mouse/keyboard events through
+    // to the native player underneath
+    document.getElementById("player-overlay").style.display = "none";
+    // Provide a way for the user to return to the normal controls (as the Menu won't be accessible any more!)
+    document.getElementById("restore-normal-controls-button").style.display = "block";
+
+    // Close the menu, so it isn't still open when the user restores the normal controls
+    document.getElementById("menu").style.display = 'none';
+}
+
+function restoreNormalControlsClick(event) {
+    document.getElementById("player-overlay").style.display = "block";
+    document.getElementById("restore-normal-controls-button").style.display = "none";
+}
+
 function startup() {
     // Hookup event listeners
     document.getElementById("menu-button").addEventListener("click", onMenuButtonClick);
     document.getElementById("change-video-button").addEventListener("click", changeVideo);
+    document.getElementById("use-native-player-controls-button").addEventListener("click", useNativePlayerControlsClick);
+    document.getElementById("restore-normal-controls-button").addEventListener("click", restoreNormalControlsClick);
     document.getElementById("sign-in-button").addEventListener("click", signIn);
     document.getElementById("sign-out-button").addEventListener("click", signOut);
     document.getElementById("current-time-span").addEventListener("click", changeTime);

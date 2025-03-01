@@ -14,21 +14,22 @@
         <!-- The Twitch API will place its iframe as a child of this div once we load a video. -->
         <div id="player"></div>
 
-        <div id="blocker-top" class="blocker"></div> <!-- To hide the video title, which might have spoilers -->
-        <!-- YouTube: To hide related videos which are shown at the bottom while paused, which might have spoilers -->
-        <!-- Twitch: To hide the bar at the bottom which shows the length of the video -->
-        <div id="blocker-bottom" class="blocker"></div>
-        <div id="blocker-full" class="blocker">End of video. Hiding related videos.</div>
-
         <div id="loading-status">Please select a video from the Menu ➔</div>
 
         <!-- Use an overlay to display things and intercept mouse clicks on the player -->
         <div id="player-overlay">
+            <div id="blocker-top" class="blocker"></div> <!-- To hide the video title, which might have spoilers -->
+            <!-- YouTube: To hide related videos which are shown at the bottom while paused, which might have spoilers -->
+            <!-- Twitch: To hide the bar at the bottom which shows the length of the video -->
+            <div id="blocker-bottom" class="blocker"></div>
+            <div id="blocker-full" class="blocker">End of video. Hiding related videos.</div>
+
             <div id="player-overlay-controls">
                 <div id="player-overlay-controls-top">
                     <button id="menu-button">Menu</button>
                     <div id="menu">
                         <button id="change-video-button">Change Video...</button>
+                        <button id="use-native-player-controls-button">Use native player controls (BEWARE SPOILERS!)</button>
                         <button id="sign-in-button">Sign in...</button>
                         <div id="saved-positions-this-video-header">Saved positions (this video): <span id="saved-positions-this-video-loading" class="spinner" /></div>
                         <div id="saved-positions-this-video">
@@ -58,6 +59,8 @@
                 </div>
             </div>
         </div>
+
+        <button id="restore-normal-controls-button">Use spoiler-free controls</button>
     </div>
 
     <script src="static/script.js"></script>
