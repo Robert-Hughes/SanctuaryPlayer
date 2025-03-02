@@ -542,7 +542,7 @@ function onPlayerStateChange(newStateStr) {
         // Even though we show the pause blockers just before pausing the video, we also do it here just in case the video
         // gets paused through other means (not initiated by us)
         showPauseBlockers();
-        document.getElementById('play-pause-button').style.backgroundImage = "url('static/play.png')";
+        document.getElementById('play-pause-button').className = "icon-play";
     }
     else if (newStateStr == "playing") {
         if (isYoutube && !firstPlayTime) {
@@ -558,7 +558,7 @@ function onPlayerStateChange(newStateStr) {
             firstPlayTime = performance.now();
         }
 
-        document.getElementById('play-pause-button').style.backgroundImage = "url('static/pause.png')";
+        document.getElementById('play-pause-button').className = "icon-pause";
 
         // Hide the blocker boxes after a short delay, as the UI elements that we're covering take a little time to disappear
         hideBlockersShortly();
@@ -566,7 +566,7 @@ function onPlayerStateChange(newStateStr) {
     else if (newStateStr == "ended") {
         // Hide related videos that fill the player area at the end of the video
         document.getElementById('blocker-full').style.display = 'block';
-        document.getElementById('play-pause-button').style.backgroundImage = "url('static/play.png')";
+        document.getElementById('play-pause-button').className = "icon-play";
 
         if (isTwitch) {
             player.setVideo("0"); // Stop the player from auto-loading the next video (random hack that seems to work quite well)

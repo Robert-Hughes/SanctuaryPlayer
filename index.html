@@ -3,6 +3,18 @@
 <head>
     <title>YouTubeNoSpoilers</title>
     <link rel="shortcut icon" href="static/icon.png" />
+    <!--
+        Icon is base64 encoding of this SVG:
+
+     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+    <ellipse cx="50" cy="50" rx="40" ry="25" fill="none" stroke="red" stroke-width="4"/>
+    <circle cx="50" cy="50" r="15" fill="purple" />
+    <circle cx="50" cy="50" r="5" fill="white" />
+   <polygon points="50,10 50,90 100,50 " fill="green"/>
+      </svg>
+
+    -->
+    <link rel="icon" href="data:image/svg+xml;base64,IDxzdmcgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIiB2aWV3Qm94PSIwIDAgMTAwIDEwMCI+CiAgICA8ZWxsaXBzZSBjeD0iNTAiIGN5PSI1MCIgcng9IjQwIiByeT0iMjUiIGZpbGw9Im5vbmUiIHN0cm9rZT0icmVkIiBzdHJva2Utd2lkdGg9IjQiLz4KICAgIDxjaXJjbGUgY3g9IjUwIiBjeT0iNTAiIHI9IjE1IiBmaWxsPSJwdXJwbGUiIC8+CiAgICA8Y2lyY2xlIGN4PSI1MCIgY3k9IjUwIiByPSI1IiBmaWxsPSJ3aGl0ZSIgLz4KICAgPHBvbHlnb24gcG9pbnRzPSI1MCwxMCA1MCw5MCAxMDAsNTAgIiBmaWxsPSJncmVlbiIvPgogIDwvc3ZnPgo=" />
     <link rel="stylesheet" href="static/style.css">
     <!-- Attempt to fix issue where the page sometimes loads already zoomed in on mobile -->
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -41,7 +53,7 @@
                     </div>
                 </div>
                 <div id="player-overlay-controls-mid">
-                    <button id="play-pause-button"></button>
+                    <button id="play-pause-button" class="icon-play"></button>
                     <button id="fullscreen-button"></button>
                 </div>
                 <div id="player-overlay-controls-bot">
