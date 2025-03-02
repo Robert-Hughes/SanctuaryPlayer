@@ -80,6 +80,17 @@ function onMenuButtonClick(e) {
         // Update the list of saved positions each time the menu is opened, so that it is up-to-date (otherwise would need to refresh the page)
         fetchSavedPositions();
 
+        // Update list of available quality levels each time the menu is opened, as (for Twitch at least), these aren't
+        // available immediately when the video is first loaded
+        document.getElementById("quality-select").options.length = 0; // Clear any old options
+        for (var quality of getAvailableQualities()) {
+            var opt = document.createElement("option");
+            opt.value = quality;
+            opt.text = quality;
+            document.getElementById("quality-select").options.add(opt);
+        }
+        document.getElementById("quality-select").value = getCurrentQuality();
+
         document.getElementById("menu").style.display = "block";
     }
 }
@@ -111,6 +122,32 @@ function getCurrentPlaybackRate() {
         return player.getPlaybackRate();
     } else {
         return "1"; // Twitch doesn't seem to support playback rates
+    }
+}
+
+// Gets an array of strings, with the name of each available quality level
+function getAvailableQualities() {
+    if (isYoutube) {
+        return player.getAvailableQualityLevels();
+    } else {
+        return player.getQualities().map(q => q.name);
+    }
+}
+
+function getCurrentQuality() {
+    if (isYoutube) {
+        return player.getPlaybackQuality();
+    } else {
+        return player.getQuality();
+    }
+}
+
+function setQuality(quality) {
+    if (isYoutube) {
+        // Even though the youtube player has an API to set the quality, it doesn't actually do anything
+        // as you can no longer choose the quality that you receive - it's always automatically chosen by YouTube.
+    } else {
+        player.setQuality(quality);
     }
 }
 
@@ -535,7 +572,6 @@ function hideBlockersShortly() {
 function onPlaybackQualityChange(event)
 {
     console.log("onPlaybackQualityChange: " + event.data);
-    // document.getElementById("quality-text").innerText = "Quality: " + event.data;
 }
 
 function onPlaybackRateChange(event)
@@ -865,6 +901,10 @@ function onSpeedSelectChange(event) {
     player.setPlaybackRate(parseFloat(this.value));
 }
 
+function onQualitySelectChange(event) {
+    setQuality(this.value);
+}
+
 // Sometimes it's useful to be able to interact directly with the native video player (Youtube or Twitch).
 // For example on Twich sometimes there's a popup "Audio for portions of this video has been muted" popup which you want to dismiss.
 // Also you might want to hide all the blockers to see something on the video when paused, if you're not concerned about spoilers at that time.
@@ -885,27 +925,19 @@ function restoreNormalControlsClick(event) {
 }
 
 function toggleControlLocking(event) {
+    let elementsToToggle = document.querySelectorAll('button, select');
     if (document.getElementById("lock-controls-slider").className == "icon-unlocked") {
         //TODO: better styling for the locked play/pause buttons and the time at the bottom
-        for (let button of document.getElementsByTagName("button")) {
-            if (button.id != "lock-controls-slider") {
-                button.disabled = true;
-            }
-        }
-        for (let select of document.getElementsByTagName("select")) {
-            select.disabled = true;
+        for (let element of elementsToToggle) {
+            element.wasDisabled = element.disabled; // Remember if it was already disabled, e.g. the quality select for YouTube, so we don't re-enable it incorrectly!
+            element.disabled = true;
         }
         document.getElementById("current-time-span").style.pointerEvents = "none";
 
         document.getElementById("lock-controls-slider").className = "icon-locked";
     } else {
-        for (let button of document.getElementsByTagName("button")) {
-            if (button.id != "lock-controls-slider") {
-                button.disabled = false;
-            }
-        }
-        for (let select of document.getElementsByTagName("select")) {
-            select.disabled = false;
+        for (let element of elementsToToggle) {
+            element.disabled = element.wasDisabled;
         }
         document.getElementById("current-time-span").style.pointerEvents = "all";
 
@@ -971,6 +1003,7 @@ function startup() {
     document.getElementById("lock-controls-slider").addEventListener("pointermove", lockControlsPointerMove);
     document.getElementById("lock-controls-slider").addEventListener("pointerup", lockControlsPointerUp);
     document.getElementById("speed-select").addEventListener("change", onSpeedSelectChange);
+    document.getElementById("quality-select").addEventListener("change", onQualitySelectChange);
     document.addEventListener("keydown", onKeyDown)
     for (let button of document.getElementsByClassName("seek-button")) {
         button.addEventListener("click", seekButtonClicked);
@@ -986,6 +1019,7 @@ function startup() {
             // Configure YouTube-specific settings
             document.getElementById('blocker-top').style.height = "50px"; // Needs to be taller than the title bar
             document.getElementById('blocker-bottom').style.height = "50%"; // Needs to be taller than the related videos bar
+            document.getElementById('quality-select').disabled = true; // Youtube doesn't support changing quality, so we display the current quality but it can't be changed
 
             // Load the YouTube API script. Note I used to have this as a regular <script> element
             // in the HTML <head>, but this seemed to cause issues where the API wouldn't load correctly
