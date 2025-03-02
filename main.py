@@ -1,10 +1,13 @@
 from copyreg import pickle
 from email.headerregistry import UniqueUnstructuredHeader
 from enum import unique
+import flask
 from flask import Flask, request, send_file
 from google.cloud import datastore
 from datetime import datetime
 from datetime import timezone
+import requests
+import html
 
 app = Flask(__name__)
 
@@ -18,7 +21,7 @@ def serve_index():
     return send_file("index.html")
 
 @app.route("/save-position", methods=['POST'])
-def handle_save_position():   
+def handle_save_position():
     # Get parameters from request args
     user_id = request.args.get('user_id')
     device_id = request.args.get('device_id')
@@ -58,7 +61,7 @@ def handle_get_saved_positions():
         return ("Missing user_id or device_id in query args", 400)
     # Video ID is optional
     current_video_id = request.args.get('current_video_id')
-    
+
     def to_json(entities):
         result = []
         for r in entities:
@@ -82,7 +85,7 @@ def handle_get_saved_positions():
         query_results = [r for r in query_results if r['video_id'] != current_video_id]
 
     json = { 'other_videos': to_json(query_results) }
-            
+
     # Additionally, if a current_video_id was provided, show all the saved positions for this video on other devices.
     # This shows where you were up to on this video on different devices, even if it wasn't the most recent video you watched that device.
     # Note that we exclude the current device, because the saved position on the current device will be the position the user is already at,
@@ -96,6 +99,37 @@ def handle_get_saved_positions():
         query_results = list(query.fetch())
         query_results = [r for r in query_results if r['device_id'] != device_id]
 
-        json['this_video'] = to_json(query_results)           
+        json['this_video'] = to_json(query_results)
 
     return json
+
+# I can't find a way to get the title of a Twitch video from the player API and looking it up
+# via a separate request to the Twitch API requires an auth token which can't be sent from the client side (otherwise it would leak our token!).
+# Instead we do this server-side, and the web page will call this endpoint to get the title of a Twitch video.
+@app.route("/get-twitch-video-title", methods=['GET'])
+def handle_get_twitch_video_title():
+    # Get parameters from request args
+    video_id = request.args.get('video_id')
+
+    # We could use the Twitch API here, but that requires an auth token which will need refreshing etc.,
+    # so it's simpler just to scrape it from the HTML page of the video.
+    twitch_response = requests.get("http://www.twitch.tv/videos/" + video_id)
+    twitch_response.raise_for_status() # In case any errors
+    twitch_response.encoding = 'utf-8' # Even though the `requests` package is supposed to automatically detect encoding, it doesn't seem to work
+
+    twitch_html = twitch_response.text
+
+    # Extract the title from the <meta> tag
+    search_string = '<meta name="title" content="'
+    title_start = twitch_html.find(search_string)
+    if title_start == -1:
+        return "Title not found"
+    title_start += len(search_string)
+    title_end = twitch_html.find('"/>', title_start)
+    if title_end == -1:
+        return "Title not found"
+
+    title = twitch_html[title_start:title_end]
+    title = html.unescape(title) # Unescape HTML entities (e.g. &amp;)
+
+    return flask.Response(title, content_type="text/plain; charset=utf-8") # Make sure to report our encoding as utf-8, so special characters are handled properly

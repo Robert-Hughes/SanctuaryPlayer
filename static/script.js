@@ -15,6 +15,10 @@ var isYoutube = false;
 const youtubeVideoIdRegex = /^[A-Za-z0-9-_]{11}$/; // 11 alphanumeric chars (plus some special chars)
 const twitchVideoIdRegex = /^\d{10}$/; // 10-digit number
 
+// The title of the current Twitch video, which we can't get from the player object. This won't be available
+// immediately as we query it from our own server.
+var twitchVideoTitle = "<Unknown Twitch Video>";
+
 //TODO: youtube - loading video with a time set and then pressing play results in the time at the bottom briefly jumping to 0 before jumping to the correct time
 //TODO: Twitch - on first load it shows a weird quarter-size frame in the corner before playing the video
 //TODO: improve display of recent videos in menu. Maybe show the video ID too, to distinguish between different videos with the same censored title (_ vs _)
@@ -398,6 +402,13 @@ function changeVideo() {
     window.location = '?' + params.toString();
 }
 
+function updateVideoTitle() {
+    let title = getSafeTitle();
+    document.title = title;
+    // The blocker box at the top hides the video title, as it may contain spoilers, so we hide it, but show a filtered version of the title instead.
+    document.getElementById("blocker-top").innerText = title;
+}
+
 function onPlayerReady() {
     console.log("onPlayerReady");
 
@@ -406,9 +417,7 @@ function onPlayerReady() {
     // successful load
     if (isVideoLoadedSuccessfully()) {
         document.getElementById("loading-status").style.display = "none";
-        document.title = getSafeTitle();
-        // The blocker box at the top hides the video title, as it may contain spoilers, so we hide it, but show a filtered version of the title instead.
-        document.getElementById("blocker-top").innerText = getSafeTitle();
+        updateVideoTitle();
 
         // Show the video controls, now that they will work
         document.getElementById("player-overlay-controls-mid").style.display = 'flex';
@@ -429,6 +438,30 @@ function onPlayerReady() {
         // Note we don't start it before now, otherwise the player.getCurrentTime() might return 0 and we don't want
         // to report that.
         timerId = window.setInterval(onTimer, 500);
+
+        // We can't get the Twitch video title from the player and looking it up via a separate request to the Twitch API requires
+        // an auth token which can't be sent from the client side (otherwise it would leak our token!).
+        // We could scrape it from the video's web page, but the browser will block that due to CORS.
+        // Instead we fetch it from our server which can do the query for us (without CORS) - yuck!
+        // The initial title is set to a placeholder and will be updated when the server responds.
+        fetch("get-twitch-video-title?video_id=" + getVideoIdFromPlayer())
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error('get-twitch-video-title response was not OK');
+                }
+                return response.text()
+            })
+            .then(response => {
+                twitchVideoTitle = response;
+                updateVideoTitle();
+            })
+            .catch((error) => {
+                console.error('Error:', error);
+            })
+            .finally(() => {
+            });
+
+
     } else {
         document.getElementById("loading-status").innerText = 'Error!';
     }
@@ -488,7 +521,7 @@ function getSafeTitle() {
     if (isYoutube) {
         title = player.getVideoData().title;
     } else if (isTwitch) {
-        title = player && player.getVideo(); //TODO: find a way to get the title, just using ID for now
+        title = twitchVideoTitle; // We can't get this from the Twitch player object, and instead query it from our server and store it here
     }
 
     // The video title may have something like "X vs Y Game 5", which tells you it goes to game 5, so hide this
