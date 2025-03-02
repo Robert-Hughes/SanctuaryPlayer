@@ -17,7 +17,6 @@ const twitchVideoIdRegex = /^\d{10}$/; // 10-digit number
 
 //TODO: youtube - loading video with a time set and then pressing play results in the time at the bottom briefly jumping to 0 before jumping to the correct time
 //TODO: Twitch - on first load it shows a weird quarter-size frame in the corner before playing the video
-//TODO: Twitch - quality support. Don't think we can do this for YouTube, but can show the current quality?
 //TODO: improve display of recent videos in menu. Maybe show the video ID too, to distinguish between different videos with the same censored title (_ vs _)
 //TODO: Youtube also has some dodgy behaviour with ended videos and seeking/pressing play
 //TODO: Twitch - when seeking, the player shows a brief pause then unpause. Seems the docs are wrong about seeking/buffering being counted as playing? OInly for longer seeks?
@@ -301,19 +300,22 @@ function fetchSavedPositions() {
 }
 
 function changeVideo() {
-    var userValue = prompt("Please enter YouTube video URL or video ID:");
+    var userValue = prompt("Please enter YouTube/Twitch video URL or video ID:");
     if (!userValue) {
         return;
     }
 
     // Extract video ID and time from URL/string. Needs to work for:
-    //   3fgD9k8Hkbc
+    //   3fgD9k8Hkbc (YouTube video ID)
+    //   2395077199 (Twitch video ID)
     //   https://youtu.be/3fgD9k8Hkbc
     //   https://youtu.be/3fgD9k8Hkbc?t=3839
     //   https://www.youtube.com/watch?v=3fgD9k8Hkbc
     //   https://www.youtube.com/watch?v=3fgD9k8Hkbc&t=54m39s
     //   https://www.youtube.com/watch?v=3fgD9k8Hkbc&t=54m39s&bob=someting
     //   https://youtube.com/watch?v=jDqFz0ZzoZo&si=3b7duJGqF-SKQqKI
+    //   https://www.twitch.tv/videos/2386400830
+    //   https://www.twitch.tv/videos/2386400830?t=1h29m24s
     var videoId = null;
     var time = null;
 
@@ -322,21 +324,34 @@ function changeVideo() {
     // First try parsing it as a URL
     url = URL.parse(userValue);
     if (url) {
-        // The video ID could be the last part of the path, or it could be a query string paramater
-        videoId = url.searchParams.get("v");
-        if (videoId == null) {
+        if (url.hostname.includes("youtube") || url.hostname.includes("youtu.be")) {
+            // The video ID could be the last part of the path, or it could be a query string paramater
+            videoId = url.searchParams.get("v");
+            if (videoId == null) {
+                var lastPart = url.pathname.split("/").pop();
+                var match = lastPart.match(youtubeVideoIdRegex);
+                if (match) {
+                    videoId = match[0];
+                }
+            }
+        } else if (url.hostname.includes("twitch")) {
+            // The video ID is the last part of the path
             var lastPart = url.pathname.split("/").pop();
-            var match = lastPart.match(youtubeVideoIdRegex);
+            var match = lastPart.match(twitchVideoIdRegex);
             if (match) {
                 videoId = match[0];
             }
         }
 
-        // time is always a query string parameter
+        // time is always a query string parameter (same for YouTube and Twitch)
         time = url.searchParams.get("t");
     } else {
         // Fallback to a simpler regex search, just to get the video ID (no time)
         var match = userValue.match(youtubeVideoIdRegex);
+        if (match) {
+            videoId = match[0];
+        }
+        match = userValue.match(twitchVideoIdRegex);
         if (match) {
             videoId = match[0];
         }
