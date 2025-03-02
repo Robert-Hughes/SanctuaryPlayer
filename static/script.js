@@ -659,8 +659,10 @@ function onError(event)
 
 function hideControlsShortly() {
     doSomethingAfterDelay("hideControls", 2000, function() {
-        // Don't hide the controls if the menu is open
-        if (window.getComputedStyle(document.getElementById("menu")).display == "none") {
+        // Don't hide the controls if the menu is open or if the lock slider is being dragged.
+        // Once the menu is closed or the slider is dropped, the controls should be hidden shortly again
+        if (window.getComputedStyle(document.getElementById("menu")).display == "none" &&
+            document.getElementById("lock-controls-slider").dragStartX == undefined) {
             document.getElementById("player-overlay-controls").style.display = 'none';
         }
     });
@@ -1036,8 +1038,13 @@ function lockControlsPointerMove(event) {
     let slider = document.getElementById("lock-controls-slider");
     if (slider.hasPointerCapture(event.pointerId)) {
         slider.style.left = (event.clientX - slider.dragStartX) + "px";
-        //TODO: clamp it to the end of the slider range
-        //TODO: visual feedback that the slider has been taken 'far enough'
+        //TODO: clamp it to the end of the slider range?
+        // Indicate that has been dragged far enough to have an effect
+        if (parseInt(window.getComputedStyle(slider).left) > document.getElementById("root").clientWidth * 0.25) {
+            slider.style.backgroundColor = "green";
+        } else {
+            slider.style.backgroundColor = "transparent";
+        }
     }
 }
 
@@ -1045,6 +1052,7 @@ function lockControlsPointerUp(event) {
     let slider = document.getElementById("lock-controls-slider");
     if (slider.hasPointerCapture(event.pointerId)) {
         slider.releasePointerCapture(event.pointerId);
+        slider.dragStartX = undefined;
         // Make the slider automatically slide back to the left, over a short period
         slider.style.transition = "left 0.5s";
         slider.style.left = "0px";
@@ -1053,6 +1061,8 @@ function lockControlsPointerUp(event) {
         if (parseInt(window.getComputedStyle(slider).left) > document.getElementById("root").clientWidth * 0.25) {
             toggleControlLocking();
         }
+
+        slider.style.backgroundColor = "transparent";
     }
 }
 
