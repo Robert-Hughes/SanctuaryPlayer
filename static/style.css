@@ -163,6 +163,25 @@ body {
     font-size: min(5vw, 50px); /* Scale font size with width */
 }
 
+#lock-controls-slider {
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+    left: 0px;
+    height: 2em;
+    width: 2em;
+}
+
+/* Padlock icon - from ChatGPT, try using https://mediamodifier.com/svg-editor to edit? */
+.icon-locked {
+    background-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="white" d="M12 2a5 5 0 0 0-5 5v3H6a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-7a2 2 0 0 0-2-2h-1V7a5 5 0 0 0-5-5zm0 2a3 3 0 0 1 3 3v3h-6V7a3 3 0 0 1 3-3zm0 8a2 2 0 1 1 0 4 2 2 0 0 1 0-4z"/></svg>');
+}
+
+/* Unlocked padlock icon - from ChatGPT, try using https://mediamodifier.com/svg-editor to edit?  */
+.icon-unlocked {
+    background-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="white" d="M17 9V7a5 5 0 0 0-10 0v2h-1a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-7a2 2 0 0 0-2-2h-1zm-6-2a3 3 0 1 1 6 0v2h-6V7zm1 6a2 2 0 1 1 4 0 2 2 0 0 1-4 0z"/></svg>');
+}
+
 #current-time-span {
     cursor: pointer;
     background-color: white;

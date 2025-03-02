@@ -30,6 +30,7 @@ const twitchVideoIdRegex = /\b\d{10}\b/; // 10-digit number
 //TODO: https://youtubenospoilers.robdh.uk/?videoId=bob -> mentiosn null!
 //TODO: show the date/time the video was from, to make it easier to find follow-up videos
 //TODO: the loading status message is covered up by the blockers, so it's not visible when the video is loading!
+//TODO: rename to remove the 'YouTube' part?
 
 function decodeFriendlyTimeString(timeStr) {
     // Decode strings of the format:
@@ -781,7 +782,7 @@ function onAPIReady() {
             height: '100%',
             width: '100%',
             video: params.get('videoId'),
-            time: startTime,
+            time: startTime, //TOOD: if starting a VOD that you were previously watching live, it seems to ignore this and instead jump to that time?
             // Turn off autoplay because a) it doesn't work for mobile so it's inconsistent and b) can be annoying especially if tab reloads in the background
             autoplay: false,
         };
@@ -887,6 +888,76 @@ function restoreNormalControlsClick(event) {
     document.getElementById("restore-normal-controls-button").style.display = "none";
 }
 
+function toggleControlLocking(event) {
+    if (document.getElementById("lock-controls-slider").className == "icon-unlocked") {
+        //TODO: better styling for the locked play/pause buttons and the time at the bottom
+        for (let button of document.getElementsByTagName("button")) {
+            if (button.id != "lock-controls-slider") {
+                button.disabled = true;
+            }
+        }
+        for (let select of document.getElementsByTagName("select")) {
+            select.disabled = true;
+        }
+        document.getElementById("current-time-span").style.pointerEvents = "none";
+
+        document.getElementById("lock-controls-slider").className = "icon-locked";
+    } else {
+        for (let button of document.getElementsByTagName("button")) {
+            if (button.id != "lock-controls-slider") {
+                button.disabled = false;
+            }
+        }
+        for (let select of document.getElementsByTagName("select")) {
+            select.disabled = false;
+        }
+        document.getElementById("current-time-span").style.pointerEvents = "all";
+
+        document.getElementById("lock-controls-slider").className = "icon-unlocked";
+    }
+}
+
+function lockControlsPointerDown(event) {
+    //TOOD: visual indication that this thing needs to be dragged!
+    let slider = document.getElementById("lock-controls-slider");
+    // Begin dragging the slider - capture future pointer events (mainly so that we have a way of remembering
+    // that we are dragging, but this might also help catch pointer events if it moves outside of the slider bounds)
+    slider.setPointerCapture(event.pointerId);
+    // Remember where the pointer is relative to the slider box, so we can calculate the new position when dragged (see lockControlsPointerMove)
+    slider.dragStartX = event.offsetX;
+
+    // Cancel any previous transition if the slider was automatically sliding back to the left
+    // by fixing the element in place at its half-transitioned position and then remove the transition effect.
+    slider.style.left  = window.getComputedStyle(slider).left;
+    slider.style.transition = "none";
+}
+
+function lockControlsPointerMove(event) {
+    let slider = document.getElementById("lock-controls-slider");
+    if (slider.hasPointerCapture(event.pointerId)) {
+        slider.style.left = (event.clientX - slider.dragStartX) + "px";
+        //TODO: clamp it to the end of the slider range
+        //TODO: visual feedback that the slider has been taken 'far enough'
+    }
+}
+
+function lockControlsPointerUp(event) {
+    let slider = document.getElementById("lock-controls-slider");
+    if (slider.hasPointerCapture(event.pointerId)) {
+        slider.releasePointerCapture(event.pointerId);
+        // Make the slider automatically slide back to the left, over a short period
+        slider.style.transition = "left 0.5s";
+        slider.style.left = "0px";
+
+        // If dragged far enough, lock/unlock the controls
+        if (parseInt(window.getComputedStyle(slider).left) > document.getElementById("root").clientWidth * 0.25) {
+            toggleControlLocking();
+        }
+    }
+}
+
+
+
 function startup() {
     // Hookup event listeners
     document.getElementById("menu-button").addEventListener("click", onMenuButtonClick);
@@ -900,6 +971,9 @@ function startup() {
     document.getElementById("player-overlay-controls").addEventListener("click", onOverlayControlsClick);
     document.getElementById("play-pause-button").addEventListener("click", togglePlayPause);
     document.getElementById("fullscreen-button").addEventListener("click", toggleFullscreen);
+    document.getElementById("lock-controls-slider").addEventListener("pointerdown", lockControlsPointerDown);
+    document.getElementById("lock-controls-slider").addEventListener("pointermove", lockControlsPointerMove);
+    document.getElementById("lock-controls-slider").addEventListener("pointerup", lockControlsPointerUp);
     document.getElementById("speed-select").addEventListener("change", onSpeedSelectChange);
     document.addEventListener("keydown", onKeyDown)
     for (let button of document.getElementsByClassName("seek-button")) {
