@@ -17,11 +17,14 @@ body {
     /* As well as being displayed when no video is loaded yet, this needs to display properly on top of the blockers when
        there is an error loading a video. So it needs absolute position etc. so it's on top */
     position: absolute;
-    top: 0px;
-    left: 0px;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    left: 50%;
     right: 0px;
     text-align: center;
     background:white;
+    border-radius: 10px;
+    padding: 10px;
 }
 
 #player {

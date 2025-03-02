@@ -12,10 +12,9 @@ var videoPlatform = null; // 'twitch' or 'youtube'
 var isTwitch = false;
 var isYoutube = false;
 
-const youtubeVideoIdRegex = /\b[A-Za-z0-9-_]{11}\b/; // 11 alphanumeric chars (plus some special chars)
-const twitchVideoIdRegex = /\b\d{10}\b/; // 10-digit number
+const youtubeVideoIdRegex = /^[A-Za-z0-9-_]{11}$/; // 11 alphanumeric chars (plus some special chars)
+const twitchVideoIdRegex = /^\d{10}$/; // 10-digit number
 
-//TODO: hide twitch "play" icon that appears while loading?
 //TODO: youtube - loading video with a time set and then pressing play results in the time at the bottom briefly jumping to 0 before jumping to the correct time
 //TODO: Twitch - on first load it shows a weird quarter-size frame in the corner before playing the video
 //TODO: Twitch - quality support. Don't think we can do this for YouTube, but can show the current quality?
@@ -24,12 +23,9 @@ const twitchVideoIdRegex = /\b\d{10}\b/; // 10-digit number
 //TODO: Twitch - when seeking, the player shows a brief pause then unpause. Seems the docs are wrong about seeking/buffering being counted as playing? OInly for longer seeks?
 //  This isn't a big issue, but if the network is slow then it looks like the video is paused when it's just buffering. Maybe we can improve the UI here?
 //TODO: TWitch - set volume to 100%, as I think it remembers from other vods and then can't be changed!
-//TODO: Some kind of "lock" icon for making the UI harder to accidentally bring up (e.g. in shower)
 //TODO: Twitch - doesn't seem to wake lock the screen, so it turns off after a delay
-//TODO: "https://youtubenospoilers.robdh.uk/?videoId=2392357389?t=3h35m19s" -> innfinite loading (note the URL is malformed)
-//TODO: https://youtubenospoilers.robdh.uk/?videoId=bob -> mentiosn null!
+//TODO: http://127.0.0.1:5500/index.html?videoId=2392357391 -> innfinite loading (the Video ID is invalid)
 //TODO: show the date/time the video was from, to make it easier to find follow-up videos
-//TODO: the loading status message is covered up by the blockers, so it's not visible when the video is loading!
 //TODO: rename to remove the 'YouTube' part?
 
 function decodeFriendlyTimeString(timeStr) {
@@ -1013,16 +1009,13 @@ function startup() {
             script.src = "https://player.twitch.tv/js/embed/v1.js";
             script.onload = onAPIReady;
             document.body.appendChild(script)
-        } else {
-            console.log("Unknown video platform!");
         }
 
-        // Show start time at bottom of controls, as it may take a few seconds for the video to load
-        // and we'd like the start time to be visible before then
-        if (params.has('time')) {
-            document.getElementById("loading-status").innerText = `Loading ${videoPlatform} video ${params.get('videoId')} at ${params.get('time')}...`;
-        } else  {
-            document.getElementById("loading-status").innerText = `Loading ${videoPlatform} video ${params.get('videoId')}...`;
+        if (videoPlatform) {
+            document.getElementById("loading-status").innerText = `Loading ${videoPlatform} player...`;
+        }
+        else {
+            document.getElementById("loading-status").innerText = `Error! Unknown video platform for video ID: ${params.get('videoId')}`;
         }
     }
     updateSignedInStatus();

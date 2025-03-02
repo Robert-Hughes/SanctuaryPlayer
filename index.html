@@ -14,8 +14,6 @@
         <!-- The Twitch API will place its iframe as a child of this div once we load a video. -->
         <div id="player"></div>
 
-        <div id="loading-status">Please select a video from the Menu ➔</div>
-
         <!-- Use an overlay to display things and intercept mouse clicks on the player -->
         <div id="player-overlay">
             <div id="blocker-top" class="blocker"></div> <!-- To hide the video title, which might have spoilers -->
@@ -62,6 +60,9 @@
         </div>
 
         <button id="restore-normal-controls-button">Use spoiler-free controls</button>
+
+        <!-- Note the loading status needs to be shown on top of everything else, so is at the bottom here. -->
+        <div id="loading-status">Please select a video from the Menu ➔</div>
     </div>
 
     <script src="static/script.js"></script>
