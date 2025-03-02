@@ -27,24 +27,50 @@ const twitchVideoIdRegex = /^\d{10}$/; // 10-digit number
 //TODO: show the date/time the video was from, to make it easier to find follow-up videos
 //TODO: rename to remove the 'YouTube' part?
 
+// Decodes a 'human-friendly' time string (like 1h30) into a number of seconds
 function decodeFriendlyTimeString(timeStr) {
     // Decode strings of the format:
-    //   1234
-    //   1.45
-    //   4567s
-    //   1m2s
-    //   2h1m40s
-    //   2m
-    //   2m1.5s
-    //TODO: 8h20 - should go to 8:20:00, but currently goes to 8:00:20
-    var timeMatch = timeStr.match(/^(?:(\d+)h)?(?:(\d+)m)?(?:([\d.]+)s?)?$/);
-    if (!timeMatch) {
-        return null;
+    //   1234 (1234 seconds)
+    //   1.45 (1 minute 45 seconds)
+    //   4567s (4567 seconds)
+    //   1m2s (1 minute 2 seconds)
+    //   2h1m40s (2 hours 1 minute 40 seconds)
+    //   2m (2 minutes)
+    //   8h20 (8 hours 20 minutes)
+    //   2:34:57 (2 hours 34 minutes 57 seconds)
+    //   3:45 (3 minutes 45 seconds)
+    //   :40 (40 seconds)
+    //   1: (1 minute)
+
+    // Split up the digit groups, note that the brackets for regex capturing mean that the seperators are also included in the resulting array.
+    let parts = timeStr.split(/([^0-9]+)/);
+    // We should now have an array that alternates between a number and a seperator, e.g. ["1", "h", "30", "m"]
+    // Note that the way that split() works it will always return an odd number of elements, but the first/last elements may be empty strings if
+    // the string started/ended with a non-digit character.
+
+    // If we don't encounter a separator which specifies the units (like h, m or s), then we assume based
+    // on the number of parts. e.g. for 1:23:45 it starts with hours, but 1234 is just seconds.
+    let defaultPlaceValue = parts.length == 1 ? 1 :
+                            parts.length == 3 ? 60 : 3600;
+    let currentPlaceValue = defaultPlaceValue; // We'll update this as we go
+
+    let result = 0;
+    for (var i = 0; i < parts.length; i += 2) {
+        let value = parts[i] == '' ? 0 : parseInt(parts[i]);
+        // If the seperator specifies h/m/s, then use that as the place value, otherwise assume that it's
+        // the value we calculated on the previous iteration (reducing place value)
+        let seperator = parts[i + 1];
+        currentPlaceValue = seperator == 'h' ? 3600 :
+                            seperator == 'm' ? 60 :
+                            seperator == 's' ? 1 : currentPlaceValue;
+
+        result += value * currentPlaceValue;
+
+        // Assume that the place value decreases as we go (h -> m -> s)
+        currentPlaceValue = currentPlaceValue / 60;
     }
-    var h = parseInt(timeMatch[1] || '0');
-    var m = parseInt(timeMatch[2] || '0');
-    var s = parseFloat(timeMatch[3] || '0');
-    return 3600 * h + 60 * m + s;
+
+    return result;
 }
 
 function toFriendlyTimeString(seconds) {
@@ -318,8 +344,6 @@ function changeVideo() {
     //   https://www.twitch.tv/videos/2386400830?t=1h29m24s
     var videoId = null;
     var time = null;
-
-    //TODO: Twitch URLs/video IDs
 
     // First try parsing it as a URL
     url = URL.parse(userValue);
