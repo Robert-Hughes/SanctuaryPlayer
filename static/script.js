@@ -22,12 +22,15 @@ var twitchVideoTitle = "<Unknown Twitch Video>";
 //TODO: youtube - loading video with a time set and then pressing play results in the time at the bottom briefly jumping to 0 before jumping to the correct time
 //TODO: Twitch - on first load it shows a weird quarter-size frame in the corner before playing the video
 //TODO: improve display of recent videos in menu. Maybe show the video ID too, to distinguish between different videos with the same censored title (_ vs _)
+//TODO: Twitch better handling of ENDED - if ends naturally then the blocker doesn't always appear
+// also, if refresh the video when it's at the end, the blocker doesn't appear either!
+// also seeking away from the end of the video seems a bit broken
 //TODO: Youtube also has some dodgy behaviour with ended videos and seeking/pressing play
 //TODO: Twitch - when seeking, the player shows a brief pause then unpause. Seems the docs are wrong about seeking/buffering being counted as playing? OInly for longer seeks?
 //  This isn't a big issue, but if the network is slow then it looks like the video is paused when it's just buffering. Maybe we can improve the UI here?
 //TODO: TWitch - set volume to 100%, as I think it remembers from other vods and then can't be changed!
 //TODO: Twitch - doesn't seem to wake lock the screen, so it turns off after a delay
-//TODO: http://127.0.0.1:5500/index.html?videoId=2392357391 -> innfinite loading (the Video ID is invalid)
+//TODO: http://127.0.0.1:5500/index.html?videoId=2392357391 -> innfinite loading (the Video ID is invalid) -  The ERROR callback thing doesn't seem to work!
 //TODO: show the date/time the video was from, to make it easier to find follow-up videos
 //TODO: rename to remove the 'YouTube' part?
 //TODO: On Android and Twitch video - changing quality then re-opening the menu shows a blank quality! Actually seems to be the same on PC...
@@ -925,13 +928,7 @@ function onAPIReady() {
         player.addEventListener(Twitch.Player.VIDEO_PLAY, function() { onPlayerStateChange("playing"); } );
         player.addEventListener(Twitch.Player.VIDEO_PAUSE, function() { onPlayerStateChange("paused"); });
         player.addEventListener(Twitch.Player.ENDED, function() { onPlayerStateChange("ended"); });
-        //TODO: if error loading video, e.g. video ID invalid, then we need to catch this. The below thing doesn't seem to work!
         player.addEventListener(Twitch.Player.ERROR, function(x) { console.log("Twitch error: " + x); });
-        //TODO: better handling of ENDED - if ends naturally then the blocker doesn't always appear
-
-        // also, if refresh the video when it's at the end, the blocker doesn't appear either!
-        // also seeking away from the end of the video seems a bit broken
-        //TODO: find a way to stop twitch from auto-loading the 'next' video after getting to the end
     }
 
     // Display blockers before the video loads so that when the video loads but hasn't started playing,
@@ -1006,7 +1003,6 @@ function restoreNormalControlsClick(event) {
 function toggleControlLocking(event) {
     let elementsToToggle = document.querySelectorAll('button, select');
     if (document.getElementById("lock-controls-slider").className == "icon-unlocked") {
-        //TODO: better styling for the locked play/pause buttons and the time at the bottom
         for (let element of elementsToToggle) {
             element.wasDisabled = element.disabled; // Remember if it was already disabled, e.g. the quality select for YouTube, so we don't re-enable it incorrectly!
             element.disabled = true;
@@ -1042,14 +1038,16 @@ function lockControlsPointerDown(event) {
 function lockControlsPointerMove(event) {
     let slider = document.getElementById("lock-controls-slider");
     if (slider.hasPointerCapture(event.pointerId)) {
-        slider.style.left = (event.clientX - slider.dragStartX) + "px";
-        //TODO: clamp it to the end of the slider range?
-        // Indicate that has been dragged far enough to have an effect
-        if (parseInt(window.getComputedStyle(slider).left) > document.getElementById("root").clientWidth * 0.25) {
+        const limit = document.getElementById("root").clientWidth * 0.25;
+        let newPos = event.clientX - slider.dragStartX;
+        if (newPos > limit) {
+            newPos = limit;
+            // Indicate that has been dragged far enough to have an effect
             slider.style.backgroundColor = "green";
         } else {
             slider.style.backgroundColor = "transparent";
         }
+        slider.style.left = newPos + "px";
     }
 }
 
@@ -1063,7 +1061,7 @@ function lockControlsPointerUp(event) {
         slider.style.left = "0px";
 
         // If dragged far enough, lock/unlock the controls
-        if (parseInt(window.getComputedStyle(slider).left) > document.getElementById("root").clientWidth * 0.25) {
+        if (slider.style.backgroundColor == "green") {
             toggleControlLocking();
         }
 

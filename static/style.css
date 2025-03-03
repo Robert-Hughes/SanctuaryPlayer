@@ -139,7 +139,6 @@ body {
 }
 #play-pause-button {
     background-size: cover;
-    background-color: white;
 }
 .icon-play {
     background-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><polygon points="4,4 4,20 20,12 "/></svg>');
@@ -151,7 +150,6 @@ body {
 #fullscreen-button {
     background-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">    <g fill="none" stroke="currentColor" stroke-width="2">    <path d="M4 10l0 -6l6 0" />    <path d="M20 10l0 -6l-6 0" />    <path d="M4 14l0 6l6 0" />    <path d="M20 14l0 6l-6 0" />    </g> </svg>');
     background-size: cover;
-    background-color: white;
 }
 
 #player-overlay-controls-bot {
