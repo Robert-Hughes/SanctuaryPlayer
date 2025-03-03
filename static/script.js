@@ -30,6 +30,8 @@ var twitchVideoTitle = "<Unknown Twitch Video>";
 //TODO: http://127.0.0.1:5500/index.html?videoId=2392357391 -> innfinite loading (the Video ID is invalid)
 //TODO: show the date/time the video was from, to make it easier to find follow-up videos
 //TODO: rename to remove the 'YouTube' part?
+//TODO: On Android and Twitch video - changing quality then re-opening the menu shows a blank quality! Actually seems to be the same on PC...
+//TODO: On Android and Twitch video - the blockers cover most of the video! Can we make these smaller?
 
 // Decodes a 'human-friendly' time string (like 1h30) into a number of seconds
 function decodeFriendlyTimeString(timeStr) {
@@ -159,7 +161,10 @@ function getAvailableQualities() {
     if (isYoutube) {
         return player.getAvailableQualityLevels();
     } else {
-        return player.getQualities().map(q => q.name);
+        // The Twitch player API returns an array of objects, each with a few properties. Although .name seems
+        // like it should be the one to use, it's .group that we need for setQuality and getQuality.
+
+        return player.getQualities().map(q => q.group);
     }
 }
 
