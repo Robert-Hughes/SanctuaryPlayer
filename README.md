@@ -39,3 +39,20 @@ THis means the server doesn't need to keep handling requests while watching a vi
 * The "loading" spinner on the menu can make the horizontal scroll bar appear
 * Twitch video titles sometimes fail to load ("TItle not found") - I think this is cos the twitch web page for the video doesn't have the
  proper video title in it on the first load, and needs to be refreshed sometimes - maybe do this automatically on our python server?
+* youtube - loading video with a time set and then pressing play results in the time at the bottom briefly jumping to 0 before jumping to the correct time
+* Twitch - on first load it shows a weird quarter-size frame in the corner before playing the video
+* improve display of recent videos in menu. Maybe show the video ID too, to distinguish between different videos with the same censored title (_ vs _)
+* Twitch better handling of ENDED - if ends naturally then the blocker doesn't always appear
+// also, if refresh the video when it's at the end, the blocker doesn't appear either!
+// also seeking away from the end of the video seems a bit broken
+* Youtube also has some dodgy behaviour with ended videos and seeking/pressing play
+* Twitch - when seeking, the player shows a brief pause then unpause. Seems the docs are wrong about seeking/buffering being counted as playing? OInly for longer seeks?
+//  This isn't a big issue, but if the network is slow then it looks like the video is paused when it's just buffering. Maybe we can improve the UI here?
+* TWitch - set volume to 100%, as I think it remembers from other vods and then can't be changed!
+* Twitch - doesn't seem to wake lock the screen, so it turns off after a delay
+* http://127.0.0.1:5500/index.html?videoId=2392357391 -> innfinite loading (the Video ID is invalid) -  The ERROR callback thing doesn't seem to work!
+* show the date/time the video was from, to make it easier to find follow-up videos
+* rename to remove the 'YouTube' part?
+* On Android and Twitch video - changing quality then re-opening the menu shows a blank quality! Actually seems to be the same on PC...
+* On Android and Twitch video - the blockers cover most of the video! Can we make these smaller?
+

@@ -8,6 +8,7 @@ from datetime import datetime
 from datetime import timezone
 import requests
 import html
+from html.parser import HTMLParser
 
 app = Flask(__name__)
 
@@ -113,23 +114,32 @@ def handle_get_twitch_video_title():
 
     # We could use the Twitch API here, but that requires an auth token which will need refreshing etc.,
     # so it's simpler just to scrape it from the HTML page of the video.
-    twitch_response = requests.get("http://www.twitch.tv/videos/" + video_id)
-    twitch_response.raise_for_status() # In case any errors
+    # Note it's important that we use https (rather than http), otherwise we get a redirect page that (sometimes?) doesn't include the title
+    twitch_response = requests.get("https://www.twitch.tv/videos/" + video_id)
+    if twitch_response.status_code != 200:
+        return ("Failed to fetch video page, status code " + str(twitch_response.status_code), 500)
     twitch_response.encoding = 'utf-8' # Even though the `requests` package is supposed to automatically detect encoding, it doesn't seem to work
 
-    twitch_html = twitch_response.text
+    x = 1
 
-    # Extract the title from the <meta> tag
-    search_string = '<meta name="title" content="'
-    title_start = twitch_html.find(search_string)
-    if title_start == -1:
-        return "Title not found"
-    title_start += len(search_string)
-    title_end = twitch_html.find('"/>', title_start)
-    if title_end == -1:
-        return "Title not found"
+    class MyParser(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.title = None
 
-    title = twitch_html[title_start:title_end]
-    title = html.unescape(title) # Unescape HTML entities (e.g. &amp;)
+        def handle_starttag(self, tag, attrs):
+            if tag == 'meta':
+                for (key, value) in attrs:
+                    if key == 'name' and value == 'title':
+                        for (key, value) in attrs:
+                            if key == 'content':
+                                self.title = value
+                                return
 
-    return flask.Response(title, content_type="text/plain; charset=utf-8") # Make sure to report our encoding as utf-8, so special characters are handled properly
+    parser = MyParser()
+    parser.feed(twitch_response.text)
+
+    if parser.title is None:
+        return ("Failed to find title in video page", 500)
+
+    return flask.Response(parser.title, content_type="text/plain; charset=utf-8") # Make sure to report our encoding as utf-8, so special characters are handled properly
