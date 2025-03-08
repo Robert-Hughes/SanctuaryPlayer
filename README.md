@@ -27,14 +27,12 @@ Note we are using europe-west1 (Belgium) as it supports simpler custom domains, 
 
 TODO:
 
-* Ability to delete/clean up old saved position data. Perhaps expires after some time?
-   - For example if signed in on a device that only used once, it will now always be there!
-   - https://cloud.google.com/datastore/docs/ttl#create_ttl_policy
 * Show if saved position for this video is ahead or behind (e.g. + 2 mins, or 2 mins ahead, 10 mins behind etc.)
 * If pause the video, after a few seconds, upload the saved position. Otherwise it might be a few seconds behind and never uploaded.
 * Try using Cloud Firestore _client_ libraries in the javascript to directly access the database, rather than having to go via the web server.
-THis means the server doesn't need to keep handling requests while watching a video, so would drastically reduce our google cloud usage
-* If we do this, then our server doesn't need to be "smart" at all, so could just use a static serving thing (nginx?) rather than a WSGI python thing?
+   THis means the server doesn't need to keep handling requests while watching a video, so would drastically reduce our google cloud usage.
+   Not sure how we would handle the google API auth tokens though - don't want these leaked in the client!
+   If we do this, then our server doesn't need to be "smart" at all, so could just use a static serving thing (nginx?) rather than a WSGI python thing?
 * Slow-mo/frame-by-frame controls
 * When video "reloads" while playing (e.g. due to lost connection?), the title appears briefly (not hidden by our blocker box)
 * The "loading" spinner on the menu can make the horizontal scroll bar appear

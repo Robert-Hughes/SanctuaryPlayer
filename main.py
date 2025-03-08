@@ -5,13 +5,22 @@ from time import sleep
 import flask
 from flask import Flask, request, send_file
 from google.cloud import datastore
-from datetime import datetime
-from datetime import timezone
+from datetime import datetime, timezone, timedelta
 import requests
 import html
 from html.parser import HTMLParser
 
 app = Flask(__name__)
+
+# Configure the JSON serializer to handle datetime objects by converting them to an ISO string (e.g. 2025-03-04T12:53:27Z) so that
+# they can be easily parsed by the client side.
+class CustomJSONProvider(flask.json.provider.DefaultJSONProvider):
+    def default(self, o):
+        if isinstance(o, datetime):
+            return o.isoformat()
+        return super().default(self, o)
+
+app.json = CustomJSONProvider(app)
 
 datastore_client = datastore.Client()
 
@@ -50,6 +59,10 @@ def handle_save_position():
     entity['video_id'] = video_id
     entity["modified_time"] = modified_time
     entity["position"] = position
+    # The 'expiry_date' field is configured in our Datastore TTL Policy to delete entities after this time passes, which we use
+    # to avoid filling up with old and (most likely) unused data.
+    entity["expiry_date"] = datetime.now(timezone.utc) + timedelta(days=365)
+
     datastore_client.put(entity)
 
     return "OK"
@@ -163,6 +176,9 @@ def handle_get_video_metadata():
     entity = datastore_client.entity(key)
     entity["video_title"] = video_title
     entity["video_release_date"] = video_release_date
+    # The 'expiry_date' field is configured in our Datastore TTL Policy to delete entities after this time passes, which we use
+    # to avoid filling up with old and (most likely) unused data.
+    entity["expiry_date"] = datetime.now(timezone.utc) + timedelta(days=365)
     datastore_client.put(entity)
 
     return flask.jsonify(entity)

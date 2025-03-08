@@ -102,7 +102,10 @@ body {
 #saved-positions-header {
     display: none; /* Initially hidden, until we fetch from server */
 }
-#saved-positions-table tr.is-current-video {
+#saved-positions-table td.is-current-video {
+    background-color: lightblue;
+}
+#saved-positions-table td.is-current-device {
     background-color: lightblue;
 }
 #saved-positions-table tbody tr:hover {

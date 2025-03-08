@@ -19,7 +19,7 @@ const twitchVideoIdRegex = /^\d{10}$/; // 10-digit number
 // This won't be available immediately as we query it from our own server.
 var metadataFromServer;
 
-// Decodes a 'human-friendly' time string (like 1h30) into a number of seconds
+// Decodes a 'human-friendly' time string (like '1h30') into a number of seconds
 function decodeFriendlyTimeString(timeStr) {
     // Decode strings of the format:
     //   1234 (1234 seconds)
@@ -65,6 +65,8 @@ function decodeFriendlyTimeString(timeStr) {
     return result;
 }
 
+
+// e.g. 3601 -> "1h00m01s"
 function toFriendlyTimeString(seconds) {
     var hours = Math.floor(seconds / 3600);
     var minutes = Math.floor((seconds % 3600) / 60);
@@ -73,12 +75,42 @@ function toFriendlyTimeString(seconds) {
     return hours + 'h' + minutes.toString().padStart(2, '0') + 'm' + seconds.toString().padStart(2, '0') + 's';
 }
 
+// e.g. 3601 -> "1:00:01"
 function toFriendlyTimeStringColons(seconds) {
     var hours = Math.floor(seconds / 3600);
     var minutes = Math.floor((seconds % 3600) / 60);
     var seconds = Math.floor(seconds % 60);
 
     return hours + ':' + minutes.toString().padStart(2, '0') + ':' + seconds.toString().padStart(2, '0');
+}
+
+// Converts an ISO format date/time string like "2021-01-01T12:34:56Z" into a human-friendly string
+// describing how long ago that time was, like "2 days ago".
+function getRelativeTimeString(isoString) {
+    var date = new Date(isoString);
+    var now = new Date();
+
+    var diff = now - date;
+    var seconds = diff / 1000;
+    var minutes = seconds / 60;
+    var hours = minutes / 60;
+    var days = hours / 24;
+
+    function pluralize(n, x) { return n == 1 ? ("1 " + x) : (n + " " + x + "s"); }
+
+    if (days >= 365) {
+        return pluralize(Math.floor(days / 365), "year") + " ago";
+    }
+    if (days >= 1) {
+        return pluralize(Math.floor(days), "day") + " ago";
+    }
+    if (hours >= 1) {
+        return pluralize(Math.floor(hours), "hour") + " ago";
+    }
+    if (minutes >= 1) {
+        return pluralize(Math.floor(minutes), "minute") + " ago";
+    }
+    return "Just now";
 }
 
 function onMenuButtonClick(e) {
@@ -277,24 +309,27 @@ function fetchSavedPositions() {
                     row.addEventListener('click', function() {
                         window.location = '?' + params.toString();
                     });
-                    if (savedPosition.video_id == getVideoIdFromPlayer()) {
-                        row.classList.add("is-current-video");
-                    }
 
                     var cell = document.createElement("td");
-                    cell.textContent = savedPosition.modified_time;
+                    cell.textContent = getRelativeTimeString(savedPosition.modified_time);
                     row.appendChild(cell);
 
                     var cell = document.createElement("td");
                     cell.textContent = savedPosition.device_id;
                     row.appendChild(cell);
+                    if (localStorage.getItem("device_id") && savedPosition.device_id == localStorage.getItem("device_id")) {
+                        cell.classList.add("is-current-device");
+                    }
 
                     var cell = document.createElement("td");
                     cell.textContent = savedPosition.video_title || savedPosition.video_id; // Fallback to video ID if title is missing
                     row.appendChild(cell);
+                    if (savedPosition.video_id == getVideoIdFromPlayer()) {
+                        cell.classList.add("is-current-video");
+                    }
 
                     var cell = document.createElement("td");
-                    cell.textContent = savedPosition.video_release_date;
+                    cell.textContent = getRelativeTimeString(savedPosition.video_release_date);
                     row.appendChild(cell);
 
                     var cell = document.createElement("td");
@@ -399,7 +434,7 @@ function updateVideoTitle() {
     document.title = title;
     // The blocker box at the top hides the video title, as it may contain spoilers, so we hide it, but show a filtered version of the title instead.
     document.getElementById("video-title").innerText = title;
-    document.getElementById("video-release-date").innerText = metadataFromServer?.video_release_date ?? "";
+    document.getElementById("video-release-date").innerText = metadataFromServer?.video_release_date ? getRelativeTimeString(metadataFromServer?.video_release_date) : "";
 }
 
 function onPlayerReady() {
