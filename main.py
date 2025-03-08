@@ -1,6 +1,7 @@
 from copyreg import pickle
 from email.headerregistry import UniqueUnstructuredHeader
 from enum import unique
+from time import sleep
 import flask
 from flask import Flask, request, send_file
 from google.cloud import datastore
@@ -28,8 +29,6 @@ def handle_save_position():
     device_id = request.args.get('device_id')
     video_id = request.args.get('video_id')
     position = request.args.get('position')
-    video_title = request.args.get('video_title') # Optional
-    video_release_date = request.args.get('video_release_date') # Optional
     if not user_id or not device_id or not video_id or not position:
         return ("Missing user_id or device_id or video_id or position in query args", 400)
 
@@ -38,30 +37,23 @@ def handle_save_position():
     except ValueError:
         return ("position is not a valid int", 400)
 
-    if video_release_date:
-        try:
-            video_release_date = datetime.fromisoformat(video_release_date)
-        except ValueError:
-            return ("video_release_date is not a valid ISO date", 400)
-
     # Current timestamp
     modified_time = datetime.now(timezone.utc) # Timezone-aware with timezone set to UTC, so that it plays nicely with Google Datastore
 
     # Construct Key to uniquely identify the Entity in the datastore database. If the user already has a saved position
     # for this video from the same device, it will overwrite.
     # Note that this simple key structure with slashes could technically be exploited (different tuples could make to the same key), but that's fine for now.
-    entity = datastore_client.entity(key = datastore_client.key('SavedPosition', user_id + '/' + device_id + '/' + video_id))
+    key = datastore_client.key('SavedPosition', user_id + '/' + device_id + '/' + video_id)
+    entity = datastore_client.entity(key)
     entity['user_id'] = user_id
     entity['device_id'] = device_id
     entity['video_id'] = video_id
     entity["modified_time"] = modified_time
     entity["position"] = position
-    entity["video_title"] = video_title
-    if video_release_date:
-        entity["video_release_date"] = video_release_date
     datastore_client.put(entity)
 
     return "OK"
+
 
 @app.route("/get-saved-positions", methods=['GET'])
 def handle_get_saved_positions():
@@ -75,10 +67,27 @@ def handle_get_saved_positions():
     query = datastore_client.query(kind='SavedPosition')
     query.add_filter(filter=datastore.query.PropertyFilter('user_id', '=', user_id))
     query.order = ['-modified_time']
-    query_results = list(query.fetch(limit=10)) # Limit the number of results as there might be a lot
+    saved_positions = list(query.fetch(limit=10)) # Limit the number of results as there might be a lot
+    # Convert from entities to dictionaries
+    saved_positions = list(map(lambda e: dict(e), saved_positions))
 
-    result = list(map(lambda e: dict(e), query_results))
-    return result
+    # Lookup the corresponding metadata for the videos, which we should have in our database too
+    # (as it would have been queried by the app when first playing the video).
+    # This is so that we can display the video titles and release dates in the app.
+    video_metadata_keys = set([datastore_client.key('VideoMetadata', saved_position['video_id']) for saved_position in saved_positions])
+    video_metadatas = datastore_client.get_multi(video_metadata_keys)
+    # Convert from list to dictionary for easy lookup
+    video_metadatas = {video_metadata.key.name: video_metadata for video_metadata in video_metadatas}
+
+    # Perform a 'manual join' of the video metadata into the saved_positions dicts
+    for saved_position in saved_positions:
+        video_id = saved_position['video_id']
+        video_metadata = video_metadatas.get(video_id)
+        if video_metadata: # It's possible that we don't have metadata for this video, so just don't add those properties
+            saved_position['video_title'] = video_metadata['video_title']
+            saved_position['video_release_date'] = video_metadata['video_release_date']
+
+    return flask.jsonify(saved_positions)
 
 # I can't find a way to get the title of a Twitch video from the player API and looking it up
 # via a separate request to the Twitch API requires an auth token which can't be sent from the client side (otherwise it would leak our token!).
@@ -92,42 +101,68 @@ def handle_get_video_metadata():
     if not video_id or not video_platform:
         return ("Missing video_id or video_platform in query args", 400)
 
-    if video_platform == 'twitch':
-        # We could use the Twitch API here, but that requires an auth token which will need refreshing etc.,
-        # so it's simpler just to scrape it from the HTML page of the video.
-        # Note it's important that we use https (rather than http), otherwise we get a redirect page that (sometimes?) doesn't include the title
-        http_response = requests.get("https://www.twitch.tv/videos/" + video_id)
-    elif video_platform == 'youtube':
-        http_response = requests.get("https://www.youtube.com/v/" + video_id)
-    else:
-        return ("Invalid video_platform", 400)
+    # We may have already stored metadata for this video, in which case we don't need to send any HTTP requests
+    key = datastore_client.key('VideoMetadata', video_id)
+    existing = datastore_client.get(key)
+    if existing:
+        return flask.jsonify(existing)
 
-    if http_response.status_code != 200:
-        return ("Failed to fetch video page, status code " + str(http_response.status_code), 500)
+    # May need to try multiple times (see below)
+    for retry_count in range(5):
+        if video_platform == 'twitch':
+            # We could use the Twitch API here, but that requires an auth token which will need refreshing etc.,
+            # so it's simpler just to scrape it from the HTML page of the video.
+            # Note it's important that we use https (rather than http), otherwise we get a redirect page that (sometimes?) doesn't include the title
+            http_response = requests.get("https://www.twitch.tv/videos/" + video_id)
+        elif video_platform == 'youtube':
+            http_response = requests.get("https://www.youtube.com/v/" + video_id)
+        else:
+            return ("Invalid video_platform", 400)
 
-    http_response.encoding = 'utf-8' # Even though the `requests` package is supposed to automatically detect encoding, it doesn't seem to work
+        if http_response.status_code != 200:
+            return ("Failed to fetch video page, status code " + str(http_response.status_code), 500)
 
-    # Parse the web page and extract all the <meta> elements
-    class MetaTagParser(HTMLParser):
-        def __init__(self):
-            super().__init__()
-            self.metas = {}
+        http_response.encoding = 'utf-8' # Even though the `requests` package is supposed to automatically detect encoding, it doesn't seem to work
 
-        def handle_starttag(self, tag, attrs):
-            if tag == 'meta':
-                for (attr_key, attr_value) in attrs:
-                    if attr_key in ('name', 'property', 'itemprop'):
-                        meta_key = attr_value
-                        for (attr_key2, attr_value2) in attrs:
-                            if attr_key2 == 'content':
-                                meta_content = attr_value2
-                                self.metas[meta_key] = meta_content
-                                return
+        # When fetching the content of a Twitch video page, sometimes it doesn't get the full page but instead a minimal/shell version that contains just
+        # a loading icon, and then some javascript code which presumably loads the actual content in the background. This is presumably to make the page load fast
+        # and seem responsive, but is annoying for us which need the full page. We try to detect this and reload the page, which tends to get the full one.
+        if video_platform == 'twitch' and not 'og:video' in http_response.text:
+            print("Trying again to get full page...")
+            sleep(1) # Wait a bit before retrying
+            continue
 
-    parser = MetaTagParser()
-    parser.feed(http_response.text)
+        # Parse the web page and extract all the <meta> elements
+        class MetaTagParser(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.metas = {}
 
-    video_title = parser.metas.get('og:title')
-    video_release_date = parser.metas.get('og:video:release_date') or parser.metas.get('uploadDate') # Twitch and YouTube use different tags for this
+            def handle_starttag(self, tag, attrs):
+                if tag == 'meta':
+                    for (attr_key, attr_value) in attrs:
+                        if attr_key in ('name', 'property', 'itemprop'):
+                            meta_key = attr_value
+                            for (attr_key2, attr_value2) in attrs:
+                                if attr_key2 == 'content':
+                                    meta_content = attr_value2
+                                    self.metas[meta_key] = meta_content
+                                    return
 
-    return flask.jsonify({ 'video_title': video_title, 'video_release_date': video_release_date })
+        parser = MetaTagParser()
+        parser.feed(http_response.text)
+
+        video_title = parser.metas.get('og:title')
+        video_release_date = parser.metas.get('og:video:release_date') or parser.metas.get('uploadDate') # Twitch and YouTube use different tags for this
+        video_release_date = datetime.fromisoformat(video_release_date) # Convert from string into datetime object, so that it's stored better in the database
+
+        break # Success!
+
+    # Store the video metadata in our database so that when displaying a list of saved positions in the app,
+    # we can include useful information.
+    entity = datastore_client.entity(key)
+    entity["video_title"] = video_title
+    entity["video_release_date"] = video_release_date
+    datastore_client.put(entity)
+
+    return flask.jsonify(entity)

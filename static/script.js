@@ -258,12 +258,6 @@ function fetchSavedPositions() {
             'user_id': localStorage.getItem("user_id"),
             'device_id': localStorage.getItem("device_id"),
         });
-        // If a video has already been selected, include this in the request, so that we also get data about most recent positions for this particular video
-        // Note that we get this from the URL rather than the YouTube player object, because that might not yet have been initialised.
-        var urlParams = new URLSearchParams(window.location.search);
-        if (urlParams.has('videoId')) {
-            params.append("current_video_id", urlParams.get("videoId"));
-        }
 
         document.getElementById("saved-positions-loading").style.display = "inline-block";
         fetch("get-saved-positions?" + params.toString())
@@ -308,11 +302,6 @@ function fetchSavedPositions() {
                     row.appendChild(cell);
 
                     return row;
-
-                    button.innerText = showVideo ?
-                        savedPosition.device_id + ": " + (savedPosition.video_title || savedPosition.video_id) + " at " + toFriendlyTimeStringColons(savedPosition.position) :
-                        savedPosition.device_id + ": " + toFriendlyTimeStringColons(savedPosition.position);
-                    return button;
                 }
 
                 // Clear previous entries
@@ -828,14 +817,6 @@ function onTimer() {
                 'video_id': getVideoIdFromPlayer(),
                 'position': Math.round(effectiveCurrentTime), // Server saves whole numbers only
             });
-            // Some fields may not be available yet, so only include them if they are
-            let safe_title = getSafeTitle();
-            if (safe_title) {
-                params.set('video_title', safe_title);
-            }
-            if (metadataFromServer?.video_release_date) {
-                params.set('video_release_date', metadataFromServer.video_release_date)
-            }
             fetch('save-position?' + params.toString(), { method: 'POST'})
                 .then(response => {
                     if (!response.ok) {
