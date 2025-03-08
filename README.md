@@ -29,6 +29,7 @@ TODO:
 
 * Ability to delete/clean up old saved position data. Perhaps expires after some time?
    - For example if signed in on a device that only used once, it will now always be there!
+   - https://cloud.google.com/datastore/docs/ttl#create_ttl_policy
 * Show if saved position for this video is ahead or behind (e.g. + 2 mins, or 2 mins ahead, 10 mins behind etc.)
 * If pause the video, after a few seconds, upload the saved position. Otherwise it might be a few seconds behind and never uploaded.
 * Try using Cloud Firestore _client_ libraries in the javascript to directly access the database, rather than having to go via the web server.
@@ -55,4 +56,5 @@ THis means the server doesn't need to keep handling requests while watching a vi
 * rename to remove the 'YouTube' part?
 * On Android and Twitch video - changing quality then re-opening the menu shows a blank quality! Actually seems to be the same on PC...
 * On Android and Twitch video - the blockers cover most of the video! Can we make these smaller?
-
+* when video not loaded (or failed to load), can't use menu!
+* For Twitch vod, if phone has been sleeping for a while (with internet off?) and then resume VOD, after a few seconds it shows an error and needs refreshing

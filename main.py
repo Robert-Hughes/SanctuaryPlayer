@@ -29,12 +29,20 @@ def handle_save_position():
     video_id = request.args.get('video_id')
     position = request.args.get('position')
     video_title = request.args.get('video_title') # Optional
+    video_release_date = request.args.get('video_release_date') # Optional
     if not user_id or not device_id or not video_id or not position:
         return ("Missing user_id or device_id or video_id or position in query args", 400)
+
     try:
         position = int(position)
     except ValueError:
         return ("position is not a valid int", 400)
+
+    if video_release_date:
+        try:
+            video_release_date = datetime.fromisoformat(video_release_date)
+        except ValueError:
+            return ("video_release_date is not a valid ISO date", 400)
 
     # Current timestamp
     modified_time = datetime.now(timezone.utc) # Timezone-aware with timezone set to UTC, so that it plays nicely with Google Datastore
@@ -49,6 +57,8 @@ def handle_save_position():
     entity["modified_time"] = modified_time
     entity["position"] = position
     entity["video_title"] = video_title
+    if video_release_date:
+        entity["video_release_date"] = video_release_date
     datastore_client.put(entity)
 
     return "OK"
@@ -107,39 +117,51 @@ def handle_get_saved_positions():
 # I can't find a way to get the title of a Twitch video from the player API and looking it up
 # via a separate request to the Twitch API requires an auth token which can't be sent from the client side (otherwise it would leak our token!).
 # Instead we do this server-side, and the web page will call this endpoint to get the title of a Twitch video.
-@app.route("/get-twitch-video-title", methods=['GET'])
-def handle_get_twitch_video_title():
+# The same goes for video release dates, which we roll into the same API here.
+@app.route("/get-video-metadata", methods=['GET'])
+def handle_get_video_metadata():
     # Get parameters from request args
     video_id = request.args.get('video_id')
+    video_platform = request.args.get('video_platform') # 'twitch' or 'youtube'
+    if not video_id or not video_platform:
+        return ("Missing video_id or video_platform in query args", 400)
 
-    # We could use the Twitch API here, but that requires an auth token which will need refreshing etc.,
-    # so it's simpler just to scrape it from the HTML page of the video.
-    # Note it's important that we use https (rather than http), otherwise we get a redirect page that (sometimes?) doesn't include the title
-    twitch_response = requests.get("https://www.twitch.tv/videos/" + video_id)
-    if twitch_response.status_code != 200:
-        return ("Failed to fetch video page, status code " + str(twitch_response.status_code), 500)
-    twitch_response.encoding = 'utf-8' # Even though the `requests` package is supposed to automatically detect encoding, it doesn't seem to work
+    if video_platform == 'twitch':
+        # We could use the Twitch API here, but that requires an auth token which will need refreshing etc.,
+        # so it's simpler just to scrape it from the HTML page of the video.
+        # Note it's important that we use https (rather than http), otherwise we get a redirect page that (sometimes?) doesn't include the title
+        http_response = requests.get("https://www.twitch.tv/videos/" + video_id)
+    elif video_platform == 'youtube':
+        http_response = requests.get("https://www.youtube.com/v/" + video_id)
+    else:
+        return ("Invalid video_platform", 400)
 
-    x = 1
+    if http_response.status_code != 200:
+        return ("Failed to fetch video page, status code " + str(http_response.status_code), 500)
 
-    class MyParser(HTMLParser):
+    http_response.encoding = 'utf-8' # Even though the `requests` package is supposed to automatically detect encoding, it doesn't seem to work
+
+    # Parse the web page and extract all the <meta> elements
+    class MetaTagParser(HTMLParser):
         def __init__(self):
             super().__init__()
-            self.title = None
+            self.metas = {}
 
         def handle_starttag(self, tag, attrs):
             if tag == 'meta':
-                for (key, value) in attrs:
-                    if key == 'name' and value == 'title':
-                        for (key, value) in attrs:
-                            if key == 'content':
-                                self.title = value
+                for (attr_key, attr_value) in attrs:
+                    if attr_key in ('name', 'property', 'itemprop'):
+                        meta_key = attr_value
+                        for (attr_key2, attr_value2) in attrs:
+                            if attr_key2 == 'content':
+                                meta_content = attr_value2
+                                self.metas[meta_key] = meta_content
                                 return
 
-    parser = MyParser()
-    parser.feed(twitch_response.text)
+    parser = MetaTagParser()
+    parser.feed(http_response.text)
 
-    if parser.title is None:
-        return ("Failed to find title in video page", 500)
+    video_title = parser.metas.get('og:title')
+    video_release_date = parser.metas.get('og:video:release_date') or parser.metas.get('uploadDate') # Twitch and YouTube use different tags for this
 
-    return flask.Response(parser.title, content_type="text/plain; charset=utf-8") # Make sure to report our encoding as utf-8, so special characters are handled properly
+    return flask.jsonify({ 'video_title': video_title, 'video_release_date': video_release_date })

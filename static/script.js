@@ -15,9 +15,9 @@ var isYoutube = false;
 const youtubeVideoIdRegex = /^[A-Za-z0-9-_]{11}$/; // 11 alphanumeric chars (plus some special chars)
 const twitchVideoIdRegex = /^\d{10}$/; // 10-digit number
 
-// The title of the current Twitch video, which we can't get from the player object. This won't be available
-// immediately as we query it from our own server.
-var twitchVideoTitle = "<Unknown Twitch Video>";
+// Title and release date of the current video, which we can't get from the player object so it comes from our server.
+// This won't be available immediately as we query it from our own server.
+var metadataFromServer;
 
 // Decodes a 'human-friendly' time string (like 1h30) into a number of seconds
 function decodeFriendlyTimeString(timeStr) {
@@ -397,7 +397,8 @@ function updateVideoTitle() {
     let title = getSafeTitle();
     document.title = title;
     // The blocker box at the top hides the video title, as it may contain spoilers, so we hide it, but show a filtered version of the title instead.
-    document.getElementById("blocker-top").innerText = title;
+    document.getElementById("video-title").innerText = title;
+    document.getElementById("video-release-date").innerText = metadataFromServer?.video_release_date ?? "";
 }
 
 function onPlayerReady() {
@@ -408,6 +409,8 @@ function onPlayerReady() {
     // successful load
     if (isVideoLoadedSuccessfully()) {
         document.getElementById("loading-status").style.display = "none";
+        // Now that the player is loaded, we can get and show the title (for YouTube at least, for Twitch we have to wait for our server)
+        // so this will show a placeholder for now.
         updateVideoTitle();
 
         // Show the video controls, now that they will work
@@ -430,21 +433,22 @@ function onPlayerReady() {
         // to report that.
         timerId = window.setInterval(onTimer, 500);
 
+        // Begin fetching additional metadata about the video from our server.
         // We can't get the Twitch video title from the player and looking it up via a separate request to the Twitch API requires
         // an auth token which can't be sent from the client side (otherwise it would leak our token!).
         // We could scrape it from the video's web page, but the browser will block that due to CORS.
         // Instead we fetch it from our server which can do the query for us (without CORS) - yuck!
         // The initial title is set to a placeholder and will be updated when the server responds.
-        fetch("get-twitch-video-title?video_id=" + getVideoIdFromPlayer())
+        fetch("get-video-metadata?video_id=" + getVideoIdFromPlayer() + "&video_platform=" + videoPlatform)
             .then(response => {
                 if (!response.ok) {
                     throw new Error('get-twitch-video-title response was not OK');
                 }
-                return response.text()
+                return response.json()
             })
             .then(response => {
-                twitchVideoTitle = response;
-                updateVideoTitle();
+                metadataFromServer = response;
+                updateVideoTitle(); // Display the new data
             })
             .catch((error) => {
                 console.error('Error:', error);
@@ -512,7 +516,7 @@ function getSafeTitle() {
     if (isYoutube) {
         title = player.getVideoData().title;
     } else if (isTwitch) {
-        title = twitchVideoTitle; // We can't get this from the Twitch player object, and instead query it from our server and store it here
+        title = metadataFromServer?.video_title ?? "<Unknown Twitch Video>"; // We can't get this from the Twitch player object, and instead query it from our server and store it here
     }
 
     // The video title may have something like "X vs Y Game 5", which tells you it goes to game 5, so hide this
@@ -809,6 +813,9 @@ function onTimer() {
                 'video_title': getSafeTitle(),
                 'position': Math.round(effectiveCurrentTime), // Server saves whole numbers only
             });
+            if (metadataFromServer?.video_release_date) {
+                params.set('video_release_date', metadataFromServer.video_release_date)
+            }
             fetch('save-position?' + params.toString(), { method: 'POST'})
                 .then(response => {
                     if (!response.ok) {

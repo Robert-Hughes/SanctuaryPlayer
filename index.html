@@ -28,7 +28,11 @@
 
         <!-- Use an overlay to display things and intercept mouse clicks on the player -->
         <div id="player-overlay">
-            <div id="blocker-top" class="blocker"></div> <!-- To hide the video title, which might have spoilers -->
+            <!-- To hide the video title, which might have spoilers -->
+            <div id="blocker-top" class="blocker">
+                <div id="video-title"></div>
+                <div id="video-release-date"></div>
+            </div>
             <!-- YouTube: To hide related videos which are shown at the bottom while paused, which might have spoilers -->
             <!-- Twitch: To hide the bar at the bottom which shows the length of the video -->
             <div id="blocker-bottom" class="blocker"></div>
