@@ -99,8 +99,14 @@ body {
     text-align: left;
 }
 
-#saved-positions-this-video-header,#saved-positions-other-videos-header {
+#saved-positions-header {
     display: none; /* Initially hidden, until we fetch from server */
+}
+#saved-positions-table tr.is-current-video {
+    background-color: lightblue;
+}
+#saved-positions-table tbody tr:hover {
+    background-color: lightgray;
 }
 
 @keyframes spin {

@@ -265,8 +265,7 @@ function fetchSavedPositions() {
             params.append("current_video_id", urlParams.get("videoId"));
         }
 
-        document.getElementById("saved-positions-other-videos-loading").style.display = "inline-block";
-        document.getElementById("saved-positions-this-video-loading").style.display = "inline-block";
+        document.getElementById("saved-positions-loading").style.display = "inline-block";
         fetch("get-saved-positions?" + params.toString())
             .then(response => {
                 if (!response.ok) {
@@ -275,47 +274,60 @@ function fetchSavedPositions() {
                 return response.json();
             })
             .then(response => {
-                function createButton(x, showVideo) {
+                function createTableRow(savedPosition, showVideo) {
                     var params = new URLSearchParams(window.location.search);
-                    params.set('videoId', x.video_id);
-                    params.set('time', x.position);
+                    params.set('videoId', savedPosition.video_id);
+                    params.set('time', savedPosition.position);
 
-                    var button = document.createElement("button");
-                    button.addEventListener('click', function() {
+                    var row = document.createElement("tr");
+                    row.addEventListener('click', function() {
                         window.location = '?' + params.toString();
                     });
+                    if (savedPosition.video_id == getVideoIdFromPlayer()) {
+                        row.classList.add("is-current-video");
+                    }
+
+                    var cell = document.createElement("td");
+                    cell.textContent = savedPosition.modified_time;
+                    row.appendChild(cell);
+
+                    var cell = document.createElement("td");
+                    cell.textContent = savedPosition.device_id;
+                    row.appendChild(cell);
+
+                    var cell = document.createElement("td");
+                    cell.textContent = savedPosition.video_title || savedPosition.video_id; // Fallback to video ID if title is missing
+                    row.appendChild(cell);
+
+                    var cell = document.createElement("td");
+                    cell.textContent = savedPosition.video_release_date;
+                    row.appendChild(cell);
+
+                    var cell = document.createElement("td");
+                    cell.textContent = toFriendlyTimeStringColons(savedPosition.position);
+                    row.appendChild(cell);
+
+                    return row;
+
                     button.innerText = showVideo ?
-                        x.device_id + ": " + (x.video_title || x.video_id) + " at " + toFriendlyTimeStringColons(x.position) :
-                        x.device_id + ": " + toFriendlyTimeStringColons(x.position);
+                        savedPosition.device_id + ": " + (savedPosition.video_title || savedPosition.video_id) + " at " + toFriendlyTimeStringColons(savedPosition.position) :
+                        savedPosition.device_id + ": " + toFriendlyTimeStringColons(savedPosition.position);
                     return button;
                 }
 
-                while (document.getElementById("saved-positions-other-videos").lastElementChild?.tagName == "BUTTON") {
-                    document.getElementById("saved-positions-other-videos").lastElementChild.remove();
-                }
-                document.getElementById("saved-positions-other-videos-header").style.display = response.other_videos.length > 0 ? "block" : "none";
-                for (var x of response.other_videos) {
-                    var opt = createButton(x, true);
-                    document.getElementById("saved-positions-other-videos").appendChild(opt);
-                }
-                while (document.getElementById("saved-positions-this-video").lastElementChild?.tagName == "BUTTON") {
-                    document.getElementById("saved-positions-this-video").lastElementChild.remove();
-                }
-                document.getElementById("saved-positions-this-video-header").style.display = response.this_video && response.this_video.length > 0 ? "block" : "none";
-                if (response.this_video)
-                {
-                    for (var x of response.this_video) {
-                        var opt = createButton(x, false);
-                        document.getElementById("saved-positions-this-video").appendChild(opt);
-                    }
+                // Clear previous entries
+                document.getElementById("saved-positions-table").tBodies[0].innerHTML = "";
+                document.getElementById("saved-positions-header").style.display = response.length > 0 ? "block" : "none";
+                for (var x of response) {
+                    var r = createTableRow(x, true);
+                    document.getElementById("saved-positions-table").tBodies[0].appendChild(r);
                 }
             })
             .catch((error) => {
                 console.error('Error getting positions from server:', error);
             })
             .finally(() => {
-                document.getElementById("saved-positions-other-videos-loading").style.display = "none";
-                document.getElementById("saved-positions-this-video-loading").style.display = "none";
+                document.getElementById("saved-positions-loading").style.display = "none";
             });
     }
 }
@@ -516,7 +528,11 @@ function getSafeTitle() {
     if (isYoutube) {
         title = player.getVideoData().title;
     } else if (isTwitch) {
-        title = metadataFromServer?.video_title ?? "<Unknown Twitch Video>"; // We can't get this from the Twitch player object, and instead query it from our server and store it here
+        title = metadataFromServer?.video_title; // We can't get this from the Twitch player object, and instead query it from our server and store it here
+    }
+
+    if (!title) {
+        return null; // Title may not be available yet, e.g. hasn't been loaded from our server yet
     }
 
     // The video title may have something like "X vs Y Game 5", which tells you it goes to game 5, so hide this
@@ -810,9 +826,13 @@ function onTimer() {
                 'user_id': localStorage.getItem("user_id"),
                 'device_id': localStorage.getItem("device_id"),
                 'video_id': getVideoIdFromPlayer(),
-                'video_title': getSafeTitle(),
                 'position': Math.round(effectiveCurrentTime), // Server saves whole numbers only
             });
+            // Some fields may not be available yet, so only include them if they are
+            let safe_title = getSafeTitle();
+            if (safe_title) {
+                params.set('video_title', safe_title);
+            }
             if (metadataFromServer?.video_release_date) {
                 params.set('video_release_date', metadataFromServer.video_release_date)
             }

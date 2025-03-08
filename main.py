@@ -67,52 +67,18 @@ def handle_save_position():
 def handle_get_saved_positions():
     # Get parameters from request args
     user_id = request.args.get('user_id')
-    device_id = request.args.get('device_id')
-    if not user_id or not device_id:
-        return ("Missing user_id or device_id in query args", 400)
-    # Video ID is optional
-    current_video_id = request.args.get('current_video_id')
+    if not user_id:
+        return ("Missing user_id in query args", 400)
 
-    def to_json(entities):
-        result = []
-        for r in entities:
-            device_id = r['device_id']
-            video_id = r['video_id']
-            position = r['position']
-            modified_time = r['modified_time']
-            video_title = r.get('video_title', '') # Older enitities won't have title
-            result.append({ 'device_id': device_id, 'video_id': video_id, 'position': position, 'modified_time': modified_time, 'video_title': video_title })
-        return result
-
-    # Find the most recent saved positions for other videos for this user, across all their devices.
-    # This basically shows what you were last watching on each device, independent of what you're watching now.
-    # We can't exclude the current videos using this query (limitation of Datastore), so we do it manually once we get the results.
+    # Find the most recent saved positions for this user, across all their devices.
+    # This will include positions for the current video (if there is one), and positions for other videos.
     query = datastore_client.query(kind='SavedPosition')
-    query.add_filter('user_id', '=', user_id)
-    query.order = ['device_id', '-modified_time']
-    query.distinct_on = ['device_id']
-    query_results = list(query.fetch())
-    if current_video_id:
-        query_results = [r for r in query_results if r['video_id'] != current_video_id]
+    query.add_filter(filter=datastore.query.PropertyFilter('user_id', '=', user_id))
+    query.order = ['-modified_time']
+    query_results = list(query.fetch(limit=10)) # Limit the number of results as there might be a lot
 
-    json = { 'other_videos': to_json(query_results) }
-
-    # Additionally, if a current_video_id was provided, show all the saved positions for this video on other devices.
-    # This shows where you were up to on this video on different devices, even if it wasn't the most recent video you watched that device.
-    # Note that we exclude the current device, because the saved position on the current device will be the position the user is already at,
-    # so no point showing them that!
-    # We can't exclude the current device using this query (limitation of Datastore), so we do it manually once we get the results.
-    if current_video_id:
-        query = datastore_client.query(kind='SavedPosition')
-        query.add_filter('user_id', '=', user_id)
-        query.add_filter('video_id', '=', current_video_id)
-        query.order = ['-modified_time']
-        query_results = list(query.fetch())
-        query_results = [r for r in query_results if r['device_id'] != device_id]
-
-        json['this_video'] = to_json(query_results)
-
-    return json
+    result = list(map(lambda e: dict(e), query_results))
+    return result
 
 # I can't find a way to get the title of a Twitch video from the player API and looking it up
 # via a separate request to the Twitch API requires an auth token which can't be sent from the client side (otherwise it would leak our token!).
