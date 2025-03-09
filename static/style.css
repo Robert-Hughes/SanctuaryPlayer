@@ -122,17 +122,24 @@ select {
     /* This is complicated because we want the top of the menu to be just below the Menu button */
     overflow-y: auto;
     max-height: calc(100% - 1.5em); /* In case the menu is taller than the viewport, make it scroll. Subtract 1.5em for height of the Menu button */
+    border-radius: 8px;
 }
 
-#menu button {
-    display: block;
-    font-size: xx-large;
-    width: 100%;
-    text-align: left;
+#menu div {
+    margin: 0.2em;
+    padding: 0.25rem 0.5rem;
+    border-radius: 8px;
+}
+.clickable-menu-item:hover
+{
+    background-color: lightgray;
 }
 
 #saved-positions-header {
     display: none; /* Initially hidden, until we fetch from server */
+}
+#saved-positions-table {
+    margin-left: 2em;
 }
 #saved-positions-table td.is-current-video {
     background-color: lightblue;

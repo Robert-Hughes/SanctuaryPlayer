@@ -68,24 +68,25 @@
                 <div id="player-overlay-controls-top">
                     <button id="menu-button">Menu</button>
                     <div id="menu">
-                        <button id="change-video-button">Change Video...</button>
+                        <div class="clickable-menu-item" id="change-video-button">Change Video...</div>
                         <div id="quality-row">Quality: <select id="quality-select"></select></div>
-                        <div id="saved-positions-header">Saved positions: <span id="saved-positions-loading" class="spinner" /></div>
-                        <table id="saved-positions-table">
-                            <thead>
-                                <tr>
-                                    <th>Last Watched</th>
-                                    <th>Device</th>
-                                    <th>Video</th>
-                                    <th>Video Release Date</th>
-                                    <th>Position</th>
-                                </tr>
-                            </thead>
-                            <tbody></tbody>
-                        </table>
-                        <button id="use-native-player-controls-button">Use native player controls (BEWARE SPOILERS!)</button>
-                        <button id="sign-in-button">Sign in...</button>
-                        <button id="sign-out-button">Sign out...</button>
+                        <div id="saved-positions-header">Recent videos: <span id="saved-positions-loading" class="spinner"></span>
+                            <table id="saved-positions-table">
+                                <thead>
+                                    <tr>
+                                        <th>Last Watched</th>
+                                        <th>Device</th>
+                                        <th>Video</th>
+                                        <th>Release Date</th>
+                                        <th>Position</th>
+                                    </tr>
+                                </thead>
+                                <tbody></tbody>
+                            </table>
+                        </div>
+                        <div class="clickable-menu-item" id="use-native-player-controls-button">Use native player controls (BEWARE SPOILERS!)</div>
+                        <div class="clickable-menu-item" id="sign-in-button">Sign in...</div>
+                        <div class="clickable-menu-item" id="sign-out-button">Sign out...</div>
                     </div>
                 </div>
                 <div id="player-overlay-controls-mid">
