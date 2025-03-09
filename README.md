@@ -1,8 +1,10 @@
-Alternative YouTube and Twitch player which omits various elements which could provide spoilers to esports tournaments.
+https://sanctuaryplayer.robdh.uk/
+
+Website which plays YouTube and Twitch videos but hides UI elements which could provide spoilers to esports tournaments.
 For example it doesn't show the length of the video being watched and it doesn't show any related videos.
 
-It consists of a single static HTML page along with javascript and css, and so can be run locally from the filesystem,
-from a simple web server, or from GitHub's hosting feature if the code is pushed there: https://robert-hughes.github.io/YouTubeNoSpoilers/
+It consists of a single HTML page along with javascript and css, and so can be run locally from the filesystem or
+from a simple web server.
 
 The index.html is in the root so that when served from GitHub Pages, the URL is shorter (can be accessed with just a /).
 The other static files (.js, .css, images) are in a 'static' subfolder, so that it can be
@@ -16,12 +18,10 @@ synced between different devices. Currently this is set up to use Google Cloud R
 but migrated as Cloud Run seems to result in lower usage of resources - see
 https://dev.to/pcraig3/cloud-run-vs-app-engine-a-head-to-head-comparison-using-facts-and-science-1225.
 
-This is currently hosted on https://youtubenospoilers.robdh.uk/
-
 Google Cloud Run deploy command:
 
 (Run from this folder)
-E:\Programming\google-cloud-sdk\bin\gcloud.ps1 --project youtubenospoilers run deploy youtubenospoilers --source . --region europe-west1 --allow-unauthenticated
+E:\Programming\google-cloud-sdk\bin\gcloud.ps1 --project sanctuary-player run deploy sanctuary-player --source . --region europe-west1 --allow-unauthenticated
 
 Note we are using europe-west1 (Belgium) as it supports simpler custom domains, and is lower CO2 than the London region.
 
@@ -53,3 +53,4 @@ TODO:
 * On Android and Twitch video - the blockers cover most of the video! Can we make these smaller?
 * when video not loaded (or failed to load), can't use menu!
 * For Twitch vod, if phone has been sleeping for a while (with internet off?) and then resume VOD, after a few seconds it shows an error and needs refreshing
+* Youtube blocker bar at the top doesn#'t seem to be tall enough to cover the video title

@@ -15,7 +15,7 @@
             "module": "waitress",
             "args": ["--port", "8080", "main:app"],
             "env": {
-                "GOOGLE_APPLICATION_CREDENTIALS": "youtubenospoilers-c533d4a23862.json"
+                "GOOGLE_APPLICATION_CREDENTIALS": "GOOGLE_APPLICATION_CREDENTIALS.json"
             },
         }
     ]

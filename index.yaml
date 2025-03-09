@@ -1,5 +1,5 @@
 # This file defines search indexes for queries using Google Datastore
-# I think this is supposed to be picked up automatically, but it seems that I had to force it manually: python E:\Programming\google-cloud-sdk\lib\gcloud.py --project youtubenospoilers datastore indexes create .\index.yaml
+# I think this is supposed to be picked up automatically, but it seems that I had to force it manually: python E:\Programming\google-cloud-sdk\lib\gcloud.py --project sanctuary-player datastore indexes create .\index.yaml
 # See https://cloud.google.com/datastore/docs/tools/indexconfig#Datastore_Updating_indexes
 
 indexes:
