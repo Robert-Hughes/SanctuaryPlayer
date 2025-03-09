@@ -136,13 +136,17 @@ function onMenuButtonClick(e) {
         // Update list of available quality levels each time the menu is opened, as (for Twitch at least), these aren't
         // available immediately when the video is first loaded
         document.getElementById("quality-select").options.length = 0; // Clear any old options
-        for (var quality of getAvailableQualities()) {
-            var opt = document.createElement("option");
-            opt.value = quality;
-            opt.text = quality;
-            document.getElementById("quality-select").options.add(opt);
+        if (isVideoLoadedSuccessfully()) {
+            for (var quality of getAvailableQualities()) {
+                var opt = document.createElement("option");
+                opt.value = quality;
+                opt.text = quality;
+                document.getElementById("quality-select").options.add(opt);
+            }
+            document.getElementById("quality-select").value = getCurrentQuality();
+        } else {
+            //TODO: hide document.getElementById("quality-select")
         }
-        document.getElementById("quality-select").value = getCurrentQuality();
 
         document.getElementById("menu").style.display = "block";
     }
@@ -435,10 +439,12 @@ function changeVideo() {
 
 function updateVideoTitle() {
     let title = getSafeTitle();
-    document.title = title;
-    // The blocker box at the top hides the video title, as it may contain spoilers, so we hide it, but show a filtered version of the title instead.
-    document.getElementById("video-title").innerText = title;
-    document.getElementById("video-release-date").innerText = metadataFromServer?.video_release_date ? getRelativeTimeString(metadataFromServer?.video_release_date) : "";
+    if (title) {
+        document.title = title;
+        // The blocker box at the top hides the video title, as it may contain spoilers, so we hide it, but show a filtered version of the title instead.
+        document.getElementById("video-title").innerText = title;
+        document.getElementById("video-release-date").innerText = metadataFromServer?.video_release_date ? getRelativeTimeString(metadataFromServer?.video_release_date) : "";
+    }
 }
 
 function onPlayerReady() {
@@ -482,7 +488,7 @@ function onPlayerReady() {
         fetch("get-video-metadata?video_id=" + getVideoIdFromPlayer() + "&video_platform=" + videoPlatform)
             .then(response => {
                 if (!response.ok) {
-                    throw new Error('get-twitch-video-title response was not OK');
+                    throw new Error('get-video-metadata response was not OK');
                 }
                 return response.json()
             })
