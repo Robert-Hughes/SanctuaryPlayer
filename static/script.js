@@ -88,6 +88,10 @@ function toFriendlyTimeStringColons(seconds) {
 // describing how long ago that time was, like "2 days ago".
 function getRelativeTimeString(isoString) {
     var date = new Date(isoString);
+    if (isNaN(date.valueOf())) {
+        // This indicates an invalid string format
+        return "?";
+    }
     var now = new Date();
 
     var diff = now - date;

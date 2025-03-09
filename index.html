@@ -1,20 +1,26 @@
 <html>
 
 <head>
-    <title>YouTubeNoSpoilers</title>
+    <title>Sanctuary Player</title>
     <link rel="shortcut icon" href="static/icon.png" />
     <!--
-        Icon is base64 encoding of this SVG:
+        Icon is base64 encoding of this SVG.
+        Helpful tools for editing this: https://www.svgviewer.dev/ and https://yqnn.github.io/svg-path-editor/
 
-     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
-    <ellipse cx="50" cy="50" rx="40" ry="25" fill="none" stroke="red" stroke-width="4"/>
-    <circle cx="50" cy="50" r="15" fill="purple" />
-    <circle cx="50" cy="50" r="5" fill="white" />
-   <polygon points="50,10 50,90 100,50 " fill="green"/>
-      </svg>
+     <svg xmlns="http://www.w3.org/2000/svg" width="400" height="400" viewBox="-20 0 40 45" fill="none">
+<g xmlns="http://www.w3.org/2000/svg" fill="url(#grad1)" stroke="none">
+  <defs>
+        <linearGradient id="grad1" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" style="stop-color:#6C63FF; stop-opacity:1" />
+            <stop offset="100%" style="stop-color:#B5179E; stop-opacity:1" />
+        </linearGradient>
+    </defs>
+<path d="M 0 0 C 5 0 10 5 20 10 C 20 25 20 35 0 45 C -20 35 -20 25 -20 10 C -10 5 -5 0 0 0 M 0 6 A 5 5 90 0 0 0 37 A 5 5 90 0 0 0 6 M -4 10 L 10 20 C 11 21 11 22 10 23 L -3.25 31.887 C -5.531 33.584 -7.017 32.364 -7.017 29.95 L -7 12 C -7.095 9.845 -5.61 8.864 -4 10"/>
+</g>
+</svg>
 
     -->
-    <link rel="icon" href="data:image/svg+xml;base64,IDxzdmcgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIiB2aWV3Qm94PSIwIDAgMTAwIDEwMCI+CiAgICA8ZWxsaXBzZSBjeD0iNTAiIGN5PSI1MCIgcng9IjQwIiByeT0iMjUiIGZpbGw9Im5vbmUiIHN0cm9rZT0icmVkIiBzdHJva2Utd2lkdGg9IjQiLz4KICAgIDxjaXJjbGUgY3g9IjUwIiBjeT0iNTAiIHI9IjE1IiBmaWxsPSJwdXJwbGUiIC8+CiAgICA8Y2lyY2xlIGN4PSI1MCIgY3k9IjUwIiByPSI1IiBmaWxsPSJ3aGl0ZSIgLz4KICAgPHBvbHlnb24gcG9pbnRzPSI1MCwxMCA1MCw5MCAxMDAsNTAgIiBmaWxsPSJncmVlbiIvPgogIDwvc3ZnPgo=" />
+    <link rel="icon" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI0MDAiIGhlaWdodD0iNDAwIiB2aWV3Qm94PSItMjAgMCA0MCA0NSIgZmlsbD0ibm9uZSI+CjxnIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyIgZmlsbD0idXJsKCNncmFkMSkiIHN0cm9rZT0ibm9uZSI+CiAgPGRlZnM+CiAgICAgICAgPGxpbmVhckdyYWRpZW50IGlkPSJncmFkMSIgeDE9IjAlIiB5MT0iMCUiIHgyPSIxMDAlIiB5Mj0iMTAwJSI+CiAgICAgICAgICAgIDxzdG9wIG9mZnNldD0iMCUiIHN0eWxlPSJzdG9wLWNvbG9yOiM2QzYzRkY7IHN0b3Atb3BhY2l0eToxIiAvPgogICAgICAgICAgICA8c3RvcCBvZmZzZXQ9IjEwMCUiIHN0eWxlPSJzdG9wLWNvbG9yOiNCNTE3OUU7IHN0b3Atb3BhY2l0eToxIiAvPgogICAgICAgIDwvbGluZWFyR3JhZGllbnQ+CiAgICA8L2RlZnM+CjxwYXRoIGQ9Ik0gMCAwIEMgNSAwIDEwIDUgMjAgMTAgQyAyMCAyNSAyMCAzNSAwIDQ1IEMgLTIwIDM1IC0yMCAyNSAtMjAgMTAgQyAtMTAgNSAtNSAwIDAgMCBNIDAgNiBBIDUgNSA5MCAwIDAgMCAzNyBBIDUgNSA5MCAwIDAgMCA2IE0gLTQgMTAgTCAxMCAyMCBDIDExIDIxIDExIDIyIDEwIDIzIEwgLTMuMjUgMzEuODg3IEMgLTUuNTMxIDMzLjU4NCAtNy4wMTcgMzIuMzY0IC03LjAxNyAyOS45NSBMIC03IDEyIEMgLTcuMDk1IDkuODQ1IC01LjYxIDguODY0IC00IDEwIi8+CjwvZz4KPC9zdmc+Cgo=" />" />
     <link rel="stylesheet" href="static/style.css">
     <!-- Attempt to fix issue where the page sometimes loads already zoomed in on mobile (seems to have worked!). -->
     <meta name="viewport" content="width=device-width, initial-scale=1.0">

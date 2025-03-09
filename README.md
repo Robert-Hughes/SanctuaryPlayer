@@ -1,4 +1,4 @@
-Alternative YouTube player which omits various elements which could provide spoilers to esports tournaments.
+Alternative YouTube and Twitch player which omits various elements which could provide spoilers to esports tournaments.
 For example it doesn't show the length of the video being watched and it doesn't show any related videos.
 
 It consists of a single static HTML page along with javascript and css, and so can be run locally from the filesystem,
@@ -36,8 +36,6 @@ TODO:
 * Slow-mo/frame-by-frame controls
 * When video "reloads" while playing (e.g. due to lost connection?), the title appears briefly (not hidden by our blocker box)
 * The "loading" spinner on the menu can make the horizontal scroll bar appear
-* Twitch video titles sometimes fail to load ("TItle not found") - I think this is cos the twitch web page for the video doesn't have the
- proper video title in it on the first load, and needs to be refreshed sometimes - maybe do this automatically on our python server?
 * youtube - loading video with a time set and then pressing play results in the time at the bottom briefly jumping to 0 before jumping to the correct time
 * Twitch - on first load it shows a weird quarter-size frame in the corner before playing the video
 * improve display of recent videos in menu. Maybe show the video ID too, to distinguish between different videos with the same censored title (_ vs _)
@@ -50,7 +48,6 @@ TODO:
 * TWitch - set volume to 100%, as I think it remembers from other vods and then can't be changed!
 * Twitch - doesn't seem to wake lock the screen, so it turns off after a delay
 * http://127.0.0.1:5500/index.html?videoId=2392357391 -> innfinite loading (the Video ID is invalid) -  The ERROR callback thing doesn't seem to work!
-* show the date/time the video was from, to make it easier to find follow-up videos
 * rename to remove the 'YouTube' part?
 * On Android and Twitch video - changing quality then re-opening the menu shows a blank quality! Actually seems to be the same on PC...
 * On Android and Twitch video - the blockers cover most of the video! Can we make these smaller?
