@@ -6,6 +6,9 @@ body {
     touch-action: none; /* Prevent double-clicking to zoom on mobile, as often this happens while using the normal UI. */
     font-family: sans-serif;
 }
+select {
+    font-size: xx-large;
+}
 
 #root {
     height: 100%;

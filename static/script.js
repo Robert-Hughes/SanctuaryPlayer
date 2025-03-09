@@ -133,7 +133,7 @@ function onMenuButtonClick(e) {
         // Update the list of saved positions each time the menu is opened, so that it is up-to-date (otherwise would need to refresh the page)
         fetchSavedPositions();
 
-        // Update list of available quality levels each time the menu is opened, as (for Twitch at least), these aren't
+        // Update list of available quality levels each time the menu is opened, as these aren't
         // available immediately when the video is first loaded
         document.getElementById("quality-select").options.length = 0; // Clear any old options
         if (isVideoLoadedSuccessfully()) {
@@ -186,14 +186,23 @@ function getCurrentPlaybackRate() {
 
 // Gets an array of strings, with the name of each available quality level
 function getAvailableQualities() {
+    let result = [];
     if (isYoutube) {
-        return player.getAvailableQualityLevels();
+        result = player.getAvailableQualityLevels();
     } else {
         // The Twitch player API returns an array of objects, each with a few properties. Although .name seems
         // like it should be the one to use, it's .group that we need for setQuality and getQuality.
-
-        return player.getQualities().map(q => q.group);
+        result = player.getQualities().map(q => q.group);
     }
+    // Both APIs have a quirk when the video has recently finished loading - the available quality levels
+    // return an empty array, but the current quality can still be queried. To avoid this causing problems
+    // for our dropdown, we ensure that there is always an entry for the current quality.
+    let current_quality = getCurrentQuality();
+    if (!result.includes(current_quality)) {
+        result.push(current_quality);
+    }
+
+    return result;
 }
 
 function getCurrentQuality() {

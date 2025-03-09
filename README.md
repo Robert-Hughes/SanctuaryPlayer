@@ -48,10 +48,8 @@ TODO:
 * TWitch - set volume to 100%, as I think it remembers from other vods and then can't be changed!
 * Twitch - doesn't seem to wake lock the screen, so it turns off after a delay
 * http://127.0.0.1:5500/index.html?videoId=2392357391 -> innfinite loading (the Video ID is invalid) -  The ERROR callback thing doesn't seem to work!
-* On Android and Twitch video - changing quality then re-opening the menu shows a blank quality! Actually seems to be the same on PC...
 * On Android and Twitch video - the blockers cover most of the video! Can we make these smaller?
 * For Twitch vod, if phone has been sleeping for a while (with internet off?) and then resume VOD, after a few seconds it shows an error and needs refreshing
 * Youtube blocker bar at the top doesn#'t seem to be tall enough to cover the video title
-* hide the quality select row in the menu when no video loaded
 * Improve general display and usability of the UI (icons, the menu, buttons etc.). Make it align with the new icon/branding?
    Hide saved positiosn table when empty?
