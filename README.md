@@ -54,4 +54,4 @@ TODO:
 * Youtube blocker bar at the top doesn#'t seem to be tall enough to cover the video title
 * hide the quality select row in the menu when no video loaded
 * Improve general display and usability of the UI (icons, the menu, buttons etc.). Make it align with the new icon/branding?
-* Home screen on mobile is too big!
+   Hide saved positiosn table when empty?

@@ -126,7 +126,7 @@ function onMenuButtonClick(e) {
         // Menu not already open - open it
 
         // Pause video once menu opens, as on mobile the menu covers the video so you wouldn't want it to keep playing
-        if (player) {
+        if (isVideoLoadedSuccessfully()) {
             pause();
         }
 
@@ -155,11 +155,12 @@ function onMenuButtonClick(e) {
 
 // Although we can also get the video ID from the URL, this might give us a more 'canonical' version
 function getVideoIdFromPlayer() {
-    if (isYoutube) {
+    if (isYoutube && player && player.getVideoData) {
         return player.getVideoData().video_id;
-    } else if (isTwitch) {
+    } else if (isTwitch && player && player.getVideo) {
         return player.getVideo();
     }
+    return null;
 }
 
 function isVideoLoadedSuccessfully() {
@@ -455,7 +456,7 @@ function onPlayerReady() {
     // if the videoId was invalid. Check if the video metadata loaded properly, which seems to be a good indication for a
     // successful load
     if (isVideoLoadedSuccessfully()) {
-        document.getElementById("loading-status").style.display = "none";
+        document.getElementById("loading-status-container").style.display = "none";
         // Now that the player is loaded, we can get and show the title (for YouTube at least, for Twitch we have to wait for our server)
         // so this will show a placeholder for now.
         updateVideoTitle();
@@ -1133,6 +1134,9 @@ function startup() {
 
     var params = new URLSearchParams(window.location.search);
     if (params.has('videoId')) {
+        document.getElementById("welcome-screen").style.display = "none";
+        document.getElementById("loading-status-container").style.display = "flex";
+
         // Detect if the video ID is for Twitch or YouTube
         if (params.get('videoId').match(youtubeVideoIdRegex)) {
             videoPlatform = 'youtube';

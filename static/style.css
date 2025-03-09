@@ -4,6 +4,7 @@ body {
     font-size: xx-large;
     overflow: hidden;  /* Prevent scroll bars from appearing when doing hack in onOverlayClick */
     touch-action: none; /* Prevent double-clicking to zoom on mobile, as often this happens while using the normal UI. */
+    font-family: sans-serif;
 }
 
 #root {
@@ -13,18 +14,46 @@ body {
     user-select: none; /* Otherwise for example clicking a lot can make the whole page blue */
 }
 
-#loading-status {
-    /* As well as being displayed when no video is loaded yet, this needs to display properly on top of the blockers when
-       there is an error loading a video. So it needs absolute position etc. so it's on top */
+#welcome-screen {
+    display: flex;
+    justify-content: center;
+    flex-direction: column;
+    align-items: center;
     position: absolute;
-    top: 50%;
-    transform: translate(-50%, -50%);
-    left: 50%;
+    top: 0px;
+    bottom: 0px;
+    left: 0px;
     right: 0px;
     text-align: center;
     background:white;
+}
+#welcome-screen .title {
+    font-size: 10vmin;
+    margin: 0.5em;
+}
+#welcome-screen .subtitle {
+    font-size: 5vmin;
+    margin: 0.5em;
+}
+#loading-status-container {
+    /* As well as being displayed when no video is loaded yet, this needs to display properly on top of the blockers when
+       there is an error loading a video. So it needs absolute position etc. so it's on top */
+    display: none; /* Will be shown when a video starts loading */
+    align-items: center;
+    justify-content: center;
+
+    position: absolute;
+    top: 0px;
+    bottom: 0px;
+    left: 0px;
+    right: 0px;
+    text-align: center;
+}
+#loading-status {
+    background:white;
     border-radius: 10px;
     padding: 10px;
+    font-size: 10vmin;
 }
 
 #player {
