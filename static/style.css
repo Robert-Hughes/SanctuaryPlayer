@@ -111,7 +111,8 @@ select {
 }
 
 #menu-button {
-    background: white;
+    width: 9vmin;
+    height: 9vmin;
     padding: 1.5vmin;
     border-radius: 8px;
 }
@@ -124,10 +125,10 @@ select {
     background-color: hsl(243, 100%, 90%);
 }
 
-#menu-icon {
-    width: 7vmin;
-    height: 7vmin;
-    background-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="-0.5 -0.5 6 6" fill="hsl(243, 100%, 70%)"><path d="M 0 0 l 5 0 a 0.5 0.5 0 0 1 0 1 l -5 0 a 0.5 0.5 0 0 1 0 -1 M 0 2 l 5 0 a 0.5 0.5 0 0 1 0 1 l -5 0 a 0.5 0.5 0 0 1 0 -1 M 0 4 l 5 0 a 0.5 0.5 0 0 1 0 1 l -5 0 a 0.5 0.5 0 0 1 0 -1" /></svg>');
+.menu-icon {
+    background:
+        content-box url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="-0.5 -0.5 6 6" fill="hsl(243, 100%, 70%)"><path d="M 0 0 l 5 0 a 0.5 0.5 0 0 1 0 1 l -5 0 a 0.5 0.5 0 0 1 0 -1 M 0 2 l 5 0 a 0.5 0.5 0 0 1 0 1 l -5 0 a 0.5 0.5 0 0 1 0 -1 M 0 4 l 5 0 a 0.5 0.5 0 0 1 0 1 l -5 0 a 0.5 0.5 0 0 1 0 -1" /></svg>'),
+        border-box white;
     background-size: cover;
 }
 
@@ -199,38 +200,50 @@ select {
 
 #player-overlay-controls-mid {
     display: none; /* Initially hidden until a video is loaded */
+    column-gap: 0.2em;
     max-width: 100%; /* For when the window is really narrow */
      /* For when the window is really short */
     max-height: 50%;
     overflow: hidden;
 }
-#player-overlay-controls-mid button {
-    font-size: xx-large;
-    width: 5em;
-    height: 5em;
+#player-overlay-controls-mid div:hover {
+    background-color: hsl(243, 100%, 90%);
 }
 #play-pause-button {
     background-size: cover;
+    width: 5em;
+    height: 5em;
+    border-radius: 8px;
 }
 .icon-play {
-    background-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><polygon points="4,4 4,20 20,12 "/></svg>');
+    background:
+        url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="hsl(243, 100%, 70%)"><polygon points="4,4 4,20 20,12 "/></svg>'),
+        white;
 }
 .icon-pause {
-    background-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">    <g fill="currentColor">       <rect x="6" y="5" width="5" height="14" />       <rect x="13" y="5" width="5" height="14" />     </g> </svg>');
+    background:
+        url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="hsl(243, 100%, 70%)">    <g>       <rect x="6" y="5" width="5" height="14" />       <rect x="13" y="5" width="5" height="14" />     </g> </svg>'),
+        white;
 }
 
 #fullscreen-button {
-    background-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">    <g fill="none" stroke="currentColor" stroke-width="2">    <path d="M4 10l0 -6l6 0" />    <path d="M20 10l0 -6l-6 0" />    <path d="M4 14l0 6l6 0" />    <path d="M20 14l0 6l-6 0" />    </g> </svg>');
+    background:
+        url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" stroke="hsl(243, 100%, 70%)">    <g fill="none" stroke-width="2">    <path d="M4 10l0 -6l6 0" />    <path d="M20 10l0 -6l-6 0" />    <path d="M4 14l0 6l6 0" />    <path d="M20 14l0 6l-6 0" />    </g> </svg>'),
+        white;
     background-size: cover;
+    width: 5em;
+    height: 5em;
+    border-radius: 8px;
 }
 
 #player-overlay-controls-bot {
     display: none; /* Initially hidden until a video is loaded */
     align-items: flex-end;
     justify-content: center; /* Only makes a difference once wrapped */
+    column-gap: 0.2em;
     width: 100%; /* Otherwise it can become wider than the parent and the shrinking properties on the children don't work as we want */
 }
-#player-overlay-controls-bot button {
+#player-overlay-controls-bot .seek-button {
     flex-shrink: 1;  /* Shrink on narrow display (e.g. portrait phone) */
     min-width: 0; /* Otherwise won't shrink beyond a certain value */
     font-size: min(5vw, 50px); /* Scale font size with width */
@@ -243,6 +256,7 @@ select {
 }
 
 #lock-controls-slider {
+    display: none; /* Initially hidden until a video is loaded */
     position: absolute;
     top: 50%;
     transform: translateY(-50%);
@@ -250,16 +264,27 @@ select {
     height: 2em;
     width: 2em;
     background-size: cover;
+    border-radius: 8px;
+}
+#lock-controls-slider:hover {
+    background-color: hsl(243, 100%, 90%);
+}
+#lock-controls-slider.glow {
+    box-shadow: 0 0 20px #B5179E, 0 0 30px #B5179E, 0 0 40px #B5179E;
 }
 
 /* Padlock icon - from ChatGPT, try using https://www.svgviewer.dev/ to edit? */
 .icon-locked {
-    background-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 25 25" width="50" height="50">    <g fill="none" stroke="white" stroke-width="2">      <rect x="5" y="11" width="14" height="10" rx="2"/>      <path d="M8 11V7a4 4 0 1 1 8 0v4"/>      <circle cx="12" cy="16" r="1"/>    </g>  </svg>');
+    background:
+        content-box url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 25 25" width="50" height="50" stroke="hsl(243, 100%, 70%)">    <g fill="none" stroke-width="2">      <rect x="5" y="11" width="14" height="10" rx="2"/>      <path d="M8 11V7a4 4 0 1 1 8 0v4"/>      <circle cx="12" cy="16" r="1"/>    </g>  </svg>'),
+        border-box white;
 }
 
 /* Unlocked padlock icon - from ChatGPT, try using https://www.svgviewer.dev/ to edit?  */
 .icon-unlocked {
-    background-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 25 25" width="50" height="50">    <g fill="none" stroke="white" stroke-width="2">      <rect x="5" y="11" width="14" height="10" rx="2"/>      <path d="M16 11V7a4 4 0 1 1 8 0v4"/>      <circle cx="12" cy="16" r="1"/>    </g>  </svg>');
+    background:
+        content-box url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="2 0 25 25" width="50" height="50" stroke="hsl(243, 100%, 70%)">    <g fill="none" stroke-width="2">      <rect x="5" y="11" width="14" height="10" rx="2"/>      <path d="M16 11V7a4 4 0 1 1 8 0v4"/>      <circle cx="12" cy="16" r="1"/>    </g>  </svg>'),
+        border-box white;
 }
 
 #current-time-span {
@@ -267,11 +292,26 @@ select {
     background-color: white;
     margin: 0.1em;
 }
-
-#quality-text {
-    background:white;
+#current-time-span.seeking {
+    background-color: #B5179E;
+}
+#current-time-span:hover {
+    background-color: hsl(243, 100%, 90%);
 }
 
 #restore-normal-controls-button {
     display: none; /* Initially hidden until the "use native controls" button is clicked */
+}
+
+.seek-button {
+    background: white;
+    border-radius: 8px;
+}
+.seek-button:hover {
+    background-color: hsl(243, 100%, 90%);
+}
+
+.disabled {
+    opacity: 50%;
+    pointer-events: none;
 }

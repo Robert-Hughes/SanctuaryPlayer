@@ -637,7 +637,8 @@ function onPlayerStateChange(newStateStr) {
         // Even though we show the pause blockers just before pausing the video, we also do it here just in case the video
         // gets paused through other means (not initiated by us)
         showPauseBlockers();
-        document.getElementById('play-pause-button').className = "icon-play";
+        document.getElementById('play-pause-button').classList.remove("icon-pause");
+        document.getElementById('play-pause-button').classList.add("icon-play");
     }
     else if (newStateStr == "playing") {
         if (isYoutube && !firstPlayTime) {
@@ -653,7 +654,8 @@ function onPlayerStateChange(newStateStr) {
             firstPlayTime = performance.now();
         }
 
-        document.getElementById('play-pause-button').className = "icon-pause";
+        document.getElementById('play-pause-button').classList.remove("icon-play");
+        document.getElementById('play-pause-button').classList.add("icon-pause");
 
         // Hide the blocker boxes after a short delay, as the UI elements that we're covering take a little time to disappear
         hideBlockersShortly();
@@ -661,7 +663,8 @@ function onPlayerStateChange(newStateStr) {
     else if (newStateStr == "ended") {
         // Hide related videos that fill the player area at the end of the video
         document.getElementById('blocker-full').style.display = 'block';
-        document.getElementById('play-pause-button').className = "icon-play";
+        document.getElementById('play-pause-button').classList.remove("icon-pause");
+        document.getElementById('play-pause-button').classList.add("icon-play");
 
         if (isTwitch) {
             player.setVideo("0"); // Stop the player from auto-loading the next video (random hack that seems to work quite well)
@@ -843,7 +846,11 @@ function onTimer() {
     var effectiveCurrentTime = getEffectiveCurrentTime();
 
     document.getElementById("current-time-span").innerText = toFriendlyTimeStringColons(effectiveCurrentTime);
-    document.getElementById("current-time-span").style.backgroundColor = isSeeking() ? 'orange' : 'white';
+    if (isSeeking()) {
+        document.getElementById("current-time-span").classList.add("seeking");
+    } else {
+        document.getElementById("current-time-span").classList.remove("seeking");
+    }
 
     // Clear seek time if we were seeking and have now reached the target.
     // We allow a little leeway as there the player might not seek to exactly the time we requested
@@ -1054,22 +1061,30 @@ function restoreNormalControlsClick(event) {
 }
 
 function toggleControlLocking(event) {
-    let elementsToToggle = document.querySelectorAll('button, select');
-    if (document.getElementById("lock-controls-slider").className == "icon-unlocked") {
-        for (let element of elementsToToggle) {
-            element.wasDisabled = element.disabled; // Remember if it was already disabled, e.g. the quality select for YouTube, so we don't re-enable it incorrectly!
-            element.disabled = true;
+    if (document.getElementById("lock-controls-slider").classList.contains("icon-unlocked")) {
+        document.getElementById("current-time-span").classList.add("disabled");
+        document.getElementById("menu-button").classList.add("disabled");
+        document.getElementById("play-pause-button").classList.add("disabled");
+        document.getElementById("fullscreen-button").classList.add("disabled");
+        document.getElementById("speed-select").disabled = true;
+        for (let e of document.getElementsByClassName("seek-button")) {
+            e.classList.add("disabled");
         }
-        document.getElementById("current-time-span").style.pointerEvents = "none";
 
-        document.getElementById("lock-controls-slider").className = "icon-locked";
+        document.getElementById("lock-controls-slider").classList.remove("icon-unlocked")
+        document.getElementById("lock-controls-slider").classList.add("icon-locked");
     } else {
-        for (let element of elementsToToggle) {
-            element.disabled = element.wasDisabled;
+        document.getElementById("current-time-span").classList.remove("disabled");
+        document.getElementById("menu-button").classList.remove("disabled");
+        document.getElementById("play-pause-button").classList.remove("disabled");
+        document.getElementById("fullscreen-button").classList.remove("disabled");
+        document.getElementById("speed-select").disabled = false;
+        for (let e of document.getElementsByClassName("seek-button")) {
+            e.classList.remove("disabled");
         }
-        document.getElementById("current-time-span").style.pointerEvents = "all";
 
-        document.getElementById("lock-controls-slider").className = "icon-unlocked";
+        document.getElementById("lock-controls-slider").classList.remove("icon-locked")
+        document.getElementById("lock-controls-slider").classList.add("icon-unlocked");
     }
 }
 
@@ -1096,9 +1111,9 @@ function lockControlsPointerMove(event) {
         if (newPos > limit) {
             newPos = limit;
             // Indicate that has been dragged far enough to have an effect
-            slider.style.backgroundColor = "green";
+            slider.classList.add("glow");
         } else {
-            slider.style.backgroundColor = "transparent";
+            slider.classList.remove("glow");
         }
         slider.style.left = newPos + "px";
     }
@@ -1109,16 +1124,18 @@ function lockControlsPointerUp(event) {
     if (slider.hasPointerCapture(event.pointerId)) {
         slider.releasePointerCapture(event.pointerId);
         slider.dragStartX = undefined;
-        // Make the slider automatically slide back to the left, over a short period
-        slider.style.transition = "left 0.5s";
-        slider.style.left = "0px";
 
         // If dragged far enough, lock/unlock the controls
-        if (slider.style.backgroundColor == "green") {
+        const limit = document.getElementById("root").clientWidth * 0.25;
+        if (parseFloat(window.getComputedStyle(slider).left) >= limit) {
+            closeMenu(); // In case it's open
             toggleControlLocking();
         }
 
-        slider.style.backgroundColor = "transparent";
+        // Make the slider automatically slide back to the left, over a short period
+        slider.style.transition = "left 0.5s";
+        slider.style.left = "0px";
+        slider.classList.remove("glow");
     }
 }
 
@@ -1152,6 +1169,7 @@ function startup() {
         document.getElementById("welcome-screen").style.display = "none";
         document.getElementById("loading-status-container").style.display = "flex";
         document.getElementById("use-native-player-controls-button").style.display = 'block';
+        document.getElementById("lock-controls-slider").style.display = 'block';
 
         // Detect if the video ID is for Twitch or YouTube
         if (params.get('videoId').match(youtubeVideoIdRegex)) {

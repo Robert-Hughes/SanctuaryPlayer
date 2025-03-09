@@ -2,7 +2,6 @@
 
 <head>
     <title>Sanctuary Player</title>
-    <link rel="shortcut icon" href="static/icon.png" />
     <!--
         Icon is base64 encoding of this SVG.
         Helpful tools for editing this: https://www.svgviewer.dev/ and https://yqnn.github.io/svg-path-editor/
@@ -66,9 +65,7 @@
             <div id="player-overlay-controls">
                 <span id="lock-controls-slider" class="icon-unlocked"></span>
                 <div id="player-overlay-controls-top">
-                    <div id="menu-button">
-                        <div id="menu-icon"></div>
-                    </div>
+                    <div id="menu-button" class="menu-icon"></div>
                     <div id="menu">
                         <div class="clickable-menu-item" id="change-video-button">Change Video...</div>
                         <div id="quality-row">Quality: <select id="quality-select"></select></div>
@@ -92,20 +89,20 @@
                     </div>
                 </div>
                 <div id="player-overlay-controls-mid">
-                    <button id="play-pause-button" class="icon-play"></button>
-                    <button id="fullscreen-button"></button>
+                    <div id="play-pause-button" class="icon-play"></div>
+                    <div id="fullscreen-button"></div>
                 </div>
                 <div id="player-overlay-controls-bot">
-                    <button class="seek-button" data-amount="-600">-10m</button>
-                    <button class="seek-button" data-amount="-60">-1m</button>
-                    <button class="seek-button" data-amount="-5">-5s</button>
+                    <div class="seek-button" data-amount="-600">-10m</div>
+                    <div class="seek-button" data-amount="-60">-1m</div>
+                    <div class="seek-button" data-amount="-5">-5s</div>
                     <div id="player-overlay-controls-bot-mid">
                         <span id="current-time-span"></span>
                         <select id="speed-select"></select>
                     </div>
-                    <button class="seek-button" data-amount="+5">+5s</button>
-                    <button class="seek-button" data-amount="+60">+1m</button>
-                    <button class="seek-button" data-amount="+600">+10m</button>
+                    <div class="seek-button" data-amount="+5">+5s</div>
+                    <div class="seek-button" data-amount="+60">+1m</div>
+                    <div class="seek-button" data-amount="+600">+10m</div>
                 </div>
             </div>
         </div>
