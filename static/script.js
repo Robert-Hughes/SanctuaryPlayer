@@ -137,6 +137,7 @@ function onMenuButtonClick(e) {
         // available immediately when the video is first loaded
         document.getElementById("quality-select").options.length = 0; // Clear any old options
         if (isVideoLoadedSuccessfully()) {
+            document.getElementById("quality-row").style.display = "block";
             for (var quality of getAvailableQualities()) {
                 var opt = document.createElement("option");
                 opt.value = quality;
@@ -145,7 +146,7 @@ function onMenuButtonClick(e) {
             }
             document.getElementById("quality-select").value = getCurrentQuality();
         } else {
-            //TODO: hide document.getElementById("quality-select")
+            document.getElementById("quality-row").style.display = "none";
         }
 
         document.getElementById("menu").style.display = "block";

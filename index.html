@@ -43,13 +43,29 @@
             <div id="blocker-bottom" class="blocker"></div>
             <div id="blocker-full" class="blocker">End of video. Hiding related videos.</div>
 
+            <div id="loading-status">
+                <h1>Sanctuary Player</h1>
+                <svg xmlns="http://www.w3.org/2000/svg" width="400" height="400" viewBox="-20 0 40 45" fill="none">
+                    <g xmlns="http://www.w3.org/2000/svg" fill="url(#grad1)" stroke="none">
+                        <defs>
+                            <linearGradient id="grad1" x1="0%" y1="0%" x2="100%" y2="100%">
+                                <stop offset="0%" style="stop-color:#6C63FF; stop-opacity:1" />
+                                <stop offset="100%" style="stop-color:#B5179E; stop-opacity:1" />
+                            </linearGradient>
+                        </defs>
+                        <path d="M 0 0 C 5 0 10 5 20 10 C 20 25 20 35 0 45 C -20 35 -20 25 -20 10 C -10 5 -5 0 0 0 M 0 6 A 5 5 90 0 0 0 37 A 5 5 90 0 0 0 6 M -4 10 L 10 20 C 11 21 11 22 10 23 L -3.25 31.887 C -5.531 33.584 -7.017 32.364 -7.017 29.95 L -7 12 C -7.095 9.845 -5.61 8.864 -4 10"/>
+                    </g>
+                </svg>
+                <div>Please select a video from the Menu (top-right corner)</div>
+            </div>
+
             <div id="player-overlay-controls">
                 <span id="lock-controls-slider" class="icon-unlocked"></span>
                 <div id="player-overlay-controls-top">
                     <button id="menu-button">Menu</button>
                     <div id="menu">
                         <button id="change-video-button">Change Video...</button>
-                        <div>Quality: <select id="quality-select"></select></div>
+                        <div id="quality-row">Quality: <select id="quality-select"></select></div>
                         <div id="saved-positions-header">Saved positions: <span id="saved-positions-loading" class="spinner" /></div>
                         <table id="saved-positions-table">
                             <thead>
@@ -88,23 +104,6 @@
         </div>
 
         <button id="restore-normal-controls-button">Use spoiler-free controls</button>
-
-        <!-- Note the loading status needs to be shown on top of everything else, so is at the bottom here. -->
-        <div id="loading-status">
-            <h1>Sanctuary Player</h1>
-            <svg xmlns="http://www.w3.org/2000/svg" width="400" height="400" viewBox="-20 0 40 45" fill="none">
-                <g xmlns="http://www.w3.org/2000/svg" fill="url(#grad1)" stroke="none">
-                    <defs>
-                        <linearGradient id="grad1" x1="0%" y1="0%" x2="100%" y2="100%">
-                            <stop offset="0%" style="stop-color:#6C63FF; stop-opacity:1" />
-                            <stop offset="100%" style="stop-color:#B5179E; stop-opacity:1" />
-                        </linearGradient>
-                    </defs>
-                    <path d="M 0 0 C 5 0 10 5 20 10 C 20 25 20 35 0 45 C -20 35 -20 25 -20 10 C -10 5 -5 0 0 0 M 0 6 A 5 5 90 0 0 0 37 A 5 5 90 0 0 0 6 M -4 10 L 10 20 C 11 21 11 22 10 23 L -3.25 31.887 C -5.531 33.584 -7.017 32.364 -7.017 29.95 L -7 12 C -7.095 9.845 -5.61 8.864 -4 10"/>
-                </g>
-            </svg>
-            <div>Please select a video from the Menu (top-right corner)</div>
-        </div>
     </div>
 
     <script src="static/script.js"></script>
