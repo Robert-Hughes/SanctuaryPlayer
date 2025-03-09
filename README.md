@@ -53,3 +53,6 @@ TODO:
 * Youtube blocker bar at the top doesn#'t seem to be tall enough to cover the video title
 * Improve general display and usability of the UI (icons, the menu, buttons etc.). Make it align with the new icon/branding?
    Hide saved positiosn table when empty?
+* When menu is too large for screen (e.g. Android), oh dear
+* Hide lock icon on welcome screen?
+* The :hover class seems to be weird on mobile - it lingers after a press?

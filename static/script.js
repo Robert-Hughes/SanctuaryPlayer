@@ -117,10 +117,15 @@ function getRelativeTimeString(isoString) {
     return "Just now";
 }
 
+function closeMenu() {
+    document.getElementById("menu").style.display = "none";
+    document.getElementById("menu-button").classList.remove("open");
+}
+
 function onMenuButtonClick(e) {
     if (window.getComputedStyle(document.getElementById("menu")).display == "block") {
         // Menu already open - close it
-        document.getElementById("menu").style.display = "none";
+        closeMenu();
     }
     else {
         // Menu not already open - open it
@@ -150,6 +155,7 @@ function onMenuButtonClick(e) {
         }
 
         document.getElementById("menu").style.display = "block";
+        document.getElementById("menu-button").classList.add("open");
     }
 }
 
@@ -757,7 +763,7 @@ function onOverlayControlsClick(event) {
     if (event.target == document.getElementById("player-overlay-controls")) {
         document.getElementById("player-overlay-controls").style.display = 'none';
         // Also close the menu if it's open, so it isn't open the next time the user brings up the controls
-        document.getElementById("menu").style.display = 'none';
+        closeMenu();
         event.stopPropagation();  // Stop the click from going up to the player-overlay, which would show the controls again!
     }
 
@@ -1039,7 +1045,7 @@ function useNativePlayerControlsClick(event) {
     document.getElementById("restore-normal-controls-button").style.display = "block";
 
     // Close the menu, so it isn't still open when the user restores the normal controls
-    document.getElementById("menu").style.display = 'none';
+    closeMenu();
 }
 
 function restoreNormalControlsClick(event) {
@@ -1145,6 +1151,7 @@ function startup() {
     if (params.has('videoId')) {
         document.getElementById("welcome-screen").style.display = "none";
         document.getElementById("loading-status-container").style.display = "flex";
+        document.getElementById("use-native-player-controls-button").style.display = 'block';
 
         // Detect if the video ID is for Twitch or YouTube
         if (params.get('videoId').match(youtubeVideoIdRegex)) {

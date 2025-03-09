@@ -33,10 +33,12 @@ select {
 #welcome-screen .title {
     font-size: 10vmin;
     margin: 0.5em;
+    color: #6C63FF;
 }
 #welcome-screen .subtitle {
     font-size: 5vmin;
     margin: 0.5em;
+    color: #B5179E;
 }
 #loading-status-container {
     /* As well as being displayed when no video is loaded yet, this needs to display properly on top of the blockers when
@@ -109,13 +111,30 @@ select {
 }
 
 #menu-button {
-    width: 6em;
-    font-size: xx-large;
+    background: white;
+    padding: 1.5vmin;
+    border-radius: 8px;
 }
+#menu-button:hover
+{
+    background-color: hsl(243, 100%, 90%);
+}
+#menu-button.open
+{
+    background-color: hsl(243, 100%, 90%);
+}
+
+#menu-icon {
+    width: 7vmin;
+    height: 7vmin;
+    background-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="-0.5 -0.5 6 6" fill="hsl(243, 100%, 70%)"><path d="M 0 0 l 5 0 a 0.5 0.5 0 0 1 0 1 l -5 0 a 0.5 0.5 0 0 1 0 -1 M 0 2 l 5 0 a 0.5 0.5 0 0 1 0 1 l -5 0 a 0.5 0.5 0 0 1 0 -1 M 0 4 l 5 0 a 0.5 0.5 0 0 1 0 1 l -5 0 a 0.5 0.5 0 0 1 0 -1" /></svg>');
+    background-size: cover;
+}
+
 
 #menu {
     display: none;
-    background-color: white;
+    background: linear-gradient(135deg, hsl(243, 100%, 98%), hsl(309, 77%, 98%));
     position: absolute;
     right: 0px;
     /* Some annoying CSS to deal with the case when the menu is too tall to fit on the page, so that it can be scrolled */
@@ -123,6 +142,7 @@ select {
     overflow-y: auto;
     max-height: calc(100% - 1.5em); /* In case the menu is taller than the viewport, make it scroll. Subtract 1.5em for height of the Menu button */
     border-radius: 8px;
+    border: 2px solid black;
 }
 
 #menu div {
@@ -132,7 +152,7 @@ select {
 }
 .clickable-menu-item:hover
 {
-    background-color: lightgray;
+    background-color: hsl(243, 100%, 90%);
 }
 
 #saved-positions-header {
@@ -148,7 +168,7 @@ select {
     background-color: lightblue;
 }
 #saved-positions-table tbody tr:hover {
-    background-color: lightgray;
+    background-color: hsl(243, 100%, 90%);
 }
 
 @keyframes spin {
@@ -171,6 +191,10 @@ select {
 
 #saved-positions-this-video,#saved-positions-other-videos {
     padding-left: 30px;
+}
+
+#use-native-player-controls-button {
+    display: none; /* Hidden until a video is loaded */
 }
 
 #player-overlay-controls-mid {
