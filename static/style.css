@@ -112,10 +112,6 @@ body {
     padding: 1.5vmin;
     border-radius: 8px;
 }
-#menu-button:hover
-{
-    background-color: hsl(243, 100%, 90%);
-}
 #menu-button.open
 {
     background-color: hsl(243, 100%, 90%);
@@ -147,10 +143,6 @@ body {
     padding: 0.25rem 0.5rem;
     border-radius: 8px;
 }
-.clickable-menu-item:hover
-{
-    background-color: hsl(243, 100%, 90%);
-}
 
 #quality-select {
     font-size: xx-large;
@@ -167,9 +159,6 @@ body {
 }
 #saved-positions-table td.is-current-device {
     background-color: lightblue;
-}
-#saved-positions-table tbody tr:hover {
-    background-color: hsl(243, 100%, 90%);
 }
 
 @keyframes spin {
@@ -205,9 +194,6 @@ body {
      /* For when the window is really short */
     max-height: 50%;
     overflow: hidden;
-}
-#player-overlay-controls-mid div:hover {
-    background-color: hsl(243, 100%, 90%);
 }
 #play-pause-button {
     background-size: cover;
@@ -266,9 +252,6 @@ body {
     background-size: cover;
     border-radius: 8px;
 }
-#lock-controls-slider:hover {
-    background-color: hsl(243, 100%, 90%);
-}
 #lock-controls-slider.glow {
     box-shadow: 0 0 20px #B5179E, 0 0 30px #B5179E, 0 0 40px #B5179E;
 }
@@ -297,17 +280,11 @@ body {
 #current-time-span.seeking {
     background-color: #B5179E;
 }
-#current-time-span:hover {
-    background-color: hsl(243, 100%, 90%);
-}
 
 #speed-select {
     color: #6C63FF;
     font-size: min(4vmin, 40px); /* Scale font size with width */
     margin: 0.4vmin;
-}
-#speed-select:hover {
-    background-color: hsl(243, 100%, 90%);
 }
 #restore-normal-controls-button {
     display: none; /* Initially hidden until the "use native controls" button is clicked */
@@ -319,11 +296,37 @@ body {
     color: #6C63FF;
     padding: 0.2vmin;
 }
-.seek-button:hover {
-    background-color: hsl(243, 100%, 90%);
-}
 
 .disabled {
     opacity: 50%;
     pointer-events: none;
+}
+
+/* Highlight buttons etc. when mouse is hovered over them, but only on platforms with a mouse.
+   On mobile, using :hover behaves weirdly so we disable it */
+@media(hover: hover) and (pointer: fine) {
+    #menu-button:hover {
+        background-color: hsl(243, 100%, 90%);
+    }
+    .clickable-menu-item:hover {
+        background-color: hsl(243, 100%, 90%);
+    }
+    #saved-positions-table tbody tr:hover {
+        background-color: hsl(243, 100%, 90%);
+    }
+    #player-overlay-controls-mid div:hover {
+        background-color: hsl(243, 100%, 90%);
+    }
+    #lock-controls-slider:hover {
+        background-color: hsl(243, 100%, 90%);
+    }
+    #current-time-span:hover {
+        background-color: hsl(243, 100%, 90%);
+    }
+    #speed-select:hover {
+        background-color: hsl(243, 100%, 90%);
+    }
+    .seek-button:hover {
+        background-color: hsl(243, 100%, 90%);
+    }
 }

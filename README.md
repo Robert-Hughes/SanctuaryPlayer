@@ -55,7 +55,6 @@ TODO:
    Hide saved positiosn table when empty?
 * When menu is too large for screen (e.g. Android), oh dear
 * On mobile, the menu now opens lower down the screen which means we aren't using the full space available
-* The :hover class seems to be weird on mobile - it lingers after a press?
 * Needs to be clearer that the lock button needs to be slid to the right
    * Also, prevent it from being dragged to the left (off the edge of the screen)?
 * The video title bar doesn't have nice color
