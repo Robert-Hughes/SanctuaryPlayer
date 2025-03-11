@@ -54,10 +54,10 @@ TODO:
 * Improve general display and usability of the UI (icons, the menu, buttons etc.). Make it align with the new icon/branding?
    Hide saved positiosn table when empty?
 * When menu is too large for screen (e.g. Android), oh dear
+* On mobile, the menu now opens lower down the screen which means we aren't using the full space available
 * The :hover class seems to be weird on mobile - it lingers after a press?
-* New 'buttons' don't have a disabled style! (Nor actually get disabled!!!!) Use pointer-events: none?
 * Needs to be clearer that the lock button needs to be slid to the right
-* Speed select doesn't scale with viewport width
-* Speed select doesn't have the nice hover colours
-* The bottom section of controls doesn't have nice color
+   * Also, prevent it from being dragged to the left (off the edge of the screen)?
 * The video title bar doesn't have nice color
+* VBideo titles in the saved positions table arendon't hav spoilers hidden!
+* Sppoiler hiding for video titles can be too conservative, e.g. O FIRST STAND INTERNATIONAL DAY 1 - KC VS TL // HLE VS TES 'dpmlol 'discord 'displate - caedrel on Twitch

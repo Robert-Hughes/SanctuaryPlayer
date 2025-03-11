@@ -1177,7 +1177,7 @@ function startup() {
             isYoutube = true;
 
             // Configure YouTube-specific settings
-            document.getElementById('blocker-top').style.height = "50px"; // Needs to be taller than the title bar
+            document.getElementById('blocker-top').style.height = "60px"; // Needs to be taller than the title bar
             document.getElementById('blocker-bottom').style.height = "50%"; // Needs to be taller than the related videos bar
             document.getElementById('quality-select').disabled = true; // Youtube doesn't support changing quality, so we display the current quality but it can't be changed
 

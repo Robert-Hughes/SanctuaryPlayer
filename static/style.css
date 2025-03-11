@@ -1,13 +1,9 @@
 body {
     height: 100%;
     margin: 0px;
-    font-size: xx-large;
     overflow: hidden;  /* Prevent scroll bars from appearing when doing hack in onOverlayClick */
     touch-action: none; /* Prevent double-clicking to zoom on mobile, as often this happens while using the normal UI. */
     font-family: sans-serif;
-}
-select {
-    font-size: xx-large;
 }
 
 #root {
@@ -83,12 +79,12 @@ select {
     display: none;
 }
 #blocker-top {
-    top: 0px;
-    /* height: This is dependent on YouTube vs. Twitch, so is set in code */
+    top: 0px; /* height: This is dependent on YouTube vs. Twitch, so is set in code */
+    color: hsl(243, 100%, 85%);
+
 }
 #blocker-bottom {
-    /* height: This is dependent on YouTube vs. Twitch, so is set in code */
-    bottom: 0px;
+    bottom: 0px; /* height: This is dependent on YouTube vs. Twitch, so is set in code */
 }
 #blocker-full {
     height: 100%;
@@ -141,7 +137,7 @@ select {
     /* Some annoying CSS to deal with the case when the menu is too tall to fit on the page, so that it can be scrolled */
     /* This is complicated because we want the top of the menu to be just below the Menu button */
     overflow-y: auto;
-    max-height: calc(100% - 1.5em); /* In case the menu is taller than the viewport, make it scroll. Subtract 1.5em for height of the Menu button */
+    max-height: calc(100% - 1.5em); /* In case the menu is taller than the viewport, make it scroll. Subtract 1.5em for height of the Menu button. TODO: Needs adjusting! */
     border-radius: 8px;
     border: 2px solid black;
 }
@@ -154,6 +150,10 @@ select {
 .clickable-menu-item:hover
 {
     background-color: hsl(243, 100%, 90%);
+}
+
+#quality-select {
+    font-size: xx-large;
 }
 
 #saved-positions-header {
@@ -211,8 +211,8 @@ select {
 }
 #play-pause-button {
     background-size: cover;
-    width: 5em;
-    height: 5em;
+    width: min(20vmin, 150px);
+    height: min(20vmin, 150px);
     border-radius: 8px;
 }
 .icon-play {
@@ -231,8 +231,8 @@ select {
         url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" stroke="hsl(243, 100%, 70%)">    <g fill="none" stroke-width="2">    <path d="M4 10l0 -6l6 0" />    <path d="M20 10l0 -6l-6 0" />    <path d="M4 14l0 6l6 0" />    <path d="M20 14l0 6l-6 0" />    </g> </svg>'),
         white;
     background-size: cover;
-    width: 5em;
-    height: 5em;
+    width: min(20vmin, 150px);
+    height: min(20vmin, 150px);
     border-radius: 8px;
 }
 
@@ -240,19 +240,19 @@ select {
     display: none; /* Initially hidden until a video is loaded */
     align-items: flex-end;
     justify-content: center; /* Only makes a difference once wrapped */
-    column-gap: 0.2em;
+    column-gap: 1vmin;
     width: 100%; /* Otherwise it can become wider than the parent and the shrinking properties on the children don't work as we want */
 }
 #player-overlay-controls-bot .seek-button {
     flex-shrink: 1;  /* Shrink on narrow display (e.g. portrait phone) */
     min-width: 0; /* Otherwise won't shrink beyond a certain value */
-    font-size: min(5vw, 50px); /* Scale font size with width */
+    font-size: min(5vmin, 50px); /* Scale font size with width */
 }
 #player-overlay-controls-bot-mid {
     display: flex;
     flex-direction: column;
     align-items: center;
-    font-size: min(5vw, 50px); /* Scale font size with width */
+    font-size: min(5vmin, 50px); /* Scale font size with width */
 }
 
 #lock-controls-slider {
@@ -261,8 +261,8 @@ select {
     top: 50%;
     transform: translateY(-50%);
     left: 0px;
-    height: 2em;
-    width: 2em;
+    height: min(10vmin, 100px);
+    width: min(10vmin, 100px);
     background-size: cover;
     border-radius: 8px;
 }
@@ -290,7 +290,9 @@ select {
 #current-time-span {
     cursor: pointer;
     background-color: white;
-    margin: 0.1em;
+    color: #6C63FF;
+    border-radius: 8px;
+    padding: 0.2vmin;
 }
 #current-time-span.seeking {
     background-color: #B5179E;
@@ -299,6 +301,14 @@ select {
     background-color: hsl(243, 100%, 90%);
 }
 
+#speed-select {
+    color: #6C63FF;
+    font-size: min(4vmin, 40px); /* Scale font size with width */
+    margin: 0.4vmin;
+}
+#speed-select:hover {
+    background-color: hsl(243, 100%, 90%);
+}
 #restore-normal-controls-button {
     display: none; /* Initially hidden until the "use native controls" button is clicked */
 }
@@ -306,6 +316,8 @@ select {
 .seek-button {
     background: white;
     border-radius: 8px;
+    color: #6C63FF;
+    padding: 0.2vmin;
 }
 .seek-button:hover {
     background-color: hsl(243, 100%, 90%);
