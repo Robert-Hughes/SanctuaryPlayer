@@ -347,7 +347,11 @@ function fetchSavedPositions() {
                     }
 
                     var cell = document.createElement("td");
-                    cell.textContent = savedPosition.video_title || savedPosition.video_id; // Fallback to video ID if title is missing
+                    if (savedPosition.video_title) {
+                        cell.textContent = stripSpoilersFromTitle(savedPosition.video_title);
+                    } else {
+                        cell.textContent = savedPosition.video_id; // Fallback to video ID if title is missing
+                    }
                     row.appendChild(cell);
                     if (savedPosition.video_id == getVideoIdFromPlayer()) {
                         cell.classList.add("is-current-video");
@@ -586,6 +590,10 @@ function getSafeTitle() {
         return null; // Title may not be available yet, e.g. hasn't been loaded from our server yet
     }
 
+    return stripSpoilersFromTitle(title);
+}
+
+function stripSpoilersFromTitle(title) {
     // The video title may have something like "X vs Y Game 5", which tells you it goes to game 5, so hide this
     var r = /Game \d+/ig;
     title = title.replace(r, "Game _");
@@ -594,17 +602,68 @@ function getSafeTitle() {
     // if it's tiebreaker that may or may not happen depending on other games. (if the title is updated throughout live video's
     // original broadcast, then the title we see afterwards is the final title).
     // Examples:
-    // GAM vs. DRX | Worlds Game 3
-    // GAM vs. DRX
-    // Team 1 vs. Team 2
-    // Team OGOBAG vs tramula big face | Champions match
-    // Today | A A vs B B | Now
-    // Nothing to see here!
-    // This is a game between A vs B
-    // BAG v TAG
-    // Not gonna match chavs is it
-    var r = /\b[^|\n]+\bvs?\b[^|\n]+\b/ig;
-    title = title.replace(r, "_ vs _");
+    //  GAM vs. DRX | Worlds Game 3
+    //  GAM vs. DRX
+    //  Team 1 vs. Team 2
+    //  Team OGOBAG vs tramula big face | Champions match
+    //  Today | A A vs B B | Now
+    //  Nothing to see here!
+    //  This is a game between A vs B
+    //  BAG v TAG
+    //  Not gonna match chavs is it
+    //  FIRST STAND DO OR DIE DAY FOR EU - HLE VS CFO // KC VS TES !dpmlol !discord !displate - caedrel on Twitch
+    //  FIRST STAND INTERNATIONAL DAY 2 KC VS CFO // TL VS LIQUID #FirstStandWatchParty !dpmlol !discord !displate - caedrel on Twitch
+    //  aaaaa vs bbbbbb | cddddd vs dddddd | eeeeee vs ffffff
+    //  aaaaa vs bbbbbb cddddd vs dddddd eeeeee vs ffffff
+
+    // There might be multiple occurences of "vs", so find and process each one at a time. Note that when there are multiple 'vs',
+    // we might unintentionally consider some of the 'vs' as part of team names so the final result might not be exactly right but should
+    // still hide the spoilers.
+    // This search regex will also match one character from the word before and after the 'vs', to simplify the next bit. e.g. "Team Bob vs Team Bill" -> "b vs T"
+    let regex = /[^\s]\s+(vs?\.?)\s+[^\s]/ig;
+    while ((vs_match = regex.exec(title)) !== null) {
+        let matched_word = vs_match[1]; // The 'vs' bit, without the spaces or surrounding chars
+        let team_a_end_inclusive = vs_match.index; // Index of the last character of the word before the 'vs'
+        let team_b_start_inclusive = vs_match.index + vs_match[0].length - 1; // Index of the first character of the word after the 'vs'
+
+        // Helper function to search through the `title` string from the given search_start_idx and going in the given dir (+/-1) until
+        // it decides (using some heuristics) that it's found the end of the team name.
+        // Returns the index at which it stops, i.e. the index of the final character in the team name (not the one just past that)
+        function search_until_end_of_team_name(search_start_idx, dir) {
+            let prev_char = null;
+            let idx_of_most_recent_non_whitespace = search_start_idx; // Keep track of this so that we don't needlessly include whitespace at the end of the team name
+            // Count the number of words we go past - we assume that after a couple of words we will have reached the end of the team name
+            let num_words = 0;
+            for (let i = search_start_idx; i >= 0 && i < title.length; i += dir) {
+                let this_char = title[i];
+
+                if (this_char == ' ' && prev_char != ' ') {
+                    num_words++;
+                    if (num_words >= 3) {
+                        return idx_of_most_recent_non_whitespace;
+                    }
+                } else if (this_char == '|' || this_char == '/' || this_char == '\\' || this_char == '-') {
+                    // Punctuation usually signifies the end of the name (e.g. a separator in the title)
+                    return idx_of_most_recent_non_whitespace;
+                }
+
+                if (this_char != ' ') {
+                    idx_of_most_recent_non_whitespace = i;
+                }
+            }
+            // If gets to the end of the loop then we reached the end of the title
+            return dir > 0 ? title.length - 1 : 0;
+        }
+
+        let team_b_end_inclusive = search_until_end_of_team_name(team_b_start_inclusive, +1);
+        let team_a_start_inclusive = search_until_end_of_team_name(team_a_end_inclusive, -1);
+
+        let old_length = title.length;
+        title = title.substring(0, team_a_start_inclusive) + "_ " + matched_word + " _" + title.substring(team_b_end_inclusive+1); // Note +1 as substring() takes an exclusive index, but our function returns an inclusive index
+
+        // Continue searching for any more 'vs' from the index after what we just replaced (adjusted for index in the new string!)
+        regex.lastIndex = title.length - (old_length - team_b_end_inclusive);
+    }
 
     return title;
 }

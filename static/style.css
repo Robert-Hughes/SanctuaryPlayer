@@ -80,8 +80,9 @@ body {
 }
 #blocker-top {
     top: 0px; /* height: This is dependent on YouTube vs. Twitch, so is set in code */
+    /* Color and font-size for the video title that we show here */
     color: hsl(243, 100%, 85%);
-
+    font-size: 5vmin;
 }
 #blocker-bottom {
     bottom: 0px; /* height: This is dependent on YouTube vs. Twitch, so is set in code */

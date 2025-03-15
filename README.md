@@ -45,7 +45,7 @@ TODO:
 * Youtube also has some dodgy behaviour with ended videos and seeking/pressing play
 * Twitch - when seeking, the player shows a brief pause then unpause. Seems the docs are wrong about seeking/buffering being counted as playing? OInly for longer seeks?
 //  This isn't a big issue, but if the network is slow then it looks like the video is paused when it's just buffering. Maybe we can improve the UI here?
-* TWitch - set volume to 100%, as I think it remembers from other vods and then can't be changed!
+* TWitch - set volume to 100% and unmute, as I think it remembers from other vods and then can't be changed! esp. confusing if it's muted at the start!
 * Twitch - doesn't seem to wake lock the screen, so it turns off after a delay
 * http://127.0.0.1:5500/index.html?videoId=2392357391 -> innfinite loading (the Video ID is invalid) -  The ERROR callback thing doesn't seem to work!
 * On Android and Twitch video - the blockers cover most of the video! Can we make these smaller?
@@ -57,6 +57,6 @@ TODO:
 * On mobile, the menu now opens lower down the screen which means we aren't using the full space available
 * Needs to be clearer that the lock button needs to be slid to the right
    * Also, prevent it from being dragged to the left (off the edge of the screen)?
-* The video title bar doesn't have nice color
-* VBideo titles in the saved positions table arendon't hav spoilers hidden!
-* Sppoiler hiding for video titles can be too conservative, e.g. O FIRST STAND INTERNATIONAL DAY 1 - KC VS TL // HLE VS TES 'dpmlol 'discord 'displate - caedrel on Twitch
+* the saved positions list "2 hours ago" etc. Should update even when not refreshed, so when coming back later it doesn't say "just now"
+* Default quality settings?
+* Ctrl-click to open saved positions in a new tab. Right click on them too? So maybe just make them an <a>?
