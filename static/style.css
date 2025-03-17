@@ -1,30 +1,22 @@
 body {
-    height: 100%;
-    margin: 0px;
-    overflow: hidden;  /* Prevent scroll bars from appearing when doing hack in onOverlayClick */
+    margin: 0px; /* Remove browser default margin around the edge of the page */
     touch-action: none; /* Prevent double-clicking to zoom on mobile, as often this happens while using the normal UI. */
     font-family: sans-serif;
-}
-
-#root {
-    height: 100%;
-    display: flex;
-    flex-direction: column;
     user-select: none; /* Otherwise for example clicking a lot can make the whole page blue */
 }
 
+/* Welcome screen - shown separately from everything so is pretty much independent */
+/* =============================================================================== */
 #welcome-screen {
-    display: flex;
-    justify-content: center;
-    flex-direction: column;
-    align-items: center;
+    /* Fill the screen */
     position: absolute;
-    top: 0px;
-    bottom: 0px;
-    left: 0px;
-    right: 0px;
-    text-align: center;
-    background:white;
+    inset: 0px;
+
+    /* Arrange children vertically */
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
 }
 #welcome-screen .title {
     font-size: 10vmin;
@@ -35,114 +27,145 @@ body {
     font-size: 5vmin;
     margin: 0.5em;
     color: #B5179E;
-}
-#loading-status-container {
-    /* As well as being displayed when no video is loaded yet, this needs to display properly on top of the blockers when
-       there is an error loading a video. So it needs absolute position etc. so it's on top */
-    display: none; /* Will be shown when a video starts loading */
-    align-items: center;
-    justify-content: center;
-
-    position: absolute;
-    top: 0px;
-    bottom: 0px;
-    left: 0px;
-    right: 0px;
     text-align: center;
 }
-#loading-status {
-    background:white;
-    border-radius: 10px;
-    padding: 10px;
-    font-size: 10vmin;
-}
 
-#player {
-    height: 100%;
-    width: 100%;
-}
-
-#player-overlay {
-    top: 0px;
-    bottom: 0px;
-    left: 0px;
-    right: 0px;
+/* 'Use spoiler-free controls' button - this is only shown if the user turns on the native
+   controls, and shows as an overlay at the top right, where the menu button was.
+  =============================================================================== */
+#restore-normal-controls-button {
+    display: none; /* Initially hidden until the "use native controls" button is clicked */
     position: absolute;
+    top: 0px;
+    right: 0px;
 }
 
+/* Player overlay - fullscreen container that overlays the video where all of our UI additions are */
+/* =============================================================================== */
+#player-overlay {
+    position: absolute;
+    inset: 0px;
+    display: block; /* This is kind of irrelevant as all the children will be position absolutely anyway */
+}
+
+/* Blocker elements - black boxes that cover up elements of the native player's UI */
+/* =============================================================================== */
 .blocker {
-    width: 100%;
     background: black;
     position: absolute;
-    color: white;
-    pointer-events: none;
-    display: none;
+    display: none; /* Initially hidden - will be shown by javascript when needed */
 }
 #blocker-top {
-    top: 0px; /* height: This is dependent on YouTube vs. Twitch, so is set in code */
-    /* Color and font-size for the video title that we show here */
+    /* Full-width along the top of the page. The height is dependent on YouTube vs. Twitch, so is set in code */
+    top: 0px;
+    left: 0px;
+    right: 0px;
+    /* Color and font-size for the video title that we show here  */
     color: hsl(243, 100%, 85%);
     font-size: 5vmin;
 }
 #blocker-bottom {
-    bottom: 0px; /* height: This is dependent on YouTube vs. Twitch, so is set in code */
+    /* Full-width along the bottom of the page. The height is dependent on YouTube vs. Twitch, so is set in code */
+    bottom: 0px;
+    left: 0px;
+    right: 0px;
 }
 #blocker-full {
-    height: 100%;
-    bottom: 0px;
+    /* Full-screen */
+    inset: 0px;
+    /* Color and font-size for the message that we show here (end of video) */
+    color: hsl(243, 100%, 85%);
+    font-size: 5vmin;
 }
 
-#player-overlay-controls {
-    position: absolute; /* So that the controls are on top of the blockers */
-    display: flex; /* Initially displayed so that user can see the Change Video button */
-    width: 100%;
-    height: 100%;
+/* Loading status - shows a message in the middle of the screen whilst a video is loading */
+/* Note this needs to be shown above the blockers.
+/* In order to centre the message, it is a child of a full-screen container and we center
+    it using flexbox layout */
+/* =============================================================================== */
+#loading-status-container {
+    position: absolute;
+    inset: 0px;
+
+    display: none; /* Will be shown as 'flex' when a video starts loading */
     align-items: center;
     justify-content: center;
+}
+#loading-status {
+    background:white;
+    color: #6C63FF;
+    border-radius: 1vmin;
+    text-align: center;
+    padding: 2vmin;
+    font-size: 10vmin;
+}
+
+/* Player overlay controls - fullscreen container with our player controls.
+ * Only visible when the user clicks on the video */
+/* =============================================================================== */
+#player-overlay-controls {
+    position: absolute; /* So that the controls are on top of the blockers */
+    inset: 0px;
+    /* Initially displayed so that user can click Play etc.
+       Children are arranged vertically in a flexbox with the free space placed inbetween
+       the children. This means that the top, mid and bot sections are placed at
+       the top, middle and bottom of the screen, but will nicely shuffle down when
+       the menu is opened */
+    display: flex;
     flex-direction: column;
+    align-items: center;
     justify-content: space-between;
 }
 
+/* Player overlay controls (top) */
+/* =============================================================================== */
 #player-overlay-controls-top {
-    margin-left: auto; /* Align to the right */
+    align-self: flex-end; /* Align to the right (override default align-items from parent flexbox), so the menu is in the top-right corner */
+    /* Children (i.e. the menu button and optionally the menu itself) in a column, aligned to the right */
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+
+    max-height: 100%; /* For when the menu is larger than the screen, we want the menu to scroll rather than this element */
 }
+/* TODO: review rest of this section (the menu stuff) */
 
 #menu-button {
     width: 9vmin;
-    height: 9vmin;
+    aspect-ratio: 1;
     padding: 1.5vmin;
-    border-radius: 8px;
-}
-#menu-button.open
-{
-    background-color: hsl(243, 100%, 90%);
-}
-
-.menu-icon {
+    border-radius: 1vmin;
     background:
         content-box url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="-0.5 -0.5 6 6" fill="hsl(243, 100%, 70%)"><path d="M 0 0 l 5 0 a 0.5 0.5 0 0 1 0 1 l -5 0 a 0.5 0.5 0 0 1 0 -1 M 0 2 l 5 0 a 0.5 0.5 0 0 1 0 1 l -5 0 a 0.5 0.5 0 0 1 0 -1 M 0 4 l 5 0 a 0.5 0.5 0 0 1 0 1 l -5 0 a 0.5 0.5 0 0 1 0 -1" /></svg>'),
         border-box white;
-    background-size: cover;
+    cursor: pointer /* Indicate as clickable */
 }
-
+#menu-button.open {
+    /* Highlight the menu icon when the menu is open */
+    background-color: hsl(243, 100%, 90%);
+}
 
 #menu {
     display: none;
     background: linear-gradient(135deg, hsl(243, 100%, 98%), hsl(309, 77%, 98%));
-    position: absolute;
-    right: 0px;
-    /* Some annoying CSS to deal with the case when the menu is too tall to fit on the page, so that it can be scrolled */
-    /* This is complicated because we want the top of the menu to be just below the Menu button */
-    overflow-y: auto;
-    max-height: calc(100% - 1.5em); /* In case the menu is taller than the viewport, make it scroll. Subtract 1.5em for height of the Menu button. TODO: Needs adjusting! */
-    border-radius: 8px;
+    border-radius: 1vmin;
     border: 2px solid black;
+    overflow: auto; /* Scroll bars will appear when the menu overflows the screen boundary */
+    flex-shrink: 99999999; /* We want the menu to shrink to the available space, not the menu button */
+    max-width: 100%; /* We want a horizontal scrollbar to appear if the menu is wider than the screen */
+}
+
+.clickable-menu-item {
+    cursor: pointer /* Indicate as clickable */
+}
+#saved-positions-table tbody tr {
+    cursor: pointer /* Indicate as clickable */
 }
 
 #menu div {
     margin: 0.2em;
     padding: 0.25rem 0.5rem;
-    border-radius: 8px;
+    border-radius: 1vmin;
 }
 
 #quality-select {
@@ -188,20 +211,22 @@ body {
     display: none; /* Hidden until a video is loaded */
 }
 
+/* Player overlay controls (mid) */
+/* =============================================================================== */
 #player-overlay-controls-mid {
-    display: none; /* Initially hidden until a video is loaded */
-    column-gap: 0.2em;
-    max-width: 100%; /* For when the window is really narrow */
-     /* For when the window is really short */
-    max-height: 50%;
-    overflow: hidden;
+    display: none; /* Initially hidden until a video is loaded. Will be shown as 'flex' by javascript */
+    /* Children (the two buttons) arranged in a row, with a small gap between them */
+    flex-direction: row;
+    column-gap: 1vmin;
 }
-#play-pause-button {
-    background-size: cover;
-    width: min(20vmin, 150px);
-    height: min(20vmin, 150px);
-    border-radius: 8px;
+/* Buttons in the mid row */
+#player-overlay-controls-mid>div {
+    height: 20vmin;
+    aspect-ratio: 1;
+    border-radius: 1vmin;
+    cursor: pointer /* Indicate as clickable */
 }
+
 .icon-play {
     background:
         url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="hsl(243, 100%, 70%)"><polygon points="4,4 4,20 20,12 "/></svg>'),
@@ -217,31 +242,53 @@ body {
     background:
         url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" stroke="hsl(243, 100%, 70%)">    <g fill="none" stroke-width="2">    <path d="M4 10l0 -6l6 0" />    <path d="M20 10l0 -6l-6 0" />    <path d="M4 14l0 6l6 0" />    <path d="M20 14l0 6l-6 0" />    </g> </svg>'),
         white;
-    background-size: cover;
-    width: min(20vmin, 150px);
-    height: min(20vmin, 150px);
-    border-radius: 8px;
 }
 
+/* Player overlay controls (bot) */
+/* =============================================================================== */
 #player-overlay-controls-bot {
-    display: none; /* Initially hidden until a video is loaded */
+    display: none; /* Initially hidden until a video is loaded. Will be shown as 'flex' by javascript */
+    /* Arrange children in a row with a small gap between them and aligned to the bottom of the screen */
+    flex-direction: row;
     align-items: flex-end;
-    justify-content: center; /* Only makes a difference once wrapped */
     column-gap: 1vmin;
-    width: 100%; /* Otherwise it can become wider than the parent and the shrinking properties on the children don't work as we want */
+
+    font-size: 5vmin; /* For all children to inherit, rather than setting on each one */
 }
-#player-overlay-controls-bot .seek-button {
-    flex-shrink: 1;  /* Shrink on narrow display (e.g. portrait phone) */
-    min-width: 0; /* Otherwise won't shrink beyond a certain value */
-    font-size: min(5vmin, 50px); /* Scale font size with width */
+.seek-button {
+    background: white;
+    border-radius: 1vmin;
+    color: #6C63FF;
+    padding: 0.2vmin;
+    cursor: pointer /* Indicate as clickable */
 }
 #player-overlay-controls-bot-mid {
+    /* Vertical column of controls in the middle at the bottom */
     display: flex;
     flex-direction: column;
     align-items: center;
-    font-size: min(5vmin, 50px); /* Scale font size with width */
+    row-gap: 1vmin;
+}
+#speed-select {
+    color: #6C63FF;
+    font-size: 5vmin; /* This isn't inherited from the parent #player-overlay-controls-bot, so needs repeating here */
+}
+#current-time-span {
+    background-color: white;
+    color: #6C63FF;
+    border-radius: 1vmin;
+    padding: 0.2vmin;
+    cursor: pointer /* Indicate as clickable */
+}
+#current-time-span.seeking {
+    background-color: #B5179E;
 }
 
+
+/*TODO: review from here */
+
+/* Lock controls slider */
+/* =============================================================================== */
 #lock-controls-slider {
     display: none; /* Initially hidden until a video is loaded */
     position: absolute;
@@ -251,7 +298,8 @@ body {
     height: min(10vmin, 100px);
     width: min(10vmin, 100px);
     background-size: cover;
-    border-radius: 8px;
+    border-radius: 1vmin;
+    cursor: grab; /* TODO: make it grabbing while dragging! */
 }
 #lock-controls-slider.glow {
     box-shadow: 0 0 20px #B5179E, 0 0 30px #B5179E, 0 0 40px #B5179E;
@@ -271,33 +319,8 @@ body {
         border-box white;
 }
 
-#current-time-span {
-    cursor: pointer;
-    background-color: white;
-    color: #6C63FF;
-    border-radius: 8px;
-    padding: 0.2vmin;
-}
-#current-time-span.seeking {
-    background-color: #B5179E;
-}
-
-#speed-select {
-    color: #6C63FF;
-    font-size: min(4vmin, 40px); /* Scale font size with width */
-    margin: 0.4vmin;
-}
-#restore-normal-controls-button {
-    display: none; /* Initially hidden until the "use native controls" button is clicked */
-}
-
-.seek-button {
-    background: white;
-    border-radius: 8px;
-    color: #6C63FF;
-    padding: 0.2vmin;
-}
-
+/* Shared styles (can be applied to various elements throughout the app) */
+/* =============================================================================== */
 .disabled {
     opacity: 50%;
     pointer-events: none;

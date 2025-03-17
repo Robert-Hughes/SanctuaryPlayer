@@ -60,3 +60,4 @@ TODO:
 * the saved positions list "2 hours ago" etc. Should update even when not refreshed, so when coming back later it doesn't say "just now"
 * Default quality settings?
 * Ctrl-click to open saved positions in a new tab. Right click on them too? So maybe just make them an <a>?
+* Make saved positions table selectable to copy into clipboard?

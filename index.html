@@ -42,6 +42,8 @@
             <div class="subtitle">Please select a video from the Menu<br />(top-right corner)</div>
         </div>
 
+        <button id="restore-normal-controls-button">Use spoiler-free controls</button>
+
         <!-- The YouTube API will replace this div with its iframe once we load a video.
              The Twitch API will place its iframe as a child of this div once we load a video. -->
         <div id="player"></div>
@@ -63,9 +65,8 @@
             </div>
 
             <div id="player-overlay-controls">
-                <span id="lock-controls-slider" class="icon-unlocked"></span>
                 <div id="player-overlay-controls-top">
-                    <div id="menu-button" class="menu-icon"></div>
+                    <div id="menu-button"></div>
                     <div id="menu">
                         <div class="clickable-menu-item" id="change-video-button">Change Video...</div>
                         <div id="quality-row">Quality: <select id="quality-select"></select></div>
@@ -104,10 +105,10 @@
                     <div class="seek-button" data-amount="+60">+1m</div>
                     <div class="seek-button" data-amount="+600">+10m</div>
                 </div>
+
+                <span id="lock-controls-slider" class="icon-unlocked"></span>
             </div>
         </div>
-
-        <button id="restore-normal-controls-button">Use spoiler-free controls</button>
     </div>
 
     <script src="static/script.js"></script>
