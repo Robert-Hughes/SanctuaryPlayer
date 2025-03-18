@@ -1,0 +1,33 @@
+# This workflow will deploy source code on Google Cloud Run when a commit is pushed to main.
+
+name: 'Deploy to Google Cloud Run'
+
+on:
+  push:
+    branches:
+      - '"main"'
+
+jobs:
+  deploy:
+    runs-on: 'ubuntu-latest'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Authenticate with Google Cloud
+        uses: google-github-actions/auth@v1
+        with:
+          credentials_json: ${{ secrets.GOOGLE_CLOUD_SERVICE_ACCOUNT_KEY }}
+
+      - name: Set up Google Cloud SDK
+        uses: google-github-actions/setup-gcloud@v1
+        with:
+          project_id: 'sanctuary-player'
+
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy 'sanctuary-player' \
+            --source . \
+            --region 'europe-west1' \
+            --allow-unauthenticated
