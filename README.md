@@ -23,6 +23,8 @@ Google Cloud Run deploy command:
 (Run from this folder)
 E:\Programming\google-cloud-sdk\bin\gcloud.ps1 --project sanctuary-player run deploy sanctuary-player --source . --region europe-west1 --allow-unauthenticated
 
+This is also configured to run automatically when committing to the main branch on GitHub, using GitHub Actions.
+
 Note we are using europe-west1 (Belgium) as it supports simpler custom domains, and is lower CO2 than the London region.
 
 TODO:
