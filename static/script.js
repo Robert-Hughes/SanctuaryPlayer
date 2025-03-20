@@ -331,6 +331,7 @@ function fetchSavedPositions() {
                     params.set('time', savedPosition.position);
 
                     var row = document.createElement("tr");
+                    row.classList.add("clickable");
                     row.addEventListener('click', function() {
                         window.location = '?' + params.toString();
                     });
@@ -1120,26 +1121,23 @@ function restoreNormalControlsClick(event) {
 }
 
 function toggleControlLocking(event) {
+    let elementsToToggle = [];
+    for (let e of document.getElementsByClassName("clickable")) {
+        if (e.id != "lock-controls-slider") {
+            elementsToToggle.push(e);
+        }
+    }
+
     if (document.getElementById("lock-controls-slider").classList.contains("icon-unlocked")) {
-        document.getElementById("current-time-span").classList.add("disabled");
-        document.getElementById("menu-button").classList.add("disabled");
-        document.getElementById("play-pause-button").classList.add("disabled");
-        document.getElementById("fullscreen-button").classList.add("disabled");
-        document.getElementById("speed-select").disabled = true;
-        for (let e of document.getElementsByClassName("seek-button")) {
-            e.classList.add("disabled");
+        for (let e of elementsToToggle) {
+            e.setAttribute("data-state", "disabled");
         }
 
         document.getElementById("lock-controls-slider").classList.remove("icon-unlocked")
         document.getElementById("lock-controls-slider").classList.add("icon-locked");
     } else {
-        document.getElementById("current-time-span").classList.remove("disabled");
-        document.getElementById("menu-button").classList.remove("disabled");
-        document.getElementById("play-pause-button").classList.remove("disabled");
-        document.getElementById("fullscreen-button").classList.remove("disabled");
-        document.getElementById("speed-select").disabled = false;
-        for (let e of document.getElementsByClassName("seek-button")) {
-            e.classList.remove("disabled");
+        for (let e of elementsToToggle) {
+            e.setAttribute("data-state", "enabled");
         }
 
         document.getElementById("lock-controls-slider").classList.remove("icon-locked")
@@ -1160,6 +1158,9 @@ function lockControlsPointerDown(event) {
     // by fixing the element in place at its half-transitioned position and then remove the transition effect.
     slider.style.left  = window.getComputedStyle(slider).left;
     slider.style.transition = "none";
+
+    // Hint to the user that they should drag this. Will be updated by javascript whilst dragging.
+    slider.style.cursor = "grabbing";
 }
 
 function lockControlsPointerMove(event) {
@@ -1183,6 +1184,8 @@ function lockControlsPointerUp(event) {
     if (slider.hasPointerCapture(event.pointerId)) {
         slider.releasePointerCapture(event.pointerId);
         slider.dragStartX = undefined;
+
+        slider.style.cursor = "grab"; // Back to normal
 
         // If dragged far enough, lock/unlock the controls
         const limit = document.getElementById("root").clientWidth * 0.25;

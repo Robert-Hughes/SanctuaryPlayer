@@ -66,9 +66,9 @@
 
             <div id="player-overlay-controls">
                 <div id="player-overlay-controls-top">
-                    <div id="menu-button"></div>
+                    <div id="menu-button" class="clickable"></div>
                     <div id="menu">
-                        <div class="clickable-menu-item" id="change-video-button">Change Video...</div>
+                        <div class="clickable" id="change-video-button">Change Video...</div>
                         <div id="quality-row">Quality: <select id="quality-select"></select></div>
                         <div id="saved-positions-header">Recent videos: <span id="saved-positions-loading" class="spinner"></span>
                             <table id="saved-positions-table">
@@ -84,29 +84,29 @@
                                 <tbody></tbody>
                             </table>
                         </div>
-                        <div class="clickable-menu-item" id="use-native-player-controls-button">Use native player controls (BEWARE SPOILERS!)</div>
-                        <div class="clickable-menu-item" id="sign-in-button">Sign in...</div>
-                        <div class="clickable-menu-item" id="sign-out-button">Sign out...</div>
+                        <div class="clickable" id="use-native-player-controls-button">Use native player controls (BEWARE SPOILERS!)</div>
+                        <div class="clickable" id="sign-in-button">Sign in...</div>
+                        <div class="clickable" id="sign-out-button">Sign out...</div>
                     </div>
                 </div>
                 <div id="player-overlay-controls-mid">
-                    <div id="play-pause-button" class="icon-play"></div>
-                    <div id="fullscreen-button"></div>
+                    <div id="play-pause-button" class="icon-play clickable"></div>
+                    <div id="fullscreen-button" class="clickable"></div>
                 </div>
                 <div id="player-overlay-controls-bot">
-                    <div class="seek-button" data-amount="-600">-10m</div>
-                    <div class="seek-button" data-amount="-60">-1m</div>
-                    <div class="seek-button" data-amount="-5">-5s</div>
+                    <div class="seek-button clickable" data-amount="-600">-10m</div>
+                    <div class="seek-button clickable" data-amount="-60">-1m</div>
+                    <div class="seek-button clickable" data-amount="-5">-5s</div>
                     <div id="player-overlay-controls-bot-mid">
-                        <select id="speed-select"></select>
-                        <span id="current-time-span"></span>
+                        <select id="speed-select" class="clickable"></select>
+                        <span id="current-time-span" class="clickable"></span>
                     </div>
-                    <div class="seek-button" data-amount="+5">+5s</div>
-                    <div class="seek-button" data-amount="+60">+1m</div>
-                    <div class="seek-button" data-amount="+600">+10m</div>
+                    <div class="seek-button clickable" data-amount="+5">+5s</div>
+                    <div class="seek-button clickable" data-amount="+60">+1m</div>
+                    <div class="seek-button clickable" data-amount="+600">+10m</div>
                 </div>
 
-                <span id="lock-controls-slider" class="icon-unlocked"></span>
+                <span id="lock-controls-slider" class="clickable icon-unlocked"></span>
             </div>
         </div>
     </div>

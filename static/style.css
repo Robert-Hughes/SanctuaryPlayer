@@ -138,7 +138,6 @@ body {
     background:
         content-box url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="-0.5 -0.5 6 6" fill="hsl(243, 100%, 70%)"><path d="M 0 0 l 5 0 a 0.5 0.5 0 0 1 0 1 l -5 0 a 0.5 0.5 0 0 1 0 -1 M 0 2 l 5 0 a 0.5 0.5 0 0 1 0 1 l -5 0 a 0.5 0.5 0 0 1 0 -1 M 0 4 l 5 0 a 0.5 0.5 0 0 1 0 1 l -5 0 a 0.5 0.5 0 0 1 0 -1" /></svg>'),
         border-box white;
-    cursor: pointer /* Indicate as clickable */
 }
 #menu-button.open {
     /* Highlight the menu icon when the menu is open */
@@ -153,13 +152,6 @@ body {
     overflow: auto; /* Scroll bars will appear when the menu overflows the screen boundary */
     flex-shrink: 99999999; /* We want the menu to shrink to the available space, not the menu button */
     max-width: 100%; /* We want a horizontal scrollbar to appear if the menu is wider than the screen */
-}
-
-.clickable-menu-item {
-    cursor: pointer /* Indicate as clickable */
-}
-#saved-positions-table tbody tr {
-    cursor: pointer /* Indicate as clickable */
 }
 
 #menu div {
@@ -224,7 +216,6 @@ body {
     height: 20vmin;
     aspect-ratio: 1;
     border-radius: 1vmin;
-    cursor: pointer /* Indicate as clickable */
 }
 
 .icon-play {
@@ -260,7 +251,6 @@ body {
     border-radius: 1vmin;
     color: #6C63FF;
     padding: 0.2vmin;
-    cursor: pointer /* Indicate as clickable */
 }
 #player-overlay-controls-bot-mid {
     /* Vertical column of controls in the middle at the bottom */
@@ -271,86 +261,66 @@ body {
 }
 #speed-select {
     color: #6C63FF;
-    font-size: 5vmin; /* This isn't inherited from the parent #player-overlay-controls-bot, so needs repeating here */
+    font-size: 3.5vmin; /* Make this font smaller, as this control is less used than the others */
 }
 #current-time-span {
     background-color: white;
     color: #6C63FF;
     border-radius: 1vmin;
     padding: 0.2vmin;
-    cursor: pointer /* Indicate as clickable */
 }
 #current-time-span.seeking {
     background-color: #B5179E;
 }
 
-
-/*TODO: review from here */
-
 /* Lock controls slider */
 /* =============================================================================== */
 #lock-controls-slider {
     display: none; /* Initially hidden until a video is loaded */
+    /* Middle-left side of the screen */
     position: absolute;
+    left: 0px;
     top: 50%;
     transform: translateY(-50%);
-    left: 0px;
-    height: min(10vmin, 100px);
-    width: min(10vmin, 100px);
-    background-size: cover;
+
+    height: 7vmin;
+    aspect-ratio: 1;
     border-radius: 1vmin;
-    cursor: grab; /* TODO: make it grabbing while dragging! */
+    /* Hint to the user that they should drag this. Will be updated by javascript whilst dragging.
+     * This won't achieve anything on mobile though, which is where this feature is most useful... */
+    cursor: grab;
 }
 #lock-controls-slider.glow {
+    /* Glow effect which is turned on when the slider is dragged all the way to the right */
     box-shadow: 0 0 20px #B5179E, 0 0 30px #B5179E, 0 0 40px #B5179E;
 }
-
-/* Padlock icon - from ChatGPT, try using https://www.svgviewer.dev/ to edit? */
 .icon-locked {
     background:
         content-box url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 25 25" width="50" height="50" stroke="hsl(243, 100%, 70%)">    <g fill="none" stroke-width="2">      <rect x="5" y="11" width="14" height="10" rx="2"/>      <path d="M8 11V7a4 4 0 1 1 8 0v4"/>      <circle cx="12" cy="16" r="1"/>    </g>  </svg>'),
         border-box white;
+    background-size: cover;
 }
-
-/* Unlocked padlock icon - from ChatGPT, try using https://www.svgviewer.dev/ to edit?  */
 .icon-unlocked {
     background:
         content-box url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="2 0 25 25" width="50" height="50" stroke="hsl(243, 100%, 70%)">    <g fill="none" stroke-width="2">      <rect x="5" y="11" width="14" height="10" rx="2"/>      <path d="M16 11V7a4 4 0 1 1 8 0v4"/>      <circle cx="12" cy="16" r="1"/>    </g>  </svg>'),
         border-box white;
+    background-size: cover;
 }
 
 /* Shared styles (can be applied to various elements throughout the app) */
 /* =============================================================================== */
-.disabled {
+.clickable {
+    cursor: pointer /* Indicate as clickable */
+}
+.clickable[data-state="disabled"] {
+    /* Style used on buttons etc. when the controls are locked */
     opacity: 50%;
     pointer-events: none;
 }
-
-/* Highlight buttons etc. when mouse is hovered over them, but only on platforms with a mouse.
-   On mobile, using :hover behaves weirdly so we disable it */
 @media(hover: hover) and (pointer: fine) {
-    #menu-button:hover {
-        background-color: hsl(243, 100%, 90%);
-    }
-    .clickable-menu-item:hover {
-        background-color: hsl(243, 100%, 90%);
-    }
-    #saved-positions-table tbody tr:hover {
-        background-color: hsl(243, 100%, 90%);
-    }
-    #player-overlay-controls-mid div:hover {
-        background-color: hsl(243, 100%, 90%);
-    }
-    #lock-controls-slider:hover {
-        background-color: hsl(243, 100%, 90%);
-    }
-    #current-time-span:hover {
-        background-color: hsl(243, 100%, 90%);
-    }
-    #speed-select:hover {
-        background-color: hsl(243, 100%, 90%);
-    }
-    .seek-button:hover {
-        background-color: hsl(243, 100%, 90%);
+    /* Highlight buttons etc. when mouse is hovered over them, but only on platforms with a mouse.
+     * On mobile, using :hover behaves weirdly so we disable it */
+    .clickable:hover {
+        background-color: hsl(243, 100%, 90%) !important; /* Needs to override the default background color set directly on the element */
     }
 }
