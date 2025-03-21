@@ -3,6 +3,11 @@ body {
     touch-action: none; /* Prevent double-clicking to zoom on mobile, as often this happens while using the normal UI. */
     font-family: sans-serif;
     user-select: none; /* Otherwise for example clicking a lot can make the whole page blue */
+    /* Even though most of our UI automatically scales to the viewport size, we can still have overflow
+     * when the menu is open and space is limited, as the play/pause and seek buttons will
+     * go off the bottom. We're happy to completely cut them off in this case to leave more space
+     * for the menu - the user will simply have to close the menu to access them. */
+    overflow: hidden;
 }
 
 /* Welcome screen - shown separately from everything so is pretty much independent */
@@ -117,7 +122,7 @@ body {
     justify-content: space-between;
 }
 
-/* Player overlay controls (top) */
+/* Player overlay controls (top) - this is where the menu button and menu itself are */
 /* =============================================================================== */
 #player-overlay-controls-top {
     align-self: flex-end; /* Align to the right (override default align-items from parent flexbox), so the menu is in the top-right corner */
@@ -126,9 +131,10 @@ body {
     flex-direction: column;
     align-items: flex-end;
 
-    max-height: 100%; /* For when the menu is larger than the screen, we want the menu to scroll rather than this element */
+    /* For when the menu is larger than the screen, we want the menu to scroll rather than this element */
+    max-height: 100%;
+    max-width: 100%;
 }
-/* TODO: review rest of this section (the menu stuff) */
 
 #menu-button {
     width: 9vmin;
@@ -140,35 +146,43 @@ body {
         border-box white;
 }
 #menu-button.open {
-    /* Highlight the menu icon when the menu is open */
+    /* Highlight the icon when the menu is open */
     background-color: hsl(243, 100%, 90%);
 }
 
+/* TODO: review rest of this section (the menu stuff) */
+
 #menu {
-    display: none;
-    background: linear-gradient(135deg, hsl(243, 100%, 98%), hsl(309, 77%, 98%));
+    display: none; /* Initially hidden, will be shown as 'flex' by javascript when the menu is opened */
+    flex-direction: column;
+
+    background: white;
     border-radius: 1vmin;
-    border: 2px solid black;
-    overflow: auto; /* Scroll bars will appear when the menu overflows the screen boundary */
-    flex-shrink: 99999999; /* We want the menu to shrink to the available space, not the menu button */
-    max-width: 100%; /* We want a horizontal scrollbar to appear if the menu is wider than the screen */
+    border: 0.1vmin solid #6C63FF;
+
+    /* We want the menu to have a scrollbar when it's taller than the screen */
+    max-width: 100%;
+    overflow-y: auto;
 }
 
 #menu div {
-    margin: 0.2em;
-    padding: 0.25rem 0.5rem;
-    border-radius: 1vmin;
+    padding: 1vmin 1vmin;
+    border-bottom: 0.1vmin solid #6C63FF;
+    font-weight: bold;
+    font-size: max(2vmin, 1em);
 }
 
 #quality-select {
-    font-size: xx-large;
+    font-size: max(2vmin, 1em);
 }
 
 #saved-positions-header {
     display: none; /* Initially hidden, until we fetch from server */
+    overflow-x: auto;
 }
 #saved-positions-table {
     margin-left: 2em;
+    font-size: inherit;
 }
 #saved-positions-table td.is-current-video {
     background-color: lightblue;
@@ -203,7 +217,7 @@ body {
     display: none; /* Hidden until a video is loaded */
 }
 
-/* Player overlay controls (mid) */
+/* Player overlay controls (mid) - this is where the play/pause and fullscreen buttons are */
 /* =============================================================================== */
 #player-overlay-controls-mid {
     display: none; /* Initially hidden until a video is loaded. Will be shown as 'flex' by javascript */
@@ -235,7 +249,7 @@ body {
         white;
 }
 
-/* Player overlay controls (bot) */
+/* Player overlay controls (bot) - this is where the seek buttons are */
 /* =============================================================================== */
 #player-overlay-controls-bot {
     display: none; /* Initially hidden until a video is loaded. Will be shown as 'flex' by javascript */

@@ -123,7 +123,7 @@ function closeMenu() {
 }
 
 function onMenuButtonClick(e) {
-    if (window.getComputedStyle(document.getElementById("menu")).display == "block") {
+    if (window.getComputedStyle(document.getElementById("menu")).display == "flex") {
         // Menu already open - close it
         closeMenu();
     }
@@ -154,7 +154,7 @@ function onMenuButtonClick(e) {
             document.getElementById("quality-row").style.display = "none";
         }
 
-        document.getElementById("menu").style.display = "block";
+        document.getElementById("menu").style.display = "flex";
         document.getElementById("menu-button").classList.add("open");
     }
 }
