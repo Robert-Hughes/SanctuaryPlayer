@@ -348,6 +348,10 @@ function fetchSavedPositions() {
                     }
 
                     var cell = document.createElement("td");
+                    cell.textContent = toFriendlyTimeStringColons(savedPosition.position);
+                    row.appendChild(cell);
+
+                    var cell = document.createElement("td");
                     if (savedPosition.video_title) {
                         cell.textContent = stripSpoilersFromTitle(savedPosition.video_title);
                     } else {
@@ -362,16 +366,11 @@ function fetchSavedPositions() {
                     cell.textContent = getRelativeTimeString(savedPosition.video_release_date);
                     row.appendChild(cell);
 
-                    var cell = document.createElement("td");
-                    cell.textContent = toFriendlyTimeStringColons(savedPosition.position);
-                    row.appendChild(cell);
-
                     return row;
                 }
 
                 // Clear previous entries
                 document.getElementById("saved-positions-table").tBodies[0].innerHTML = "";
-                document.getElementById("saved-positions-header").style.display = response.length > 0 ? "block" : "none";
                 for (var x of response) {
                     var r = createTableRow(x, true);
                     document.getElementById("saved-positions-table").tBodies[0].appendChild(r);

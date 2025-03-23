@@ -8,6 +8,7 @@ body {
      * go off the bottom. We're happy to completely cut them off in this case to leave more space
      * for the menu - the user will simply have to close the menu to access them. */
     overflow: hidden;
+    color: #6C63FF;
 }
 
 /* Welcome screen - shown separately from everything so is pretty much independent */
@@ -98,7 +99,6 @@ body {
 }
 #loading-status {
     background:white;
-    color: #6C63FF;
     border-radius: 1vmin;
     text-align: center;
     padding: 2vmin;
@@ -150,8 +150,6 @@ body {
     background-color: hsl(243, 100%, 90%);
 }
 
-/* TODO: review rest of this section (the menu stuff) */
-
 #menu {
     display: none; /* Initially hidden, will be shown as 'flex' by javascript when the menu is opened */
     flex-direction: column;
@@ -160,57 +158,69 @@ body {
     border-radius: 1vmin;
     border: 0.1vmin solid #6C63FF;
 
-    /* We want the menu to have a scrollbar when it's taller than the screen */
+    /* We want the horizontal scrollbar to be on the saved positions table, not the whole menu */
     max-width: 100%;
+    /* We want the menu to have a vertical scrollbar when it's taller than the screen */
     overflow-y: auto;
 }
 
-#menu div {
-    padding: 1vmin 1vmin;
-    border-bottom: 0.1vmin solid #6C63FF;
+#menu>* {
+    padding: 0.5vmin 1vmin;
+    border-bottom: 0.05vmin solid #6C63FF;
+    border-top: 0.05vmin solid #6C63FF;
     font-weight: bold;
     font-size: max(2vmin, 1em);
 }
 
 #quality-select {
-    font-size: max(2vmin, 1em);
+    /* For <select>s, these properties don't get inherited by default */
+    font-size: inherit;
+    color: inherit;
 }
 
-#saved-positions-header {
-    display: none; /* Initially hidden, until we fetch from server */
+#saved-positions {
+    /* Horizontal scrollbar on just the saved positions table, when it's wider than the screen */
     overflow-x: auto;
+    /* Even though we're only setting overflow-x, this will implicitly set overflow-y to auto as well
+     * (quirk of CSS), which results in the unwanted effect of this element scrolling vertically rather
+     * than the whole menu. We fix this by preventing this element from shrinking vertically,
+     * so that it is always the full height of its contents and doesn't scroll */
+    flex-shrink: 0;
 }
+
 #saved-positions-table {
-    margin-left: 2em;
-    font-size: inherit;
+    color: black;
+    font-size: inherit; /* Not inherited by default */
+    border-collapse: collapse;
 }
+#saved-positions-table td,
+#saved-positions-table th {
+    border: 0.05vmin solid hsl(243, 100%, 90%);
+    padding: 0.25vmin;
+}
+/* Highlight saved positions for the current video/current device */
 #saved-positions-table td.is-current-video {
-    background-color: lightblue;
+    font-style: italic;
 }
 #saved-positions-table td.is-current-device {
-    background-color: lightblue;
-}
-
-@keyframes spin {
-    from { transform: rotate(0deg); }
-    to { transform: rotate(360deg); }
+    font-style: italic;
 }
 
 .spinner {
-    display: inline-block;
-    width: 1em;
-    height: 1em;
+    width: 2.5vmin;
+    margin: 1vmin;
+    aspect-ratio: 1;
     border-top: 1px black solid;
     border-radius: 50%;
-    vertical-align: text-bottom;
     animation-name: spin;
     animation-duration: 1s;
     animation-iteration-count: infinite;
     animation-timing-function: linear;
 }
 
-#saved-positions-this-video,#saved-positions-other-videos {
-    padding-left: 30px;
+@keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
 }
 
 #use-native-player-controls-button {
@@ -263,7 +273,6 @@ body {
 .seek-button {
     background: white;
     border-radius: 1vmin;
-    color: #6C63FF;
     padding: 0.2vmin;
 }
 #player-overlay-controls-bot-mid {
@@ -274,12 +283,11 @@ body {
     row-gap: 1vmin;
 }
 #speed-select {
-    color: #6C63FF;
+    color: inherit; /* Not inherited by default */
     font-size: 3.5vmin; /* Make this font smaller, as this control is less used than the others */
 }
 #current-time-span {
     background-color: white;
-    color: #6C63FF;
     border-radius: 1vmin;
     padding: 0.2vmin;
 }

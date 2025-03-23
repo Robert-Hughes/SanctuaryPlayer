@@ -27,7 +27,14 @@ This is also configured to run automatically when committing to the main branch 
 
 Note we are using europe-west1 (Belgium) as it supports simpler custom domains, and is lower CO2 than the London region.
 
+Known Issues
+============
+
+* Twitch: sometimes the Twitch player shows a popup about copyright muted audio, which you can't dismiss because we intercept all input. The workaround for this is to click "Use native player controls", then dismiss the popup and then return to the normal controls.
+* Twitch - on first load it shows a weird quarter-size frame in the corner before playing the video
+
 TODO:
+=====
 
 * Show if saved position for this video is ahead or behind (e.g. + 2 mins, or 2 mins ahead, 10 mins behind etc.)
 * If pause the video, after a few seconds, upload the saved position. Otherwise it might be a few seconds behind and never uploaded.
@@ -39,7 +46,6 @@ TODO:
 * When video "reloads" while playing (e.g. due to lost connection?), the title appears briefly (not hidden by our blocker box)
 * The "loading" spinner on the menu can make the horizontal scroll bar appear
 * youtube - loading video with a time set and then pressing play results in the time at the bottom briefly jumping to 0 before jumping to the correct time
-* Twitch - on first load it shows a weird quarter-size frame in the corner before playing the video
 * improve display of recent videos in menu. Maybe show the video ID too, to distinguish between different videos with the same censored title (_ vs _)
 * Twitch better handling of ENDED - if ends naturally then the blocker doesn't always appear
 // also, if refresh the video when it's at the end, the blocker doesn't appear either!
@@ -55,11 +61,12 @@ TODO:
 * Youtube blocker bar at the top doesn#'t seem to be tall enough to cover the video title
 * Improve general display and usability of the UI (icons, the menu, buttons etc.). Make it align with the new icon/branding?
    Hide saved positiosn table when empty?
-* When menu is too large for screen (e.g. Android), oh dear
-* On mobile, the menu now opens lower down the screen which means we aren't using the full space available
 * Needs to be clearer that the lock button needs to be slid to the right
    * Also, prevent it from being dragged to the left (off the edge of the screen)?
 * the saved positions list "2 hours ago" etc. Should update even when not refreshed, so when coming back later it doesn't say "just now"
 * Default quality settings?
 * Ctrl-click to open saved positions in a new tab. Right click on them too? So maybe just make them an <a>?
 * Make saved positions table selectable to copy into clipboard?
+* Hover text for relative times (2 days ago) should show the absolute time
+* List of saved positions - can we hide the current video on current phone if at current time?
+* Move lock slider into player-controls-mid, so moves out of the way when the menu opens
