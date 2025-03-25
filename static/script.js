@@ -19,6 +19,10 @@ const twitchVideoIdRegex = /^\d{10}$/; // 10-digit number
 // This won't be available immediately as we query it from our own server.
 var metadataFromServer;
 
+// Once the user changes the quality themselves, we disable the automatic selection of quality
+// otherwise we might immediately change it back to the user's favourite quality.
+var hasManuallyChangedQuality = false;
+
 // Decodes a 'human-friendly' time string (like '1h30') into a number of seconds
 function decodeFriendlyTimeString(timeStr) {
     // Decode strings of the format:
@@ -225,6 +229,31 @@ function setQuality(quality) {
         // as you can no longer choose the quality that you receive - it's always automatically chosen by YouTube.
     } else {
         player.setQuality(quality);
+    }
+}
+
+// If the user has set some favourite qualities and one of them is available,
+// set it to that.
+function setQualityToFavourite() {
+    let favouriteQualitiesStr = localStorage.getItem("favourite_qualities") ?? "";
+    // Split on commas or semicolons
+    let favouriteQualities = favouriteQualitiesStr.split(/[,;]/);
+    let availableQualities = getAvailableQualities();
+    for (let favouriteQuality of favouriteQualities) {
+        if (favouriteQuality != "" && availableQualities.includes(favouriteQuality)) {
+            if (favouriteQuality != getCurrentQuality()) {
+                setQuality(favouriteQuality);
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
+function onSetFavouriteQualitiesClick(event) {
+    var x = prompt("Enter a comma-separated list of quality names. If one of these is available when playing a video then it will be chosen automatically:", localStorage.getItem("favourite_qualities") ?? "");
+    if (x) {
+        localStorage.setItem("favourite_qualities", x);
     }
 }
 
@@ -559,7 +588,7 @@ function seekTo(target) {
         player.seek(target);
     }
 
-    // For Twitch where we can't hide the native UI, seeking the video makes the video length bar appear at the bottom
+    // For Twitch where we can't disable the native UI, seeking the video makes the video length bar appear at the bottom
     // and the video title at the top, so we have to show the blockers when seeking,
     // Note this is only the case for shorter seeks (e.g. 5 secs), as for longer seeks we experience a brief 'pause' then 'unpause' which
     // shows the blockers anyway.
@@ -568,7 +597,7 @@ function seekTo(target) {
         hideBlockersShortly();
     }
 
-    onTimer(); // Update UI
+    onTimer(); // Update UI to show that we are seeking (as the player state change callback might be delayed)
 }
 
 function seekRelative(offset) {
@@ -921,6 +950,15 @@ function onTimer() {
         seekTarget = null;
     }
 
+    // Check if we should change the quality to the user's favourite. We check this in the timer
+    // because quality levels aren't available immediately after the player is ready, and also
+    // setting the quality immediately when loading the video doesn't seem to work, so we keep trying
+    // until it does.
+    // We only do this if the user hasn't manually changed the quality, as we don't want to override their choice.
+    if (!hasManuallyChangedQuality) {
+        setQualityToFavourite();
+    }
+
     // Update URL to reflect the current time in the video, so refreshing the page (or closing and re-opening
     // the browser will resume the video at the current time).
     // This doesn't behave quite like we want with the Chrome global history though (it has one entry per timestamp!).
@@ -1097,6 +1135,7 @@ function onSpeedSelectChange(event) {
 }
 
 function onQualitySelectChange(event) {
+    hasManuallyChangedQuality = true;
     setQuality(this.value);
 }
 
@@ -1206,6 +1245,7 @@ function startup() {
     // Hookup event listeners
     document.getElementById("menu-button").addEventListener("click", onMenuButtonClick);
     document.getElementById("change-video-button").addEventListener("click", changeVideo);
+    document.getElementById("set-favourite-qualities-button").addEventListener("click", onSetFavouriteQualitiesClick);
     document.getElementById("use-native-player-controls-button").addEventListener("click", useNativePlayerControlsClick);
     document.getElementById("restore-normal-controls-button").addEventListener("click", restoreNormalControlsClick);
     document.getElementById("sign-in-button").addEventListener("click", signIn);

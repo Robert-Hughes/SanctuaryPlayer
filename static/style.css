@@ -177,6 +177,10 @@ body {
     font-size: inherit;
     color: inherit;
 }
+#set-favourite-qualities-button {
+    font-size: 75%; /* Slightly smaller, as less important */
+    margin-left: 1vmin;
+}
 
 #saved-positions {
     /* Horizontal scrollbar on just the saved positions table, when it's wider than the screen */
