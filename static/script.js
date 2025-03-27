@@ -513,6 +513,7 @@ function onPlayerReady() {
         document.getElementById("player-overlay-controls-mid").style.display = 'flex';
         document.getElementById("player-overlay-controls-bot").style.display = 'flex';
 
+        // Initialize the speed drop-down with the available playback rates
         for (var rate of getAvailablePlaybackRates()) {
             var opt = document.createElement("option");
             opt.value = rate;
@@ -520,6 +521,14 @@ function onPlayerReady() {
             document.getElementById("speed-select").options.add(opt);
         }
         document.getElementById("speed-select").value = getCurrentPlaybackRate();
+
+        // Twitch remembers your last volume settings, so we reset these each time otherwise
+        // the video might be muted (or low volume) and you would have no way to fix it
+        // Note that YouTube seems to always reset to 100%, so no need to do this for YouTube.
+        if (isTwitch) {
+            player.setMuted(false);
+            player.setVolume(1.0);
+        }
 
         // Update UI immediately, rather than waiting for the first tick
         onTimer();
@@ -1053,7 +1062,7 @@ function onAPIReady() {
             height: '100%',
             width: '100%',
             video: params.get('videoId'),
-            time: startTime, //TOOD: if starting a VOD that you were previously watching live, it seems to ignore this and instead jump to that time?
+            time: startTime,
             // Turn off autoplay because a) it doesn't work for mobile so it's inconsistent and b) can be annoying especially if tab reloads in the background
             autoplay: false,
         };

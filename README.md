@@ -38,22 +38,15 @@ TODO:
 
 * Show if saved position for this video is ahead or behind (e.g. + 2 mins, or 2 mins ahead, 10 mins behind etc.)
 * If pause the video, after a few seconds, upload the saved position. Otherwise it might be a few seconds behind and never uploaded.
-* Try using Cloud Firestore _client_ libraries in the javascript to directly access the database, rather than having to go via the web server.
-   THis means the server doesn't need to keep handling requests while watching a video, so would drastically reduce our google cloud usage.
-   Not sure how we would handle the google API auth tokens though - don't want these leaked in the client!
-   If we do this, then our server doesn't need to be "smart" at all, so could just use a static serving thing (nginx?) rather than a WSGI python thing?
 * Slow-mo/frame-by-frame controls
 * When video "reloads" while playing (e.g. due to lost connection?), the title appears briefly (not hidden by our blocker box)
-* The "loading" spinner on the menu can make the horizontal scroll bar appear
 * youtube - loading video with a time set and then pressing play results in the time at the bottom briefly jumping to 0 before jumping to the correct time
-* improve display of recent videos in menu. Maybe show the video ID too, to distinguish between different videos with the same censored title (_ vs _)
 * Twitch better handling of ENDED - if ends naturally then the blocker doesn't always appear
 // also, if refresh the video when it's at the end, the blocker doesn't appear either!
 // also seeking away from the end of the video seems a bit broken
 * Youtube also has some dodgy behaviour with ended videos and seeking/pressing play
 * Twitch - when seeking, the player shows a brief pause then unpause. Seems the docs are wrong about seeking/buffering being counted as playing? OInly for longer seeks?
 //  This isn't a big issue, but if the network is slow then it looks like the video is paused when it's just buffering. Maybe we can improve the UI here?
-* TWitch - set volume to 100% and unmute, as I think it remembers from other vods and then can't be changed! esp. confusing if it's muted at the start!
 * Twitch - doesn't seem to wake lock the screen, so it turns off after a delay
 * http://127.0.0.1:5500/index.html?videoId=2392357391 -> innfinite loading (the Video ID is invalid) -  The ERROR callback thing doesn't seem to work!
 * On Android and Twitch video - the blockers cover most of the video! Can we make these smaller?
@@ -69,3 +62,5 @@ TODO:
 * Hover text for relative times (2 days ago) should show the absolute time
 * List of saved positions - can we hide the current video on current phone if at current time?
 * Move lock slider into player-controls-mid, so moves out of the way when the menu opens
+* When first set favourite qualities, it will pretty quickly set the new quality but the dropdown won't update until you close and re-open the menu
+* Twitch video start time  - if starting a VOD that you were previously watching live, it seems to ignore this and instead jump to that time?
