@@ -56,7 +56,6 @@ TODO:
    Hide saved positiosn table when empty?
 * Needs to be clearer that the lock button needs to be slid to the right
    * Also, prevent it from being dragged to the left (off the edge of the screen)?
-* the saved positions list "2 hours ago" etc. Should update even when not refreshed, so when coming back later it doesn't say "just now"
 * Ctrl-click to open saved positions in a new tab. Right click on them too? So maybe just make them an <a>?
 * Make saved positions table selectable to copy into clipboard?
 * Hover text for relative times (2 days ago) should show the absolute time

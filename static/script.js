@@ -366,7 +366,9 @@ function fetchSavedPositions() {
                     });
 
                     var cell = document.createElement("td");
-                    cell.textContent = getRelativeTimeString(savedPosition.modified_time);
+                    // Rather than converting to a string now, we store the absolute date/time and mark it so that the display will be updated dynamically
+                    cell.classList.add("relative-date-time");
+                    cell.dataset["isoDatetime"] = savedPosition.modified_time;
                     row.appendChild(cell);
 
                     var cell = document.createElement("td");
@@ -392,7 +394,9 @@ function fetchSavedPositions() {
                     }
 
                     var cell = document.createElement("td");
-                    cell.textContent = getRelativeTimeString(savedPosition.video_release_date);
+                    // Rather than converting to a string now, we store the absolute date/time and mark it so that the display will be updated dynamically
+                    cell.classList.add("relative-date-time");
+                    cell.dataset["isoDatetime"] = savedPosition.video_release_date;
                     row.appendChild(cell);
 
                     return row;
@@ -404,6 +408,9 @@ function fetchSavedPositions() {
                     var r = createTableRow(x, true);
                     document.getElementById("saved-positions-table").tBodies[0].appendChild(r);
                 }
+
+                // Show relative date times immediately, rather than waiting for the next timer
+                updateRelativeDateTimeElements();
             })
             .catch((error) => {
                 console.error('Error getting positions from server:', error);
@@ -493,7 +500,10 @@ function updateVideoTitle() {
         document.title = title;
         // The blocker box at the top hides the video title, as it may contain spoilers, so we hide it, but show a filtered version of the title instead.
         document.getElementById("video-title").innerText = title;
-        document.getElementById("video-release-date").innerText = metadataFromServer?.video_release_date ? getRelativeTimeString(metadataFromServer?.video_release_date) : "";
+        // Rather than converting the release date to a string now, we store the absolute date/time and it will be updated dynamically (because of the element's class name)
+        document.getElementById("video-release-date").dataset["isoDatetime"] = metadataFromServer?.video_release_date;
+        // Show the relative date time immediately, rather than waiting for the next timer
+        updateRelativeDateTimeElements();
     }
 }
 
@@ -1248,7 +1258,18 @@ function lockControlsPointerUp(event) {
     }
 }
 
-
+// Goes through every element with the class "relative-date-time" and updates the text to show the
+// date/time that the element has been tagged with (via a data- attribute) relative to now (e.g. "1 hour ago").
+// This is useful as you may come back to the webpage later and phrases like "1 hour ago" will be wrong.
+function updateRelativeDateTimeElements() {
+    for (let element of document.getElementsByClassName("relative-date-time")) {
+        if ("isoDatetime" in element.dataset) {
+            let isoDatetime = element.dataset["isoDatetime"];
+            let string = getRelativeTimeString(isoDatetime);
+            element.textContent = string;
+        }
+    }
+}
 
 function startup() {
     // Hookup event listeners
@@ -1273,6 +1294,9 @@ function startup() {
     for (let button of document.getElementsByClassName("seek-button")) {
         button.addEventListener("click", seekButtonClicked);
     }
+
+    // Start regular timer to update 'relative time' elements
+    window.setInterval(updateRelativeDateTimeElements, 60*1000); // Every minute
 
     var params = new URLSearchParams(window.location.search);
     if (params.has('videoId')) {
