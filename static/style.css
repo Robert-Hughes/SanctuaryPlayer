@@ -202,12 +202,9 @@ body {
     border: 0.05vmin solid hsl(243, 100%, 90%);
     padding: 0.25vmin;
 }
-/* Highlight saved positions for the current video/current device */
-#saved-positions-table td.is-current-video {
-    font-style: italic;
-}
-#saved-positions-table td.is-current-device {
-    font-style: italic;
+/* Highlight saved positions for the current video etc.*/
+#saved-positions-table tr.highlight {
+    background-color: hsl(320, 86%, 80%);
 }
 
 .spinner {

@@ -90,7 +90,7 @@ function toFriendlyTimeStringColons(seconds) {
 
 // Converts an ISO format date/time string like "2021-01-01T12:34:56Z" into a human-friendly string
 // describing how long ago that time was, like "2 days ago".
-function getRelativeTimeString(isoString) {
+function getRelativeDateTimeString(isoString) {
     var date = new Date(isoString);
     if (isNaN(date.valueOf())) {
         // This indicates an invalid string format
@@ -119,6 +119,30 @@ function getRelativeTimeString(isoString) {
         return pluralize(Math.floor(minutes), "minute") + " ago";
     }
     return "Just now";
+}
+
+// Works out the difference between the two times (in seconds) and expresses it as a human-friendly string,
+// e.g. "+2 minutes", "-3 hours"
+function getRelativeTimeString(subjectSeconds, relativeToSeconds) {
+    var absDiff = Math.abs(subjectSeconds - relativeToSeconds);
+    var seconds = absDiff;
+    var minutes = seconds / 60;
+    var hours = minutes / 60;
+
+    var sign = subjectSeconds > relativeToSeconds ? "+" : "-";
+
+    function pluralize(n, x) { return n == 1 ? ("1 " + x) : (n + " " + x + "s"); }
+
+    if (hours >= 1) {
+        return sign + pluralize(Math.floor(hours), "hour");
+    }
+    if (minutes >= 1) {
+        return sign + pluralize(Math.floor(minutes), "minute");
+    }
+    if (seconds >= 1) {
+        return sign + pluralize(Math.floor(seconds), "second");
+    }
+    return "Same";
 }
 
 function closeMenu() {
@@ -354,13 +378,16 @@ function fetchSavedPositions() {
                 return response.json();
             })
             .then(response => {
-                function createTableRow(savedPosition, showVideo) {
+                function createTableRow(savedPosition, isHighlight) {
                     var params = new URLSearchParams(window.location.search);
                     params.set('videoId', savedPosition.video_id);
                     params.set('time', savedPosition.position);
 
                     var row = document.createElement("tr");
                     row.classList.add("clickable");
+                    if (isHighlight) {
+                        row.classList.add("highlight");
+                    }
                     row.addEventListener('click', function() {
                         window.location = '?' + params.toString();
                     });
@@ -374,12 +401,12 @@ function fetchSavedPositions() {
                     var cell = document.createElement("td");
                     cell.textContent = savedPosition.device_id;
                     row.appendChild(cell);
-                    if (localStorage.getItem("device_id") && savedPosition.device_id == localStorage.getItem("device_id")) {
-                        cell.classList.add("is-current-device");
-                    }
 
                     var cell = document.createElement("td");
                     cell.textContent = toFriendlyTimeStringColons(savedPosition.position);
+                    if (savedPosition.video_id == getVideoIdFromPlayer()) {
+                        cell.textContent += " (" + getRelativeTimeString(savedPosition.position, getEffectiveCurrentTime()) + ")";
+                    }
                     row.appendChild(cell);
 
                     var cell = document.createElement("td");
@@ -389,9 +416,6 @@ function fetchSavedPositions() {
                         cell.textContent = savedPosition.video_id; // Fallback to video ID if title is missing
                     }
                     row.appendChild(cell);
-                    if (savedPosition.video_id == getVideoIdFromPlayer()) {
-                        cell.classList.add("is-current-video");
-                    }
 
                     var cell = document.createElement("td");
                     // Rather than converting to a string now, we store the absolute date/time and mark it so that the display will be updated dynamically
@@ -404,8 +428,35 @@ function fetchSavedPositions() {
 
                 // Clear previous entries
                 document.getElementById("saved-positions-table").tBodies[0].innerHTML = "";
-                for (var x of response) {
-                    var r = createTableRow(x, true);
+
+                // Add new ones
+                // Find the furthest position for the current video so that we can highlight this row,
+                // as it's likely the one the user wants to choose (i.e. you've been watching this video
+                // on another device and want to continue watching it here). It might end up being the most
+                // recent saved position and so at the top of the list anyway, but not if this device has
+                // the furthest position, in which case we wouldn't want to highlight an older time.
+                var maxPosition = null;
+                var highlightIdx = null;
+                for (var i = 0; i < response.length; ++i) {
+                    var savedPosition = response[i];
+                    if (savedPosition.video_id == getVideoIdFromPlayer()) {
+                        if (maxPosition == null || savedPosition.position > maxPosition) {
+                            maxPosition = savedPosition.position;
+                            highlightIdx = i;
+                        }
+                    }
+                }
+
+                for (var i = 0; i < response.length; ++i) {
+                    var savedPosition = response[i];
+                    // Skip the row if it's the same video, device and position as currently playing.
+                    // (Checking just device and video is probably sufficient in nearly all cases, but there might be some corner
+                    //  cases e.g. where the position hasn't been uploaded)
+                    if (savedPosition.video_id == getVideoIdFromPlayer() && savedPosition.device_id == localStorage.getItem("device_id") &&
+                        Math.abs(savedPosition.position - getEffectiveCurrentTime()) < 10) {
+                            continue;
+                        }
+                    var r = createTableRow(savedPosition, i == highlightIdx);
                     document.getElementById("saved-positions-table").tBodies[0].appendChild(r);
                 }
 
@@ -1265,7 +1316,7 @@ function updateRelativeDateTimeElements() {
     for (let element of document.getElementsByClassName("relative-date-time")) {
         if ("isoDatetime" in element.dataset) {
             let isoDatetime = element.dataset["isoDatetime"];
-            let string = getRelativeTimeString(isoDatetime);
+            let string = getRelativeDateTimeString(isoDatetime);
             element.textContent = string;
         }
     }

@@ -36,7 +36,6 @@ Known Issues
 TODO:
 =====
 
-* Show if saved position for this video is ahead or behind (e.g. + 2 mins, or 2 mins ahead, 10 mins behind etc.)
 * If pause the video, after a few seconds, upload the saved position. Otherwise it might be a few seconds behind and never uploaded.
 * Slow-mo/frame-by-frame controls
 * When video "reloads" while playing (e.g. due to lost connection?), the title appears briefly (not hidden by our blocker box)
@@ -63,3 +62,5 @@ TODO:
 * Move lock slider into player-controls-mid, so moves out of the way when the menu opens
 * When first set favourite qualities, it will pretty quickly set the new quality but the dropdown won't update until you close and re-open the menu
 * Twitch video start time  - if starting a VOD that you were previously watching live, it seems to ignore this and instead jump to that time?
+* Open Menu then click in the space above it (to the left of the menu button) - it should probably close the menu but doesn't
+* Is it bad to immediately upload saved position? Cos if you accindalttly open a saved position from another device that's older, it will trhen overwrite your _newer_ saved position with that old one and you lose where you were!
