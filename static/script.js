@@ -8,6 +8,12 @@ var lastUploadedPosition = null; // The last video position successfully uploade
 // The wall clock time when the video first started playing. Used to hide spoilers (see usages).
 var firstPlayTime = null;
 
+// Remembers the current state of the top and bottom 'blocker' bars, which are implemented
+// using clip-path on the player. Although we could instead extract this information from the style.clipPath
+// string, that would be a bit clunky.
+let topBlockerShowing = false;
+let bottomBlockerShowing = false;
+
 var videoPlatform = null; // 'twitch' or 'youtube'
 var isTwitch = false;
 var isYoutube = false;
@@ -663,7 +669,7 @@ function seekTo(target) {
     // Note this is only the case for shorter seeks (e.g. 5 secs), as for longer seeks we experience a brief 'pause' then 'unpause' which
     // shows the blockers anyway.
     if (isTwitch) {
-        showPauseBlockers();
+        updateBlockerVisibility(true, true);
         hideBlockersShortly();
     }
 
@@ -794,7 +800,7 @@ function onPlayerStateChange(newStateStr) {
     if (newStateStr == "paused") {
         // Even though we show the pause blockers just before pausing the video, we also do it here just in case the video
         // gets paused through other means (not initiated by us)
-        showPauseBlockers();
+        updateBlockerVisibility(true, true);
         document.getElementById('play-pause-button').classList.remove("icon-pause");
         document.getElementById('play-pause-button').classList.add("icon-play");
     }
@@ -839,7 +845,7 @@ function hideBlockersShortly() {
     doSomethingAfterDelay("hideBottomBlocker", delay, function() {
         // Make sure video hasn't been paused again during the timer
         if (isPlaying()) {
-            document.getElementById('blocker-bottom').style.display = 'none';
+            updateBlockerVisibility(null, false);
         }
     });
 
@@ -858,8 +864,8 @@ function hideBlockersShortly() {
     doSomethingAfterDelay("hideTopBlocker", delay, function () {
         // Make sure video hasn't been paused again during the timer
         if (isPlaying()) {
-            document.getElementById('blocker-top').style.display = 'none';
-        }
+            updateBlockerVisibility(false, null);
+       }
     });
 }
 
@@ -930,6 +936,10 @@ function onOverlayControlsClick(event) {
 
     // Clicking anywhere on the controls (e.g. any button) - refresh the timeout to hide the controls
     hideControlsShortly();
+
+    // Prevent bubbling to the onOverlayClick() handler (causes problems with re-showing the controls that were hidden
+    // by clicking the play button, when using Twitch).
+    event.stopPropagation();
 }
 
 function togglePlayPause() {
@@ -944,14 +954,35 @@ function play() {
     if (isYoutube) {
         player.playVideo();
     } else if (isTwitch) {
-        player.play();
+        // Twitch uses the IntersectionObserver API to determine if the player element
+        // is visible and not obscured by anything and if it is then this blocks playing the video.
+        // To work around this, we temporarily hide our entire overlay, play the video, then re-show our
+        // overlay. Twitch is happy with this as it only considers the visibility check when starting/resuming playback.
+        // Because the IntersectionObserver API doesn't provide immediate updates, we may have to
+        // wait a bit before Twitch is happy to play the video, so we keep trying.
+        document.getElementById("player-overlay").style.opacity = "0"; // Hide all of our overlay, so that nothing covers the player
+        // Hide the controls immediately rather than waiting for the normal timeout,
+        // otherwise when the opacity is set back to 1, the controls will reappear for a second then disappear again,
+        // which is confusing.
+        document.getElementById("player-overlay-controls").style.display = 'none';
+        let tryPlay = function() {
+            if (isPlaying()) {
+                // Successful! We can show our overlay again
+                document.getElementById("player-overlay").style.opacity = "1";
+            } else  {
+                // Hasn't worked yet, try again and check in a bit to see if it worked.
+                player.play();
+                doSomethingAfterDelay("tryPlay", 100, tryPlay);
+            }
+        };
+        tryPlay();
     }
 }
 
 function pause() {
     // Before telling the player to pause, show the blockers. This ensures that they are visible before the player shows the title etc.,
     // so we don't catch a frame that might contain a spoiler.
-    showPauseBlockers();
+    updateBlockerVisibility(true, true);
 
     if (isYoutube) {
         player.pauseVideo();
@@ -960,9 +991,38 @@ function pause() {
     }
 }
 
-function showPauseBlockers() {
-    document.getElementById('blocker-bottom').style.display = 'block';
-    document.getElementById('blocker-top').style.display = 'block';
+// Sets the clip-path of the player element to block out the top and/or bottom sections to hide spoilers.
+// If either parameter is null, that blocker's visibility will remain as it was (i.e. no change).
+function updateBlockerVisibility(showTopBlocker, showBottomBlocker) {
+    if (showTopBlocker === null) {
+        showTopBlocker = topBlockerShowing;
+    }
+    if (showBottomBlocker === null) {
+        showBottomBlocker = bottomBlockerShowing;
+    }
+
+    // We used to use <div> elements on the player overlay to block things we didn't want to see, but that caused
+    // problems with Twitch's use of the IntersectionObserver API as it was detecting that we were drawing stuff
+    // on top of the player and this blocks playing the video.
+    // To work around this, we use clip-path instead to clip parts of the player which we don't want to see.
+    // Apparently this doesn't trigger the same problem (maybe because it's not drawing over it,
+    // it's just not drawing those bits at all)
+    let topSize;
+    let bottomSize;
+    if (isYoutube) {
+        topSize = "60px"; // Top blocker needs to be taller than the title bar
+        bottomSize = "50%"; // Bottom blocker to be taller than the related videos bar
+    } else if (isTwitch) {
+        topSize = "200px"; // Top blocker needs to be taller than the title bar
+        bottomSize = "100px"; // Bottom blocker needs to be taller than the video length bar, but not as tall as for YouTube
+    }
+
+    document.getElementById("player").style.clipPath = `inset(${showTopBlocker ? topSize : "0px"} 0px ${showBottomBlocker ? bottomSize : "0px"} 0px)`; // Top, right, bottom, left
+    // Show our video info at the top whenever the top blocker is showing
+    document.getElementById("top-info").style.display = showTopBlocker ? "flex" : "none";
+
+    topBlockerShowing = showTopBlocker;
+    bottomBlockerShowing = showBottomBlocker;
 }
 
 function toggleFullscreen(event) {
@@ -1160,7 +1220,7 @@ function onAPIReady() {
 
     // Display blockers before the video loads so that when the video loads but hasn't started playing,
     // the title and related videos (YouTube) and video length bar (Twitch) are hidden
-    showPauseBlockers();
+    updateBlockerVisibility(true, true);
 }
 
 function onKeyDown(event) {
@@ -1362,8 +1422,6 @@ function startup() {
             isYoutube = true;
 
             // Configure YouTube-specific settings
-            document.getElementById('blocker-top').style.height = "60px"; // Needs to be taller than the title bar
-            document.getElementById('blocker-bottom').style.height = "50%"; // Needs to be taller than the related videos bar
             document.getElementById('quality-select').disabled = true; // Youtube doesn't support changing quality, so we display the current quality but it can't be changed
 
             // Load the YouTube API script. Note I used to have this as a regular <script> element
@@ -1380,10 +1438,6 @@ function startup() {
             videoPlatform = 'twitch';
             isTwitch = true;
 
-            // Configure Twitch-specific settings
-            document.getElementById('blocker-top').style.height = "200px"; // Needs to be taller than the title bar
-            document.getElementById('blocker-bottom').style.height = "100px"; // Needs to be taller than the video length bar, but not as tall as for YouTube
-
             var script = document.createElement('script');
             script.src = "https://player.twitch.tv/js/embed/v1.js";
             script.onload = onAPIReady;
@@ -1392,6 +1446,8 @@ function startup() {
 
         if (videoPlatform) {
             document.getElementById("loading-status").innerText = `Loading ${videoPlatform} player...`;
+            // When using clip-path for the blockers we'll see the page background so make this black to better match the video player's natural look.
+            document.body.style.backgroundColor = "black";
         }
         else {
             document.getElementById("loading-status").innerText = `Error! Unknown video platform for video ID: ${params.get('videoId')}`;

@@ -54,29 +54,20 @@ body {
     display: block; /* This is kind of irrelevant as all the children will be position absolutely anyway */
 }
 
-/* Blocker elements - black boxes that cover up elements of the native player's UI */
-/* =============================================================================== */
-.blocker {
-    background: black;
-    position: absolute;
-    display: none; /* Initially hidden - will be shown by javascript when needed */
-}
-#blocker-top {
-    /* Full-width along the top of the page. The height is dependent on YouTube vs. Twitch, so is set in code */
-    top: 0px;
-    left: 0px;
-    right: 0px;
-    /* Color and font-size for the video title that we show here  */
+/* Video title etc. that we show at the top when paused. */
+#top-info {
+    display: flex;
+    flex-direction: column;
     color: hsl(243, 100%, 85%);
     font-size: 5vmin;
 }
-#blocker-bottom {
-    /* Full-width along the bottom of the page. The height is dependent on YouTube vs. Twitch, so is set in code */
-    bottom: 0px;
-    left: 0px;
-    right: 0px;
-}
+
+/* Blocker elements - black boxes that cover up elements of the native player's UI */
+/* =============================================================================== */
 #blocker-full {
+    background: black;
+    position: absolute;
+    display: none; /* Initially hidden - will be shown by javascript when needed */
     /* Full-screen */
     inset: 0px;
     /* Color and font-size for the message that we show here (end of video) */
