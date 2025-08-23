@@ -68,3 +68,6 @@ TODO:
 * Is it bad to immediately upload saved position? Cos if you accindalttly open a saved position from another device that's older, it will trhen overwrite your _newer_ saved position with that old one and you lose where you were!
 * As well as trhe "show native controls", could also have something to allow 'clicking through', which could allow dismissing the copyright popup, or showing the chat on the top right side?
 * The 'no select' thing doesn't seem to be weorking (double clicking around reandomly can now select thigns)
+* The twitch 'delay play' thing doesn't seem to work well on mobile - requires full screen first?
+* The twitch 'delay play' thing - give some indication that it's trying to play?
+* When teh blockers show, could narrow the player so that the full video fits within the visible region (like when an ad shows)

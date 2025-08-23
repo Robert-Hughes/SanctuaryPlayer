@@ -151,6 +151,19 @@ function getRelativeTimeString(subjectSeconds, relativeToSeconds) {
     return "Same";
 }
 
+// '50px', _ -> 50
+// '20%, 50 -> 10
+function convertPercentageToPixels(x, size) {
+    if (x.endsWith("%")) {
+        let percent = parseFloat(x.substring(0, x.length-1));
+        return size * percent / 100.0;
+    } else if (x.endsWith("px")) {
+        return parseFloat(x.substring(0, x.length-2));
+    } else {
+        return parseFloat(x);
+    }
+}
+
 function closeMenu() {
     document.getElementById("menu").style.display = "none";
     document.getElementById("menu-button").classList.remove("open");
@@ -991,9 +1004,24 @@ function pause() {
     }
 }
 
+// Returns array [width, height] or null if not available
+function getVideoResolution() {
+    if (isYoutube) {
+        return null; //TODO:
+    } else if (isTwitch) {
+        if (player.getPlaybackStats) { // Might not be loaded yet
+            let s = player.getPlaybackStats().videoResolution; // e.g. "1920x1080"
+            return [parseInt(s.split("x")[0]), parseInt(s.split("x")[1])]
+        } else {
+            return null;
+        }
+    }
+}
+
 // Sets the clip-path of the player element to block out the top and/or bottom sections to hide spoilers.
 // If either parameter is null, that blocker's visibility will remain as it was (i.e. no change).
 function updateBlockerVisibility(showTopBlocker, showBottomBlocker) {
+    let player = document.getElementById("player");
     if (showTopBlocker === null) {
         showTopBlocker = topBlockerShowing;
     }
@@ -1017,12 +1045,46 @@ function updateBlockerVisibility(showTopBlocker, showBottomBlocker) {
         bottomSize = "100px"; // Bottom blocker needs to be taller than the video length bar, but not as tall as for YouTube
     }
 
-    document.getElementById("player").style.clipPath = `inset(${showTopBlocker ? topSize : "0px"} 0px ${showBottomBlocker ? bottomSize : "0px"} 0px)`; // Top, right, bottom, left
+    player.style.clipPath = `inset(${showTopBlocker ? topSize : "0px"} 0px ${showBottomBlocker ? bottomSize : "0px"} 0px)`; // Top, right, bottom, left
     // Show our video info at the top whenever the top blocker is showing
     document.getElementById("top-info").style.display = showTopBlocker ? "flex" : "none";
 
     topBlockerShowing = showTopBlocker;
     bottomBlockerShowing = showBottomBlocker;
+
+    // If blockers are showing then shrink the effective width of the player so that the video is squashed into
+    // a smaller area in the middle to make sure that the whole video is visible (otherwise the clipped parts of the
+    // player might cover important bits of the video).
+    //TODO: transition?
+    if (topBlockerShowing || bottomBlockerShowing) {
+        let requiredLetterboxPixels = 0;
+        // Convert percentage sizes to pixels (these are based on the border box, which if offsetHeight).
+        if (showTopBlocker) {
+            requiredLetterboxPixels = Math.max(requiredLetterboxPixels, convertPercentageToPixels(topSize, player.offsetHeight));
+        }
+        if (showBottomBlocker) {
+            requiredLetterboxPixels = Math.max(requiredLetterboxPixels, convertPercentageToPixels(bottomSize, player.offsetHeight));
+        }
+        let videoResolution = getVideoResolution();
+        if (videoResolution) { // Might not be available yet
+            let requiredPlayerWidth = (document.getElementById("root").clientHeight - 2 * requiredLetterboxPixels) * videoResolution[0] / videoResolution[1];
+            if (requiredPlayerWidth < document.getElementById("root").clientWidth) {
+                let totalMargin = document.getElementById("root").clientWidth - requiredPlayerWidth;
+                //TODO: these fixed calculations won't work if the layout changes
+                player.style.marginLeft = (totalMargin / 2) + "px";
+                player.style.marginRight = (totalMargin / 2) + "px";
+            } else {
+                player.style.marginLeft = "0px";
+                player.style.marginRight = "0px";
+            }
+        } else {
+            player.style.marginLeft = "0px";
+            player.style.marginRight = "0px";
+        }
+    } else {
+        player.style.marginLeft = "0px";
+        player.style.marginRight = "0px";
+    }
 }
 
 function toggleFullscreen(event) {
