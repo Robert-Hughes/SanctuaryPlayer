@@ -589,6 +589,12 @@ function onPlayerReady() {
         // so this will show a placeholder for now.
         updateVideoTitle();
 
+        // The blockers are shown before the video loads to hide spoilers from title etc., but
+        // the auto-resizing of the video player wont have worked properly as the video resolution wouldn't have been
+        // available. Now that the video is loaded, we can update this.
+        //TODO: not working (at least for twitch) the video resolution isn't available even now, need to play first!
+        updateBlockerVisibility(true, true);
+
         // Show the video controls, now that they will work
         document.getElementById("player-overlay-controls-mid").style.display = 'flex';
         document.getElementById("player-overlay-controls-bot").style.display = 'flex';
@@ -978,12 +984,18 @@ function play() {
         // otherwise when the opacity is set back to 1, the controls will reappear for a second then disappear again,
         // which is confusing.
         document.getElementById("player-overlay-controls").style.display = 'none';
+        firstPlayAttempTime = performance.now();
         let tryPlay = function() {
             if (isPlaying()) {
                 // Successful! We can show our overlay again
                 document.getElementById("player-overlay").style.opacity = "1";
             } else  {
                 // Hasn't worked yet, try again and check in a bit to see if it worked.
+                if (performance.now() - firstPlayAttempTime > 5000) {
+                    alert("Giving up trying to play after 5 seconds");
+                    document.getElementById("player-overlay").style.opacity = "1";
+                    return;
+                }
                 player.play();
                 doSomethingAfterDelay("tryPlay", 100, tryPlay);
             }
@@ -1066,7 +1078,7 @@ function updateBlockerVisibility(showTopBlocker, showBottomBlocker) {
             requiredLetterboxPixels = Math.max(requiredLetterboxPixels, convertPercentageToPixels(bottomSize, player.offsetHeight));
         }
         let videoResolution = getVideoResolution();
-        if (videoResolution) { // Might not be available yet
+        if (videoResolution) { // Might not be available yet, like on first page load before the video is ready
             let requiredPlayerWidth = (document.getElementById("root").clientHeight - 2 * requiredLetterboxPixels) * videoResolution[0] / videoResolution[1];
             if (requiredPlayerWidth < document.getElementById("root").clientWidth) {
                 let totalMargin = document.getElementById("root").clientWidth - requiredPlayerWidth;
