@@ -31,7 +31,7 @@ Known Issues
 ============
 
 * Twitch: sometimes the Twitch player shows a popup about copyright muted audio, which you can't dismiss because we intercept all input. The workaround for this is to click "Use native player controls", then dismiss the popup and then return to the normal controls.
-* Twitch - on first load it shows a weird quarter-size frame in the corner before playing the video
+* Twitch - on first load it shows a weird quarter-size frame in the corner before playing the video, which could contain a spoiler!
 
 Feature Ideas
 ==============
@@ -66,8 +66,19 @@ TODO:
 * Twitch video start time  - if starting a VOD that you were previously watching live, it seems to ignore this and instead jump to that time?
 * Open Menu then click in the space above it (to the left of the menu button) - it should probably close the menu but doesn't
 * Is it bad to immediately upload saved position? Cos if you accindalttly open a saved position from another device that's older, it will trhen overwrite your _newer_ saved position with that old one and you lose where you were!
+   * Simialarly, if there's a bug/glitch and the video position resets to zero, this would be saved
+   * Or if you accidentally skip forward/backwards
 * As well as trhe "show native controls", could also have something to allow 'clicking through', which could allow dismissing the copyright popup, or showing the chat on the top right side?
 * The 'no select' thing doesn't seem to be weorking (double clicking around reandomly can now select thigns)
 * The twitch 'delay play' thing doesn't seem to work well on mobile - requires full screen first?
 * The twitch 'delay play' thing - give some indication that it's trying to play?
 * When teh blockers show, could narrow the player so that the full video fits within the visible region (like when an ad shows)
+   * Not working on first load/play
+   * Maybe do this for YouTube too (even though it's not required, still useful for consistency and for not blocking off part of the frame)
+* Spoiler free controls should remove clip-path
+* Twitch - when there's a "network error" it resets the time to zero and then saves this!
+* Twitch - starting to watch a video that already watched some of live will start at that time ratehr than 0 as intended!
+* On S10 (normal ratio phone), seems to be all broken
+* YouTube video titles seem to be broken
+* Sometimes the saved position list looks like it's loaded, but hasn't actually refreshed so it shows old stuff. Need to re-open the menu for it to refresh properly.
+* Test that the twitch 'delay play' thing works ok for YouTube videos

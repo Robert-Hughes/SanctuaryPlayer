@@ -978,12 +978,18 @@ function play() {
         // otherwise when the opacity is set back to 1, the controls will reappear for a second then disappear again,
         // which is confusing.
         document.getElementById("player-overlay-controls").style.display = 'none';
+        firstPlayAttemptTime = performance.now();
         let tryPlay = function() {
             if (isPlaying()) {
                 // Successful! We can show our overlay again
                 document.getElementById("player-overlay").style.opacity = "1";
             } else  {
                 // Hasn't worked yet, try again and check in a bit to see if it worked.
+                if (performance.now() - firstPlayAttemptTime > 5000) {
+                    alert("Giving up trying to play after 5 seconds");
+                    document.getElementById("player-overlay").style.opacity = "1";
+                    return;
+                }
                 player.play();
                 doSomethingAfterDelay("tryPlay", 100, tryPlay);
             }
@@ -1011,10 +1017,11 @@ function getVideoResolution() {
     } else if (isTwitch) {
         if (player.getPlaybackStats) { // Might not be loaded yet
             let s = player.getPlaybackStats().videoResolution; // e.g. "1920x1080"
-            return [parseInt(s.split("x")[0]), parseInt(s.split("x")[1])]
-        } else {
-            return null;
+            if (s && s != "0x0") {
+                return [parseInt(s.split("x")[0]), parseInt(s.split("x")[1])]
+            }
         }
+        return null;
     }
 }
 
@@ -1034,15 +1041,15 @@ function updateBlockerVisibility(showTopBlocker, showBottomBlocker) {
     // on top of the player and this blocks playing the video.
     // To work around this, we use clip-path instead to clip parts of the player which we don't want to see.
     // Apparently this doesn't trigger the same problem (maybe because it's not drawing over it,
-    // it's just not drawing those bits at all)
+    // it's just never drawing those bits at all)
     let topSize;
     let bottomSize;
     if (isYoutube) {
         topSize = "60px"; // Top blocker needs to be taller than the title bar
         bottomSize = "50%"; // Bottom blocker to be taller than the related videos bar
     } else if (isTwitch) {
-        topSize = "200px"; // Top blocker needs to be taller than the title bar
-        bottomSize = "100px"; // Bottom blocker needs to be taller than the video length bar, but not as tall as for YouTube
+        topSize = "150px"; // Top blocker needs to be taller than the title bar
+        bottomSize = "90px"; // Bottom blocker needs to be taller than the video length bar, but not as tall as for YouTube
     }
 
     player.style.clipPath = `inset(${showTopBlocker ? topSize : "0px"} 0px ${showBottomBlocker ? bottomSize : "0px"} 0px)`; // Top, right, bottom, left
@@ -1066,8 +1073,10 @@ function updateBlockerVisibility(showTopBlocker, showBottomBlocker) {
             requiredLetterboxPixels = Math.max(requiredLetterboxPixels, convertPercentageToPixels(bottomSize, player.offsetHeight));
         }
         let videoResolution = getVideoResolution();
-        if (videoResolution) { // Might not be available yet
+        if (videoResolution) { // Might not be available yet, like on first page load before the video is ready
             let requiredPlayerWidth = (document.getElementById("root").clientHeight - 2 * requiredLetterboxPixels) * videoResolution[0] / videoResolution[1];
+            requiredPlayerWidth = Math.max(requiredPlayerWidth, 300); // Minimum width, otherwise Twitch player will refuse to play (it also has a minimum height of 150, which we don't check yet)
+
             if (requiredPlayerWidth < document.getElementById("root").clientWidth) {
                 let totalMargin = document.getElementById("root").clientWidth - requiredPlayerWidth;
                 //TODO: these fixed calculations won't work if the layout changes
@@ -1084,6 +1093,15 @@ function updateBlockerVisibility(showTopBlocker, showBottomBlocker) {
     } else {
         player.style.marginLeft = "0px";
         player.style.marginRight = "0px";
+    }
+
+    // The above calculations depend on the video resolution and the player size, so if either
+    // of these change then the calculations need to be redone (otherwise the clip path or margins might be wrong).
+    // The video resolution will change once the video first loads (isn't available on first load
+    // and even after the player is 'ready' there is a short delay (at least for Twitch).
+    // The player size can change if the user resizes the window or rotates their phone.
+    if (topBlockerShowing || bottomBlockerShowing) {
+        doSomethingAfterDelay("updateBlockerVisibility", 100, function() { updateBlockerVisibility(null, null); });
     }
 }
 
