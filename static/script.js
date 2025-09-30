@@ -1010,15 +1010,15 @@ function pause() {
     }
 }
 
-// Returns array [width, height] or null if not available
-function getVideoResolution() {
+// Returns ratio of width / height, or null if not available
+function getVideoAspectRatio() {
     if (isYoutube) {
-        return null; //TODO:
+        return 16 / 9; // YouTube API doesn't provide any way to get this :( so just assume 16:9
     } else if (isTwitch) {
         if (player.getPlaybackStats) { // Might not be loaded yet
             let s = player.getPlaybackStats().videoResolution; // e.g. "1920x1080"
             if (s && s != "0x0") {
-                return [parseInt(s.split("x")[0]), parseInt(s.split("x")[1])]
+                return parseInt(s.split("x")[0]) / parseInt(s.split("x")[1])
             }
         }
         return null;
@@ -1046,7 +1046,7 @@ function updateBlockerVisibility(showTopBlocker, showBottomBlocker) {
     let bottomSize;
     if (isYoutube) {
         topSize = "60px"; // Top blocker needs to be taller than the title bar
-        bottomSize = "50%"; // Bottom blocker to be taller than the related videos bar
+        bottomSize = "0px"; // Bottom blocker to be taller than the related videos bar
     } else if (isTwitch) {
         topSize = "150px"; // Top blocker needs to be taller than the title bar
         bottomSize = "90px"; // Bottom blocker needs to be taller than the video length bar, but not as tall as for YouTube
@@ -1062,7 +1062,6 @@ function updateBlockerVisibility(showTopBlocker, showBottomBlocker) {
     // If blockers are showing then shrink the effective width of the player so that the video is squashed into
     // a smaller area in the middle to make sure that the whole video is visible (otherwise the clipped parts of the
     // player might cover important bits of the video).
-    //TODO: transition?
     if (topBlockerShowing || bottomBlockerShowing) {
         let requiredLetterboxPixels = 0;
         // Convert percentage sizes to pixels (these are based on the border box, which if offsetHeight).
@@ -1072,14 +1071,13 @@ function updateBlockerVisibility(showTopBlocker, showBottomBlocker) {
         if (showBottomBlocker) {
             requiredLetterboxPixels = Math.max(requiredLetterboxPixels, convertPercentageToPixels(bottomSize, player.offsetHeight));
         }
-        let videoResolution = getVideoResolution();
-        if (videoResolution) { // Might not be available yet, like on first page load before the video is ready
-            let requiredPlayerWidth = (document.getElementById("root").clientHeight - 2 * requiredLetterboxPixels) * videoResolution[0] / videoResolution[1];
+        let videoAspectRatio = getVideoAspectRatio();
+        if (videoAspectRatio) { // Might not be available yet, like on first page load before the video is ready
+            let requiredPlayerWidth = (document.getElementById("root").clientHeight - 2 * requiredLetterboxPixels) * videoAspectRatio;
             requiredPlayerWidth = Math.max(requiredPlayerWidth, 300); // Minimum width, otherwise Twitch player will refuse to play (it also has a minimum height of 150, which we don't check yet)
 
             if (requiredPlayerWidth < document.getElementById("root").clientWidth) {
                 let totalMargin = document.getElementById("root").clientWidth - requiredPlayerWidth;
-                //TODO: these fixed calculations won't work if the layout changes
                 player.style.marginLeft = (totalMargin / 2) + "px";
                 player.style.marginRight = (totalMargin / 2) + "px";
             } else {
@@ -1233,7 +1231,12 @@ function onAPIReady() {
     seekTarget = startTime; // Treat the start time as a seek target, so the UI shows this time rather than 0 when loading
 
     if (isYoutube) {
-        player = new YT.Player('player', {
+        // The YouTube API *replaces* the given element with its iframe, so for consistency with Twitch
+        // (which makes a child element), we manually create a child div
+        let childDiv = document.createElement("div");
+        childDiv.id = "player-child";
+        document.getElementById("player").appendChild(childDiv);
+        player = new YT.Player(childDiv.id, {
             height: '100%',
             width: '100%',
             videoId: params.get('videoId'),

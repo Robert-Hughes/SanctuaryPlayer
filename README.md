@@ -80,5 +80,6 @@ TODO:
 * The twitch 'delay play' thing - give some indication that it's trying to play?
 * Spoiler free controls should remove clip-path
 * On S10 (normal ratio phone), seems to be all broken
-* Test that the twitch 'delay play' thing works ok for YouTube videos
 * The "giving up after 5 secs to play" message should give an instruction like "try going portrait mode or making window bigger and taller"
+* YouTube - seems the 'related videos' bar has gone - can we simplify/remove stuff?
+* When resizing the margins/clip path, could use CSS transition to make it smoother?
