@@ -70,15 +70,15 @@ TODO:
    * Or if you accidentally skip forward/backwards
 * As well as trhe "show native controls", could also have something to allow 'clicking through', which could allow dismissing the copyright popup, or showing the chat on the top right side?
 * The 'no select' thing doesn't seem to be weorking (double clicking around reandomly can now select thigns)
-* The twitch 'delay play' thing doesn't seem to work well on mobile - requires full screen first?
-* The twitch 'delay play' thing - give some indication that it's trying to play?
-* When teh blockers show, could narrow the player so that the full video fits within the visible region (like when an ad shows)
-   * Not working on first load/play
-   * Maybe do this for YouTube too (even though it's not required, still useful for consistency and for not blocking off part of the frame)
-* Spoiler free controls should remove clip-path
 * Twitch - when there's a "network error" it resets the time to zero and then saves this!
 * Twitch - starting to watch a video that already watched some of live will start at that time ratehr than 0 as intended!
-* On S10 (normal ratio phone), seems to be all broken
-* YouTube video titles seem to be broken
 * Sometimes the saved position list looks like it's loaded, but hasn't actually refreshed so it shows old stuff. Need to re-open the menu for it to refresh properly.
+* Youtube video quality never seems to go above "high"
+* Ctrl-click on saved position should open in new tab (and long press on mobile?)
+
+* The twitch 'delay play' thing doesn't seem to work well on mobile - requires full screen first?
+* The twitch 'delay play' thing - give some indication that it's trying to play?
+* Spoiler free controls should remove clip-path
+* On S10 (normal ratio phone), seems to be all broken
 * Test that the twitch 'delay play' thing works ok for YouTube videos
+* The "giving up after 5 secs to play" message should give an instruction like "try going portrait mode or making window bigger and taller"

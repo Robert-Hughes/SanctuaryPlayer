@@ -137,10 +137,10 @@ def handle_get_video_metadata():
 
         http_response.encoding = 'utf-8' # Even though the `requests` package is supposed to automatically detect encoding, it doesn't seem to work
 
-        # When fetching the content of a Twitch video page, sometimes it doesn't get the full page but instead a minimal/shell version that contains just
+        # When fetching the content of a Twitch or YouTube video page, sometimes it doesn't get the full page but instead a minimal/shell version that contains just
         # a loading icon, and then some javascript code which presumably loads the actual content in the background. This is presumably to make the page load fast
         # and seem responsive, but is annoying for us which need the full page. We try to detect this and reload the page, which tends to get the full one.
-        if video_platform == 'twitch' and not 'og:video' in http_response.text:
+        if not 'og:video' in http_response.text:
             print("Trying again to get full page...")
             sleep(1) # Wait a bit before retrying
             continue
