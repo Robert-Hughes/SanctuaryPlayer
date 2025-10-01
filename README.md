@@ -75,11 +75,6 @@ TODO:
 * Sometimes the saved position list looks like it's loaded, but hasn't actually refreshed so it shows old stuff. Need to re-open the menu for it to refresh properly.
 * Youtube video quality never seems to go above "high"
 * Ctrl-click on saved position should open in new tab (and long press on mobile?)
+* Duplicate scheduled video "Los Ratones vs Forsaken (Polish Team)" on Monday 29/09/2025
 
-* The twitch 'delay play' thing doesn't seem to work well on mobile - requires full screen first?
-* The twitch 'delay play' thing - give some indication that it's trying to play?
-* Spoiler free controls should remove clip-path
-* On S10 (normal ratio phone), seems to be all broken
-* The "giving up after 5 secs to play" message should give an instruction like "try going portrait mode or making window bigger and taller"
-* YouTube - seems the 'related videos' bar has gone - can we simplify/remove stuff?
-* When resizing the margins/clip path, could use CSS transition to make it smoother?
+* On S10 (normal ratio phone), seems to be all broken with the clip-path/margin stuff?

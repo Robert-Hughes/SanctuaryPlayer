@@ -46,6 +46,14 @@ body {
     right: 0px;
 }
 
+/* The div which will contain the video player iframe */
+#player {
+    /* Smoothly transition changes to the video size when blocker bars are shown/hidden */
+    transition-property: margin;
+    transition-duration: 0.1s;
+    transition-timing-function: ease-in-out;
+}
+
 /* Player overlay - fullscreen container that overlays the video where all of our UI additions are */
 /* =============================================================================== */
 #player-overlay {

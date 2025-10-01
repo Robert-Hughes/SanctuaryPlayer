@@ -986,7 +986,10 @@ function play() {
             } else  {
                 // Hasn't worked yet, try again and check in a bit to see if it worked.
                 if (performance.now() - firstPlayAttemptTime > 5000) {
-                    alert("Giving up trying to play after 5 seconds");
+                    // It could be that the size of the window is too small and Twitch still refuses to play,
+                    // or it could be another problem like the video is still buffering.
+                    // Either way, give up after a short time and show the overlay again so the user interact again
+                    alert("Video is taking a while to play. This could be because the window is too small - try making the window taller.");
                     document.getElementById("player-overlay").style.opacity = "1";
                     return;
                 }
@@ -1028,6 +1031,11 @@ function getVideoAspectRatio() {
 // Sets the clip-path of the player element to block out the top and/or bottom sections to hide spoilers.
 // If either parameter is null, that blocker's visibility will remain as it was (i.e. no change).
 function updateBlockerVisibility(showTopBlocker, showBottomBlocker) {
+    if (window.getComputedStyle(document.getElementById("player-overlay")).display === "none") {
+        // Overlay is hidden, so must be using 'native controls' mode, in which case we don't want to show any blockers even when asked
+        return;
+    }
+
     let player = document.getElementById("player");
     if (showTopBlocker === null) {
         showTopBlocker = topBlockerShowing;
@@ -1046,7 +1054,7 @@ function updateBlockerVisibility(showTopBlocker, showBottomBlocker) {
     let bottomSize;
     if (isYoutube) {
         topSize = "60px"; // Top blocker needs to be taller than the title bar
-        bottomSize = "0px"; // Bottom blocker to be taller than the related videos bar
+        bottomSize = "200px"; // Bottom blocker to be taller than the related videos bar (note this doesn't always seem to show, maybe only on mobile?)
     } else if (isTwitch) {
         topSize = "150px"; // Top blocker needs to be taller than the title bar
         bottomSize = "90px"; // Bottom blocker needs to be taller than the video length bar, but not as tall as for YouTube
@@ -1356,7 +1364,9 @@ function onQualitySelectChange(event) {
 // For example on Twich sometimes there's a popup "Audio for portions of this video has been muted" popup which you want to dismiss.
 // Also you might want to hide all the blockers to see something on the video when paused, if you're not concerned about spoilers at that time.
 function useNativePlayerControlsClick(event) {
-    // Hide the overlay, which removes all our controls and blockers visually as well as allowing mouse/keyboard events through
+    // Hide any blockers that might be showing
+    updateBlockerVisibility(false, false);
+    // Hide the overlay, which removes all our controls as well as allowing mouse/keyboard events through
     // to the native player underneath
     document.getElementById("player-overlay").style.display = "none";
     // Provide a way for the user to return to the normal controls (as the Menu won't be accessible any more!)
@@ -1368,6 +1378,7 @@ function useNativePlayerControlsClick(event) {
 
 function restoreNormalControlsClick(event) {
     document.getElementById("player-overlay").style.display = "block";
+    //TODO: re-show blockers, depending on if paused etc??
     document.getElementById("restore-normal-controls-button").style.display = "none";
 }
 
