@@ -602,12 +602,21 @@ function onPlayerReady() {
         }
         document.getElementById("speed-select").value = getCurrentPlaybackRate();
 
-        // Twitch remembers your last volume settings, so we reset these each time otherwise
-        // the video might be muted (or low volume) and you would have no way to fix it
-        // Note that YouTube seems to always reset to 100%, so no need to do this for YouTube.
         if (isTwitch) {
+            // Twitch remembers your last volume settings, so we reset these each time otherwise
+            // the video might be muted (or low volume) and you would have no way to fix it
+            // Note that YouTube seems to always reset to 100%, so no need to do this for YouTube.
             player.setMuted(false);
             player.setVolume(1.0);
+
+            // The Twitch player displays a static thumbnail over the top of the video whilst it is loading,
+            // but it never removes this once the video is loaded (until you play the video). It also seems
+            // to have a weird bug where the thumbnail is the wrong size and offset, so you can see the video
+            // behind it too. Both of these are annoying (and the thumbnail could contain spoilers), so we try
+            // our best to hide it. The only way I've found so far is to call this no-op API once the video
+            // is loaded, which hides the thumbnail. Unfortunately the thumbnail is still visible for a bit
+            // before this callback is run, but it's better than nothing!
+            player.setVideo("invalid");
         }
 
         // Update UI immediately, rather than waiting for the first tick
