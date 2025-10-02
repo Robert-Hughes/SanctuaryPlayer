@@ -51,7 +51,7 @@ body {
     /* Smoothly transition changes to the video size when blocker bars are shown/hidden */
     transition-property: margin;
     transition-duration: 0.1s;
-    transition-timing-function: ease-in-out;
+    transition-timing-function: linear;
 }
 
 /* Player overlay - fullscreen container that overlays the video where all of our UI additions are */
