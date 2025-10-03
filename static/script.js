@@ -610,9 +610,15 @@ function onPlayerReady() {
             // but it never removes this once the video is loaded (until you play the video). It also seems
             // to have a weird bug where the thumbnail is the wrong size and offset, so you can see the video
             // behind it too. Both of these are annoying (and the thumbnail could contain spoilers), so we try
-            // our best to hide it. The only way I've found so far is to call this no-op API once the video
+            // our best to hide it.
+            // The only way I've found so far is to call this no-op API once the video
             // is loaded, which hides the thumbnail. Unfortunately the thumbnail is still visible for a bit
             // before this callback is run, but it's better than nothing!
+            //
+            // This also has another unexpected benefit - it seems to remove the video title and progress bar
+            // from the player! Which means we can be more relaxed about showing our blockers over these.
+            // Note that this does seem to take a short time to take effect - the player will still show the title/progress bar
+            // for a few seconds after this call.
             player.setVideo("invalid");
         }
 
@@ -683,14 +689,12 @@ function seekTo(target) {
         player.seek(target);
     }
 
-    // For Twitch where we can't disable the native UI, seeking the video makes the video length bar appear at the bottom
+    // Seeking the video makes the bar appear at the bottom
     // and the video title at the top, so we have to show the blockers when seeking,
-    // Note this is only the case for shorter seeks (e.g. 5 secs), as for longer seeks we experience a brief 'pause' then 'unpause' which
+    // (Twitch) Note this is only the case for shorter seeks (e.g. 5 secs), as for longer seeks we experience a brief 'pause' then 'unpause' which
     // shows the blockers anyway.
-    if (isTwitch) {
-        updateBlockerVisibility(true, true);
-        hideBlockersShortly();
-    }
+    updateBlockerVisibility(true, true);
+    hideBlockersShortly();
 
     onTimer(); // Update UI to show that we are seeking (as the player state change callback might be delayed)
 }
@@ -1088,7 +1092,10 @@ function updateBlockerVisibility(showTopBlocker, showBottomBlocker) {
         let videoAspectRatio = getVideoAspectRatio();
         if (videoAspectRatio) { // Might not be available yet, like on first page load before the video is ready
             let requiredPlayerWidth = (document.getElementById("root").clientHeight - 2 * requiredLetterboxPixels) * videoAspectRatio;
-            requiredPlayerWidth = Math.max(requiredPlayerWidth, 300); // Minimum width, otherwise Twitch player will refuse to play (it also has a minimum height of 150, which we don't check yet)
+            // Minimum width, otherwise Twitch player will refuse to play (it also has a minimum height of 150, which we don't check yet)
+            // Note that the clip-path may still obscure part of the player and this may cause problems with Twitch's IntersectionObserver
+            // (it does have some leeway though) but there's not much we can do if the window is so short.
+            requiredPlayerWidth = Math.max(requiredPlayerWidth, 300);
 
             if (requiredPlayerWidth < document.getElementById("root").clientWidth) {
                 let totalMargin = document.getElementById("root").clientWidth - requiredPlayerWidth;

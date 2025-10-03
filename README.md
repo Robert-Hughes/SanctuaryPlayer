@@ -77,8 +77,4 @@ TODO:
 * Ctrl-click on saved position should open in new tab (and long press on mobile?)
 * Duplicate scheduled video "Los Ratones vs Forsaken (Polish Team)" on Monday 29/09/2025
 * Saved positions on the same video could just seek, rather than reload the whole page
-
-* On S10 (normal ratio phone), seems to be all broken with the clip-path/margin stuff?
-* Seems like the random setVideo("invalid") also hides the video title and progress bar!
- - maybe still use the blockers to hide the smaller twitch overlay, and use the time since first play (or similar) to determine if we need the 'taller' blockers or not
-* Seeking on youtube now seems to show the top and bottom bar, so need to show the blockers here too, like twitch?
+* Review the cases where we show blockers (and their size) - this may be too restrictive (for both youtube and twitch!)
