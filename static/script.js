@@ -21,6 +21,8 @@ var isYoutube = false;
 const youtubeVideoIdRegex = /^[A-Za-z0-9-_]{11}$/; // 11 alphanumeric chars (plus some special chars)
 const twitchVideoIdRegex = /^\d{10}$/; // 10-digit number
 
+let videoId; // The ID of the video we are playing (extracted from URL on page load)
+
 // Title and release date of the current video, which we can't get from the player object so it comes from our server.
 // This won't be available immediately as we query it from our own server.
 var metadataFromServer;
@@ -206,19 +208,14 @@ function onMenuButtonClick(e) {
     }
 }
 
-// Although we can also get the video ID from the URL, this might give us a more 'canonical' version
-function getVideoIdFromPlayer() {
-    if (isYoutube && player && player.getVideoData) {
-        return player.getVideoData().video_id;
-    } else if (isTwitch && player && player.getVideo) {
-        return player.getVideo();
-    }
-    return null;
-}
-
 function isVideoLoadedSuccessfully() {
     // Both YouTube and Twitch will only report the video ID once it has been loaded
-    return !!getVideoIdFromPlayer();
+    if (isYoutube && player && player.getVideoData) {
+        return !!player.getVideoData().video_id;
+    } else if (isTwitch && player && player.getVideo) {
+        return !!player.getVideo();
+    }
+    return false;
 }
 
 function getAvailablePlaybackRates() {
@@ -423,7 +420,7 @@ function fetchSavedPositions() {
 
                     var cell = document.createElement("td");
                     cell.textContent = toFriendlyTimeStringColons(savedPosition.position);
-                    if (savedPosition.video_id == getVideoIdFromPlayer()) {
+                    if (savedPosition.video_id === videoId) {
                         cell.textContent += " (" + getRelativeTimeString(savedPosition.position, getEffectiveCurrentTime()) + ")";
                     }
                     row.appendChild(cell);
@@ -471,7 +468,7 @@ function fetchSavedPositions() {
                     // Skip the row if it's the same video, device and position as currently playing.
                     // (Checking just device and video is probably sufficient in nearly all cases, but there might be some corner
                     //  cases e.g. where the position hasn't been uploaded)
-                    if (savedPosition.video_id == getVideoIdFromPlayer() && savedPosition.device_id == localStorage.getItem("device_id") &&
+                    if (savedPosition.video_id === videoId && savedPosition.device_id == localStorage.getItem("device_id") &&
                         Math.abs(savedPosition.position - getEffectiveCurrentTime()) < 10) {
                             continue;
                         }
@@ -633,7 +630,7 @@ function onPlayerReady() {
         // We could scrape it from the video's web page, but the browser will block that due to CORS.
         // Instead we fetch it from our server which can do the query for us (without CORS) - yuck!
         // The initial title is set to a placeholder and will be updated when the server responds.
-        fetch("get-video-metadata?video_id=" + getVideoIdFromPlayer() + "&video_platform=" + videoPlatform)
+        fetch("get-video-metadata?video_id=" + videoId + "&video_platform=" + videoPlatform)
             .then(response => {
                 if (!response.ok) {
                     throw new Error('get-video-metadata response was not OK');
@@ -1205,7 +1202,7 @@ function onTimer() {
             var params = new URLSearchParams({
                 'user_id': localStorage.getItem("user_id"),
                 'device_id': localStorage.getItem("device_id"),
-                'video_id': getVideoIdFromPlayer(),
+                'video_id': videoId,
                 'position': Math.round(effectiveCurrentTime), // Server saves whole numbers only
             });
             fetch('save-position?' + params.toString(), { method: 'POST'})
@@ -1514,13 +1511,15 @@ function startup() {
 
     var params = new URLSearchParams(window.location.search);
     if (params.has('videoId')) {
+        videoId = params.get('videoId');
+
         document.getElementById("welcome-screen").style.display = "none";
         document.getElementById("loading-status-container").style.display = "flex";
         document.getElementById("use-native-player-controls-button").style.display = 'block';
         document.getElementById("lock-controls-slider").style.display = 'block';
 
         // Detect if the video ID is for Twitch or YouTube
-        if (params.get('videoId').match(youtubeVideoIdRegex)) {
+        if (videoId.match(youtubeVideoIdRegex)) {
             videoPlatform = 'youtube';
             isYoutube = true;
 
@@ -1537,7 +1536,7 @@ function startup() {
             var firstScriptTag = document.getElementsByTagName('script')[0];
             firstScriptTag.parentNode.insertBefore(tag, firstScriptTag);
             // The video itself will be loaded once the youtube API loads (it calls our onYouTubeIframeAPIReady() function)
-        } else if (params.get('videoId').match(twitchVideoIdRegex)) {
+        } else if (videoId.match(twitchVideoIdRegex)) {
             videoPlatform = 'twitch';
             isTwitch = true;
 
@@ -1553,7 +1552,7 @@ function startup() {
             document.body.style.backgroundColor = "black";
         }
         else {
-            document.getElementById("loading-status").innerText = `Error! Unknown video platform for video ID: ${params.get('videoId')}`;
+            document.getElementById("loading-status").innerText = `Error! Unknown video platform for video ID: ${videoId}`;
         }
     }
     updateSignedInStatus();
