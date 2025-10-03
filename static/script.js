@@ -455,7 +455,7 @@ function fetchSavedPositions() {
                 var highlightIdx = null;
                 for (var i = 0; i < response.length; ++i) {
                     var savedPosition = response[i];
-                    if (savedPosition.video_id == getVideoIdFromPlayer()) {
+                    if (savedPosition.video_id === videoId) {
                         if (maxPosition == null || savedPosition.position > maxPosition) {
                             maxPosition = savedPosition.position;
                             highlightIdx = i;
