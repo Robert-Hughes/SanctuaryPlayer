@@ -73,7 +73,7 @@ TODO:
 * Twitch - when there's a "network error" it resets the time to zero and then saves this!
 * Twitch - starting to watch a video that already watched some of live will start at that time ratehr than 0 as intended!
 * Sometimes the saved position list looks like it's loaded, but hasn't actually refreshed so it shows old stuff. Need to re-open the menu for it to refresh properly.
-* Youtube video quality never seems to go above "high"
 * Ctrl-click on saved position should open in new tab (and long press on mobile?)
 * Duplicate scheduled video "Los Ratones vs Forsaken (Polish Team)" on Monday 29/09/2025
 * Review the cases where we show blockers (and their size) - this may be too restrictive (for both youtube and twitch!)
+* restoreNormalControlsClick() - re-show blockers, depending on if paused etc??

@@ -265,8 +265,30 @@ function getCurrentQuality() {
 
 function setQuality(quality) {
     if (isYoutube) {
-        // Even though the youtube player has an API to set the quality, it doesn't actually do anything
-        // as you can no longer choose the quality that you receive - it's always automatically chosen by YouTube.
+        // Even though the youtube player has an API to set the quality (setPlaybackQuality), it doesn't actually do anything.
+        // However the iframe player does have a UI to change the quality, and this is remembered in localstorage
+        // so we can instruct the user to do this instead.
+        // Unfortunately this isn't possible using the 'use native controls' option as we load the iframe with controls=0
+        // which hides the settings button, so we have to open a new iframe (on a known safe video) with controls=1 to let the
+        // user change the quality
+        // Note: the localstorage option is scoped within our domain, so the user has to set it on an iframe from our site (not youtube.com directly)
+        if (confirm("YouTube does not allow changing the video quality programmatically. " +
+            "Instead, a new window will open with a placeholder YouTube video where you can change the quality using the settings button (play the video, then click the gear icon). " +
+            "After changing the quality, refresh this page to apply the new setting. " +
+            "This should be remembered for future YouTube videos on this site. ")) {
+            let iframe = document.createElement("iframe");
+            iframe.src = "https://www.youtube.com/embed/gWFbES7PvRE?controls=1"
+            iframe.style.width = "100%";
+            iframe.style.height = "100%";
+            // Replace the entire page with this iframe. This is quite hacky (and might have awkward interaction with
+            // any timers or async things we have running), but it's easy and the user will refresh the page anyway
+            // so shouldn't be a big problem.
+            document.body.innerHTML = "";
+            document.body.appendChild(iframe);
+        } else {
+            // revert the <select> value, otherwise it looks like it changed successfully
+            document.getElementById("quality-select").value = getCurrentQuality();
+        }
     } else {
         player.setQuality(quality);
     }
@@ -291,7 +313,7 @@ function setQualityToFavourite() {
 }
 
 function onSetFavouriteQualitiesClick(event) {
-    var x = prompt("Enter a comma-separated list of quality names. If one of these is available when playing a video then it will be chosen automatically:", localStorage.getItem("favourite_qualities") ?? "");
+    var x = prompt("(Twitch only) Enter a comma-separated list of quality names. If one of these is available when playing a video then it will be chosen automatically:", localStorage.getItem("favourite_qualities") ?? "");
     if (x) {
         localStorage.setItem("favourite_qualities", x);
     }
@@ -1269,7 +1291,7 @@ function onAPIReady() {
             width: '100%',
             videoId: params.get('videoId'),
             playerVars: {
-                'controls': 0,
+                'controls': 0, // Hide as much of the UI as we can (as we'll provide this).
                 // Note that if 'start' is not set (or set to something invalid), then YouTube has some kind of memory where it tries
                 // to start where you last were. We don't want this, as we handle it ourselves, so make sure to always set this, even if no start time was provided (so we default to the beginning)
                 'start': startTime,
@@ -1398,7 +1420,6 @@ function useNativePlayerControlsClick(event) {
 
 function restoreNormalControlsClick(event) {
     document.getElementById("player-overlay").style.display = "block";
-    //TODO: re-show blockers, depending on if paused etc??
     document.getElementById("restore-normal-controls-button").style.display = "none";
 }
 
@@ -1536,9 +1557,6 @@ function startup() {
         if (videoId.match(youtubeVideoIdRegex)) {
             videoPlatform = 'youtube';
             isYoutube = true;
-
-            // Configure YouTube-specific settings
-            document.getElementById('quality-select').disabled = true; // Youtube doesn't support changing quality, so we display the current quality but it can't be changed
 
             // Load the YouTube API script. Note I used to have this as a regular <script> element
             // in the HTML <head>, but this seemed to cause issues where the API wouldn't load correctly
