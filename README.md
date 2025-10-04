@@ -76,5 +76,4 @@ TODO:
 * Youtube video quality never seems to go above "high"
 * Ctrl-click on saved position should open in new tab (and long press on mobile?)
 * Duplicate scheduled video "Los Ratones vs Forsaken (Polish Team)" on Monday 29/09/2025
-* Saved positions on the same video could just seek, rather than reload the whole page
 * Review the cases where we show blockers (and their size) - this may be too restrictive (for both youtube and twitch!)

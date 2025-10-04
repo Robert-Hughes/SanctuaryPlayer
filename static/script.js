@@ -395,9 +395,6 @@ function fetchSavedPositions() {
             })
             .then(response => {
                 function createTableRow(savedPosition, isHighlight) {
-                    var params = new URLSearchParams(window.location.search);
-                    params.set('videoId', savedPosition.video_id);
-                    params.set('time', savedPosition.position);
 
                     var row = document.createElement("tr");
                     row.classList.add("clickable");
@@ -405,7 +402,17 @@ function fetchSavedPositions() {
                         row.classList.add("highlight");
                     }
                     row.addEventListener('click', function() {
-                        window.location = '?' + params.toString();
+                        if (savedPosition.video_id === videoId) {
+                            // Same video, so we can just seek
+                            seekTo(savedPosition.position);
+                            closeMenu();
+                        } else {
+                            // Different video so need to reload the page
+                            var params = new URLSearchParams(window.location.search);
+                            params.set('videoId', savedPosition.video_id);
+                            params.set('time', savedPosition.position);
+                            window.location = '?' + params.toString();
+                        }
                     });
 
                     var cell = document.createElement("td");
