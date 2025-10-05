@@ -42,7 +42,26 @@ TODO:
 =====
 
 * If pause the video, after a few seconds, upload the saved position. Otherwise it might be a few seconds behind and never uploaded.
-* When video "reloads" while playing (e.g. due to lost connection?), the title appears briefly (not hidden by our blocker box)
+* http://127.0.0.1:5500/index.html?videoId=2392357391 -> innfinite loading (the Video ID is invalid) -  The ERROR callback thing doesn't seem to work!
+* Hide saved positiosn table when empty?
+* Needs to be clearer that the lock button needs to be slid to the right
+   * Also, prevent it from being dragged to the left (off the edge of the screen)?
+* Move lock slider into player-controls-mid, so moves out of the way when the menu opens
+* Make saved positions table selectable to copy into clipboard?
+* Hover text for relative times (2 days ago) should show the absolute time
+* When first set favourite qualities, it will pretty quickly set the new quality but the dropdown won't update until you close and re-open the menu
+* Open Menu then click in the space above it (to the left of the menu button) - it should probably close the menu but doesn't
+* Is it bad to immediately upload saved position? Cos if you accindalttly open a saved position from another device that's older, it will trhen overwrite your _newer_ saved position with that old one and you lose where you were!
+   * Simialarly, if there's a bug/glitch and the video position resets to zero, this would be saved
+   * Or if you accidentally skip forward/backwards
+* As well as trhe "show native controls", could also have something to allow 'clicking through', which could allow dismissing the copyright popup, or showing the chat on the top right side?
+* The 'no select' thing doesn't seem to be weorking (double clicking around reandomly can now select thigns)
+* Sometimes the saved position list looks like it's loaded, but hasn't actually refreshed so it shows old stuff. Need to re-open the menu for it to refresh properly.
+* Ctrl-click on saved position should open in new tab (and long press on mobile?)
+* Duplicate scheduled video "Los Ratones vs Forsaken (Polish Team)" on Monday 29/09/2025
+
+Playback:
+
 * youtube - loading video with a time set and then pressing play results in the time at the bottom briefly jumping to 0 before jumping to the correct time
 * Twitch better handling of ENDED - if ends naturally then the blocker doesn't always appear
    also, if refresh the video when it's at the end, the blocker doesn't appear either!
@@ -50,30 +69,15 @@ TODO:
 * Youtube also has some dodgy behaviour with ended videos and seeking/pressing play
 * Twitch - when seeking, the player shows a brief pause then unpause. Seems the docs are wrong about seeking/buffering being counted as playing? OInly for longer seeks?
       This isn't a big issue, but if the network is slow then it looks like the video is paused when it's just buffering. Maybe we can improve the UI here?
-* Twitch - doesn't seem to wake lock the screen, so it turns off after a delay. This might only happen with the muted copyright audio popup though?
-* http://127.0.0.1:5500/index.html?videoId=2392357391 -> innfinite loading (the Video ID is invalid) -  The ERROR callback thing doesn't seem to work!
-* On Android and Twitch video - the blockers cover most of the video! Can we make these smaller?
 * For Twitch vod, if phone has been sleeping for a while (with internet off?) and then resume VOD, after a few seconds it shows an error and needs refreshing
-* Youtube blocker bar at the top doesn#'t seem to be tall enough to cover the video title
-* Hide saved positiosn table when empty?
-* Needs to be clearer that the lock button needs to be slid to the right
-   * Also, prevent it from being dragged to the left (off the edge of the screen)?
-* Ctrl-click to open saved positions in a new tab. Right click on them too? So maybe just make them an <a>?
-* Make saved positions table selectable to copy into clipboard?
-* Hover text for relative times (2 days ago) should show the absolute time
-* Move lock slider into player-controls-mid, so moves out of the way when the menu opens
-* When first set favourite qualities, it will pretty quickly set the new quality but the dropdown won't update until you close and re-open the menu
-* Twitch video start time  - if starting a VOD that you were previously watching live, it seems to ignore this and instead jump to that time?
-* Open Menu then click in the space above it (to the left of the menu button) - it should probably close the menu but doesn't
-* Is it bad to immediately upload saved position? Cos if you accindalttly open a saved position from another device that's older, it will trhen overwrite your _newer_ saved position with that old one and you lose where you were!
-   * Simialarly, if there's a bug/glitch and the video position resets to zero, this would be saved
-   * Or if you accidentally skip forward/backwards
-* As well as trhe "show native controls", could also have something to allow 'clicking through', which could allow dismissing the copyright popup, or showing the chat on the top right side?
-* The 'no select' thing doesn't seem to be weorking (double clicking around reandomly can now select thigns)
 * Twitch - when there's a "network error" it resets the time to zero and then saves this!
+* Twitch video start time  - if starting a VOD that you were previously watching live, it seems to ignore this and instead jump to that time? May also do this even if didn't watch it live, but the video is still live now?
 * Twitch - starting to watch a video that already watched some of live will start at that time ratehr than 0 as intended!
-* Sometimes the saved position list looks like it's loaded, but hasn't actually refreshed so it shows old stuff. Need to re-open the menu for it to refresh properly.
-* Ctrl-click on saved position should open in new tab (and long press on mobile?)
-* Duplicate scheduled video "Los Ratones vs Forsaken (Polish Team)" on Monday 29/09/2025
+
+
+Blockers:
+
+* youtube - When video "reloads" while playing (e.g. due to lost connection?), the title appears briefly (not hidden by our blocker box)
 * Review the cases where we show blockers (and their size) - this may be too restrictive (for both youtube and twitch!)
 * restoreNormalControlsClick() - re-show blockers, depending on if paused etc??
+

@@ -416,61 +416,6 @@ function fetchSavedPositions() {
                 return response.json();
             })
             .then(response => {
-                function createTableRow(savedPosition, isHighlight) {
-
-                    var row = document.createElement("tr");
-                    row.classList.add("clickable");
-                    if (isHighlight) {
-                        row.classList.add("highlight");
-                    }
-                    row.addEventListener('click', function() {
-                        if (savedPosition.video_id === videoId) {
-                            // Same video, so we can just seek
-                            seekTo(savedPosition.position);
-                            closeMenu();
-                        } else {
-                            // Different video so need to reload the page
-                            var params = new URLSearchParams(window.location.search);
-                            params.set('videoId', savedPosition.video_id);
-                            params.set('time', savedPosition.position);
-                            window.location = '?' + params.toString();
-                        }
-                    });
-
-                    var cell = document.createElement("td");
-                    // Rather than converting to a string now, we store the absolute date/time and mark it so that the display will be updated dynamically
-                    cell.classList.add("relative-date-time");
-                    cell.dataset["isoDatetime"] = savedPosition.modified_time;
-                    row.appendChild(cell);
-
-                    var cell = document.createElement("td");
-                    cell.textContent = savedPosition.device_id;
-                    row.appendChild(cell);
-
-                    var cell = document.createElement("td");
-                    cell.textContent = toFriendlyTimeStringColons(savedPosition.position);
-                    if (savedPosition.video_id === videoId) {
-                        cell.textContent += " (" + getRelativeTimeString(savedPosition.position, getEffectiveCurrentTime()) + ")";
-                    }
-                    row.appendChild(cell);
-
-                    var cell = document.createElement("td");
-                    if (savedPosition.video_title) {
-                        cell.textContent = stripSpoilersFromTitle(savedPosition.video_title);
-                    } else {
-                        cell.textContent = savedPosition.video_id; // Fallback to video ID if title is missing
-                    }
-                    row.appendChild(cell);
-
-                    var cell = document.createElement("td");
-                    // Rather than converting to a string now, we store the absolute date/time and mark it so that the display will be updated dynamically
-                    cell.classList.add("relative-date-time");
-                    cell.dataset["isoDatetime"] = savedPosition.video_release_date;
-                    row.appendChild(cell);
-
-                    return row;
-                }
-
                 // Clear previous entries
                 document.getElementById("saved-positions-table").tBodies[0].innerHTML = "";
 
@@ -501,7 +446,7 @@ function fetchSavedPositions() {
                         Math.abs(savedPosition.position - getEffectiveCurrentTime()) < 10) {
                             continue;
                         }
-                    var r = createTableRow(savedPosition, i == highlightIdx);
+                    var r = createSavedPositionTableRow(savedPosition, i == highlightIdx);
                     document.getElementById("saved-positions-table").tBodies[0].appendChild(r);
                 }
 
@@ -516,6 +461,77 @@ function fetchSavedPositions() {
             });
     }
 }
+
+function createSavedPositionTableRow(savedPosition, isHighlight) {
+    var row = document.createElement("tr");
+    row.classList.add("clickable");
+    if (isHighlight) {
+        row.classList.add("highlight");
+    }
+
+    var linkParams = new URLSearchParams(window.location.search);
+    linkParams.set('videoId', savedPosition.video_id);
+    linkParams.set('time', savedPosition.position);
+
+    // Each cell in the row has an <a> tag in it so that the browser treats it as a regular link,
+    // so that it can be (e.g.) ctrl-clicked to open the video in a new tab.
+    // However we want to intercept the regular click case so that we can avoid reloading the page
+    // if all we want to do is seek within the current video.
+
+    function onCellLinkClick(event) {
+        // If the user is using a modifier (Ctrl, Cmd, Shift, Middle-click) then let the browser handle it normally
+        // so that the video can be opened in a new tab/window etc.
+        // Also if the link is for a different video then we'll need to reload the page anyway, so let the browser handle it.
+        if (savedPosition.video_id !== videoId || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey || event.button !== 0){
+            return true;
+        }
+        // But if it's a normal left-click and it's for the same video then we can just do a seek
+        seekTo(savedPosition.position);
+        closeMenu();
+
+        event.preventDefault();
+        return false;
+    }
+
+    function addCell(cell) {
+        var cell = document.createElement("td");
+        let a = document.createElement("a");
+        a.href = "?" + linkParams.toString();
+        a.addEventListener('click', onCellLinkClick);
+        cell.appendChild(a);
+        row.appendChild(cell);
+        return a;
+    }
+
+    var cell = addCell();
+    // Rather than converting to a string now, we store the absolute date/time and mark it so that the display will be updated dynamically
+    cell.classList.add("relative-date-time");
+    cell.dataset["isoDatetime"] = savedPosition.modified_time;
+
+    var cell = addCell();
+    cell.textContent = savedPosition.device_id;
+
+    var cell = addCell();
+    cell.textContent = toFriendlyTimeStringColons(savedPosition.position);
+    if (savedPosition.video_id === videoId) {
+        cell.textContent += " (" + getRelativeTimeString(savedPosition.position, getEffectiveCurrentTime()) + ")";
+    }
+
+    var cell = addCell();
+    if (savedPosition.video_title) {
+        cell.textContent = stripSpoilersFromTitle(savedPosition.video_title);
+    } else {
+        cell.textContent = savedPosition.video_id; // Fallback to video ID if title is missing
+    }
+
+    var cell = addCell();
+    // Rather than converting to a string now, we store the absolute date/time and mark it so that the display will be updated dynamically
+    cell.classList.add("relative-date-time");
+    cell.dataset["isoDatetime"] = savedPosition.video_release_date;
+
+    return row;
+}
+
 
 function changeVideo() {
     var userValue = prompt("Please enter YouTube/Twitch video URL or video ID:");

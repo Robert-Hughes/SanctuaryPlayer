@@ -194,10 +194,19 @@ body {
 #saved-positions-table {
     color: black;
     font-size: inherit; /* Not inherited by default */
-    border-collapse: collapse;
+    border-collapse: collapse; /* Remove any gap between the <a>s inside the cells, so the whole cell is clickable (no small gaps that aren't a link) */
 }
 #saved-positions-table td,
 #saved-positions-table th {
+    /* Remove any (default?) gap between the <a>s inside the cells, so the whole cell is clickable (no small gaps that aren't a link).
+       We have to add any padding/border to the <a> elements, not here  */
+    padding: 0px;
+}
+#saved-positions-table td a {
+    display: block; /* Make the link fill the cell, so that it acts like the whole row is clickable */
+    text-decoration: none; /* Remove underline */
+    color: inherit; /* Remove link color */
+
     border: 0.05vmin solid hsl(243, 100%, 90%);
     padding: 0.25vmin;
 }
