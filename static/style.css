@@ -192,9 +192,12 @@ body {
 }
 
 #saved-positions-table {
+    display: grid;
+    grid-template-columns: 100px 100px 100px 100px 100px;
     color: black;
-    font-size: inherit; /* Not inherited by default */
-    border-collapse: collapse; /* Remove any gap between the <a>s inside the cells, so the whole cell is clickable (no small gaps that aren't a link) */
+}
+.saved-positions-table-heading {
+
 }
 #saved-positions-table td,
 #saved-positions-table th {

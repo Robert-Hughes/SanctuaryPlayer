@@ -417,7 +417,7 @@ function fetchSavedPositions() {
             })
             .then(response => {
                 // Clear previous entries
-                document.getElementById("saved-positions-table").tBodies[0].innerHTML = "";
+                document.getElementById("saved-positions-table").querySelectorAll(":not(.saved-positions-table-heading)").forEach((x) => x.delete);
 
                 // Add new ones
                 // Find the furthest position for the current video so that we can highlight this row,

@@ -47,7 +47,6 @@ TODO:
 * Needs to be clearer that the lock button needs to be slid to the right
    * Also, prevent it from being dragged to the left (off the edge of the screen)?
 * Move lock slider into player-controls-mid, so moves out of the way when the menu opens
-* Make saved positions table selectable to copy into clipboard?
 * Hover text for relative times (2 days ago) should show the absolute time
 * When first set favourite qualities, it will pretty quickly set the new quality but the dropdown won't update until you close and re-open the menu
 * Open Menu then click in the space above it (to the left of the menu button) - it should probably close the menu but doesn't
@@ -58,7 +57,7 @@ TODO:
 * The 'no select' thing doesn't seem to be weorking (double clicking around reandomly can now select thigns)
 * Sometimes the saved position list looks like it's loaded, but hasn't actually refreshed so it shows old stuff. Need to re-open the menu for it to refresh properly.
 * Ctrl-click on saved position should open in new tab (and long press on mobile?)
-* Duplicate scheduled video "Los Ratones vs Forsaken (Polish Team)" on Monday 29/09/2025
+* Tests!!
 
 Playback:
 
