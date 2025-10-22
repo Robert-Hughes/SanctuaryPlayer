@@ -192,26 +192,28 @@ body {
 }
 
 #saved-positions-table {
+    display: grid;
+    grid-template-columns: auto auto auto auto auto;
     color: black;
-    font-size: inherit; /* Not inherited by default */
-    border-collapse: collapse; /* Remove any gap between the <a>s inside the cells, so the whole cell is clickable (no small gaps that aren't a link) */
+    background-color: hsl(243, 100%, 90%);
+    grid-gap: 1px;
+    font-weight: initial; /* Unset bold from the parent */
 }
-#saved-positions-table td,
-#saved-positions-table th {
-    /* Remove any (default?) gap between the <a>s inside the cells, so the whole cell is clickable (no small gaps that aren't a link).
-       We have to add any padding/border to the <a> elements, not here  */
-    padding: 0px;
+#saved-positions-table .saved-positions-table-heading {
+    font-weight: bold; /* Headings in bold */
 }
-#saved-positions-table td a {
+#saved-positions-table div {
+    background-color: white;
+}
+#saved-positions-table div a {
     display: block; /* Make the link fill the cell, so that it acts like the whole row is clickable */
     text-decoration: none; /* Remove underline */
     color: inherit; /* Remove link color */
 
-    border: 0.05vmin solid hsl(243, 100%, 90%);
     padding: 0.25vmin;
 }
 /* Highlight saved positions for the current video etc.*/
-#saved-positions-table tr.highlight {
+#saved-positions-table div.highlight {
     background-color: hsl(320, 86%, 80%);
 }
 
@@ -352,6 +354,9 @@ body {
     /* Highlight buttons etc. when mouse is hovered over them, but only on platforms with a mouse.
      * On mobile, using :hover behaves weirdly so we disable it */
     .clickable:hover {
+        background-color: hsl(243, 100%, 90%) !important; /* Needs to override the default background color set directly on the element */
+    }
+    .clickable.row-hover {
         background-color: hsl(243, 100%, 90%) !important; /* Needs to override the default background color set directly on the element */
     }
 }

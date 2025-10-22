@@ -417,7 +417,14 @@ function fetchSavedPositions() {
             })
             .then(response => {
                 // Clear previous entries
-                document.getElementById("saved-positions-table").tBodies[0].innerHTML = "";
+                {
+                    let children = document.getElementById("saved-positions-table").children;
+                    for (var i = children.length - 1; i >= 0; --i) {
+                        if (!children.item(i).classList.contains("saved-positions-table-heading")) {
+                            children.item(i).remove();
+                        }
+                    }
+                }
 
                 // Add new ones
                 // Find the furthest position for the current video so that we can highlight this row,
@@ -446,8 +453,8 @@ function fetchSavedPositions() {
                         Math.abs(savedPosition.position - getEffectiveCurrentTime()) < 10) {
                             continue;
                         }
-                    var r = createSavedPositionTableRow(savedPosition, i == highlightIdx);
-                    document.getElementById("saved-positions-table").tBodies[0].appendChild(r);
+                    var cells = createSavedPositionTableRow(savedPosition, i == highlightIdx);
+                    document.getElementById("saved-positions-table").append(...cells);
                 }
 
                 // Show relative date times immediately, rather than waiting for the next timer
@@ -463,12 +470,6 @@ function fetchSavedPositions() {
 }
 
 function createSavedPositionTableRow(savedPosition, isHighlight) {
-    var row = document.createElement("tr");
-    row.classList.add("clickable");
-    if (isHighlight) {
-        row.classList.add("highlight");
-    }
-
     var linkParams = new URLSearchParams(window.location.search);
     linkParams.set('videoId', savedPosition.video_id);
     linkParams.set('time', savedPosition.position);
@@ -493,13 +494,37 @@ function createSavedPositionTableRow(savedPosition, isHighlight) {
         return false;
     }
 
+    let row = [];
+
+    function onCellMouseOver(event) {
+        // Apply a style to all cells in the same row, so we can highlight the entire row
+        for (var cell of row) {
+            cell.classList.add("row-hover");
+        }
+    }
+
+    function onCellMouseOut(event) {
+        // Remove the style added in onCellMouseOver
+        for (var cell of row) {
+            cell.classList.remove("row-hover");
+        }
+    }
+
     function addCell(cell) {
-        var cell = document.createElement("td");
+        var cell = document.createElement("div");
         let a = document.createElement("a");
         a.href = "?" + linkParams.toString();
         a.addEventListener('click', onCellLinkClick);
+        a.addEventListener('mouseover', onCellMouseOver);
+        a.addEventListener('mouseout', onCellMouseOut);
         cell.appendChild(a);
-        row.appendChild(cell);
+
+        cell.classList.add("clickable");
+        if (isHighlight) {
+            cell.classList.add("highlight");
+        }
+
+        row.push(cell);
         return a;
     }
 
