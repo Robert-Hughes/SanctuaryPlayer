@@ -1,6 +1,5 @@
 var player;
 var doSomethingAfterDelayTimerIds = new Map();
-var timerId;
  // During seek operations, we store the target time so that repeated seeks can offset relative to this rather than the current
  // video time, which can lag behind. This is reset to null once the seek has completed.
 var seekTarget = null;
@@ -238,6 +237,9 @@ function getCurrentPlaybackRate() {
 function getAvailableQualities() {
     let result = [];
     if (isYoutube) {
+        if (!player.getAvailableQualityLevels) {
+            return []; // Not loaded yet
+        }
         result = player.getAvailableQualityLevels();
     } else {
         // The Twitch player API returns an array of objects, each with a few properties. Although .name seems
@@ -691,13 +693,8 @@ function onPlayerReady() {
             player.setVideo("invalid");
         }
 
-        // Update UI immediately, rather than waiting for the first tick
+        // Update UI immediately, rather than waiting for the next tick
         onTimer();
-
-        // Start background refresh timer
-        // Note we don't start it before now, otherwise the player.getCurrentTime() might return 0 and we don't want
-        // to report that.
-        timerId = window.setInterval(onTimer, 500);
 
         // Begin fetching additional metadata about the video from our server.
         // We can't get the Twitch video title from the player and looking it up via a separate request to the Twitch API requires
@@ -735,8 +732,28 @@ function isSeeking() {
     return seekTarget != null;
 }
 
+// May return null if the time is not available
+function getCurrentTime() {
+    if (!player) {
+        return null;
+    }
+    if (!player.getCurrentTime) {
+        return null; // Not loaded yet
+    }
+    if (player.getCurrentTime() === 0 && firstPlayTime === null) {
+        // There's a quirk/bug in the youtube player where it will briefly report a time of zero whilst playing the video for the first time.
+        // The Twitch player also reports 0 until the video is fully loaded.
+        // We don't want to pass this on the rest of the app (it will be incorrectly shown in the UI and will also be treated as an error in onTimer),
+        // so just pretend that no time is available yet.
+        return null;
+    }
+
+    return player.getCurrentTime(); // Same API for both YouTube and Twitch!
+}
+
+// May return null if the time is not available
 function getEffectiveCurrentTime() {
-    return isSeeking() ? seekTarget : player.getCurrentTime(); // Same API for both YouTube and Twitch!
+    return isSeeking() ? seekTarget : getCurrentTime();
 }
 
 // Seeks to the given time, updating our own seekTarget variable too
@@ -900,14 +917,16 @@ function onPlayerStateChange(newStateStr) {
         document.getElementById('play-pause-button').classList.add("icon-play");
     }
     else if (newStateStr == "playing") {
-        if (isYoutube && !firstPlayTime) {
-            // There appears to be a bug when a specific start time is requested, where the player will sometimes jump to a different time
-            // in the video when first playing. I think this might be a 'feature' where the player remembers where you were in the video
-            // and tries to restore it, but it gets in our way. This is a pretty hacky check for this bug which forces a re-seek.
-            if (isSeeking() && Math.abs(player.getCurrentTime() - seekTarget) > 10)
-            {
-                console.log("Re-seeking to start time to workaround bug (player time: " + player.getCurrentTime() + ", seekTarget: " + seekTarget);
-                player.seekTo(seekTarget);
+        if (!firstPlayTime) {
+            if (isYoutube) {
+                // There appears to be a bug when a specific start time is requested, where the player will sometimes jump to a different time
+                // in the video when first playing. I think this might be a 'feature' where the player remembers where you were in the video
+                // and tries to restore it, but it gets in our way. This is a pretty hacky check for this bug which forces a re-seek.
+                if (isSeeking() && Math.abs(getCurrentTime() - seekTarget) > 10)
+                {
+                    console.log("Re-seeking to start time to workaround bug (player time: " + getCurrentTime() + ", seekTarget: " + seekTarget);
+                    player.seekTo(seekTarget);
+                }
             }
 
             firstPlayTime = performance.now();
@@ -996,7 +1015,7 @@ function hideControlsShortly() {
 // cancelling any previous request with the same unique name.
 // This is useful for things like hiding the controls after a delay, where we want to reset the timer each time the user interacts with the video.
 function doSomethingAfterDelay(uniqueName, delay, callback) {
-    timerId = doSomethingAfterDelayTimerIds.get(uniqueName);
+    var timerId = doSomethingAfterDelayTimerIds.get(uniqueName);
     if (timerId != undefined) {
         window.clearTimeout(timerId);
     }
@@ -1233,8 +1252,12 @@ function changeTime() {
 
 function onTimer() {
     var effectiveCurrentTime = getEffectiveCurrentTime();
+    if (effectiveCurrentTime === null) {
+        // Time not available, so skip
+        return
+    }
 
-    if (player.getCurrentTime() === 0 && !isSeeking()) {
+    if (getCurrentTime() === 0) {
         // This can happen for example in Twitch if internet drops (not sure about YouTube). This leads to a "network error" being reported by Twitch and it resets the time to zero.
         // There are various problems this can cause:
         //     If we don't catch this, we'll save this new (zero) timestamp in the URL and saved positions and lose the actual position!
@@ -1259,7 +1282,7 @@ function onTimer() {
     // The Twitch player seems to be quite laggy with reporting time updates, so even after the video has visually
     // finished seeking and the player state change callback is fired, the getCurrentTime() still reports the old value,
     // so we can't check this in onPlayerStateChange() like we used to.
-    if (isSeeking() && Math.abs(player.getCurrentTime() - seekTarget) < 2.0)
+    if (isSeeking() && Math.abs(getCurrentTime() - seekTarget) < 2.0)
     {
         seekTarget = null;
     }
@@ -1609,6 +1632,9 @@ function startup() {
         document.getElementById("loading-status-container").style.display = "flex";
         document.getElementById("use-native-player-controls-button").style.display = 'block';
         document.getElementById("lock-controls-slider").style.display = 'block';
+
+        // Start background refresh timer
+        window.setInterval(onTimer, 500);
 
         // Detect if the video ID is for Twitch or YouTube
         if (videoId.match(youtubeVideoIdRegex)) {
