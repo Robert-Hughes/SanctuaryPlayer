@@ -67,9 +67,6 @@ Playback:
 * Youtube also has some dodgy behaviour with ended videos and seeking/pressing play
 * Twitch - when seeking, the player shows a brief pause then unpause. Seems the docs are wrong about seeking/buffering being counted as playing? OInly for longer seeks?
       This isn't a big issue, but if the network is slow then it looks like the video is paused when it's just buffering. Maybe we can improve the UI here?
-* For Twitch vod, if phone has been sleeping for a while (with internet off?) and then resume VOD, after a few seconds it shows an error and needs refreshing
-* Twitch - when there's a "network error" it resets the time to zero and then saves this!
-    * Can repro by just disconnecting internet while playing a video
 
 
 Blockers:

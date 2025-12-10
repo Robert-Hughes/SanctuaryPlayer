@@ -742,8 +742,11 @@ function getEffectiveCurrentTime() {
 // Seeks to the given time, updating our own seekTarget variable too
 function seekTo(target) {
     // Clamp to valid values, to prevent weird display of seek times (negative, or never gets to the target time)
-    if (target < 0) {
-        target = 0;
+    // Note we don't allow seeking to 0, as this can cause two problems (on Twitch at least):
+    //    * If the video is live, seeking to zero results in it jumping to live instead of the start of the video
+    //    * In our onTimer code, we interpret the player reporting time 0 as an error (as we can't distinguish between a genuine error and this case)
+    if (target < 1) {
+        target = 1;
     }
     if (player.getDuration() && target > player.getDuration()) { // getDuration may return 0 if not available, according to docs. It's the same API for Twitch and YouTube.
         target = player.getDuration();
@@ -1230,6 +1233,19 @@ function changeTime() {
 
 function onTimer() {
     var effectiveCurrentTime = getEffectiveCurrentTime();
+
+    if (player.getCurrentTime() === 0 && !isSeeking()) {
+        // This can happen for example in Twitch if internet drops (not sure about YouTube). This leads to a "network error" being reported by Twitch and it resets the time to zero.
+        // There are various problems this can cause:
+        //     If we don't catch this, we'll save this new (zero) timestamp in the URL and saved positions and lose the actual position!
+        //     If you try to seek to a new time, it will use zero as the base and so lose your current position
+        //     If the internet does get reconnected, the player will try to play from time zero and as well as losing your position, this may
+        //     skip to the end of the video (if it's a live video).
+        // To avoid all this, we simply refresh the page.
+        alert("Player is reporting time as zero, which likely indicates an error. Refreshing the page to reload the video.");
+        window.location.reload();
+        return;
+    }
 
     document.getElementById("current-time-span").innerText = toFriendlyTimeStringColons(effectiveCurrentTime);
     if (isSeeking()) {
