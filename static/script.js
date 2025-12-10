@@ -645,6 +645,32 @@ function updateVideoTitle() {
     }
 }
 
+function updatePlayPauseButton(newStateStr = null) {
+    if (isSeeking()) {
+        // When seeking we show a special icon as clicking the button doesn't play or pause the video,
+        // and will do weird things depending on the state (and player type).
+        // Also on Twitch when seeking a larger jump, the player shows a brief pause then unpause. (Seems the docs are wrong about seeking/buffering being counted as playing?)
+        // This isn't a big issue, but if the network is slow then it looks like the video is paused when it's just buffering.
+        document.getElementById('play-pause-button').classList.remove("icon-pause");
+        document.getElementById('play-pause-button').classList.add("icon-seeking");
+        document.getElementById('play-pause-button').classList.remove("icon-play");
+    } else if (newStateStr == "playing" || (newStateStr === null && isPlaying())) {
+        document.getElementById('play-pause-button').classList.remove("icon-play");
+        document.getElementById('play-pause-button').classList.remove("icon-seeking");
+        document.getElementById('play-pause-button').classList.add("icon-pause");
+    } else if (newStateStr == "paused" || (newStateStr === null && isPaused())) {
+        document.getElementById('play-pause-button').classList.remove("icon-pause");
+        document.getElementById('play-pause-button').classList.remove("icon-seeking");
+        document.getElementById('play-pause-button').classList.add("icon-play");
+    } else if (newStateStr == "ended" || (newStateStr === null && isEnded())) {
+        document.getElementById('play-pause-button').classList.remove("icon-pause");
+        document.getElementById('play-pause-button').classList.remove("icon-seeking");
+        document.getElementById('play-pause-button').classList.add("icon-play");
+    } else {
+        console.log("updatePlayPauseButton: unknown state");
+    }
+}
+
 function onPlayerReady() {
     console.log("onPlayerReady");
 
@@ -778,6 +804,8 @@ function seekTo(target) {
         player.seek(target);
     }
 
+    updatePlayPauseButton(); // To show 'seeking' icon
+
     // Seeking the video makes the bar appear at the bottom
     // and the video title at the top, so we have to show the blockers when seeking,
     // (Twitch) Note this is only the case for shorter seeks (e.g. 5 secs), as for longer seeks we experience a brief 'pause' then 'unpause' which
@@ -903,9 +931,6 @@ function onPlayerStateChange(newStateStr) {
     //   * For Twitch, it retrieves the old state
     // Therefore it's best to use the newStateStr parameter where possible
     console.log("onPlayerStateChange: " + newStateStr);
-    if (isTwitch) {
-        console.log(player.getPlayerState().playback);
-    }
 
     // Toggle visibility of blocker box to hide related videos bar at bottom, which can spoil future games.
     // Also hide the video title, as it may have something like "X vs Y Game 5", which tells you it goes to game 5
@@ -913,8 +938,6 @@ function onPlayerStateChange(newStateStr) {
         // Even though we show the pause blockers just before pausing the video, we also do it here just in case the video
         // gets paused through other means (not initiated by us)
         updateBlockerVisibility(true, true);
-        document.getElementById('play-pause-button').classList.remove("icon-pause");
-        document.getElementById('play-pause-button').classList.add("icon-play");
     }
     else if (newStateStr == "playing") {
         if (!firstPlayTime) {
@@ -932,22 +955,18 @@ function onPlayerStateChange(newStateStr) {
             firstPlayTime = performance.now();
         }
 
-        document.getElementById('play-pause-button').classList.remove("icon-play");
-        document.getElementById('play-pause-button').classList.add("icon-pause");
-
         // Hide the blocker boxes after a short delay, as the UI elements that we're covering take a little time to disappear
         hideBlockersShortly();
     }
     else if (newStateStr == "ended") {
         // Hide related videos that fill the player area at the end of the video
         document.getElementById('blocker-full').style.display = 'block';
-        document.getElementById('play-pause-button').classList.remove("icon-pause");
-        document.getElementById('play-pause-button').classList.add("icon-play");
 
         if (isTwitch) {
             player.setVideo("0"); // Stop the player from auto-loading the next video (random hack that seems to work quite well)
         }
     }
+    updatePlayPauseButton(newStateStr);
 
     // Keep the UI responsive to changes in player state (rather than waiting for the next tick)
     onTimer();
@@ -1285,6 +1304,7 @@ function onTimer() {
     if (isSeeking() && Math.abs(getCurrentTime() - seekTarget) < 2.0)
     {
         seekTarget = null;
+        updatePlayPauseButton(); // To remove 'seeking' icon
     }
 
     // Check if we should change the quality to the user's favourite. We check this in the timer

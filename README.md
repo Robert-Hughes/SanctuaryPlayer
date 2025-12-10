@@ -60,13 +60,12 @@ TODO:
 
 Playback:
 
-* youtube - loading video with a time set and then pressing play results in the time at the bottom briefly jumping to 0 before jumping to the correct time
 * Twitch better handling of ENDED - if ends naturally then the blocker doesn't always appear
    also, if refresh the video when it's at the end, the blocker doesn't appear either!
    also seeking away from the end of the video seems a bit broken (time at bottom remains in 'seeking' mode)
 * Youtube also has some dodgy behaviour with ended videos and seeking/pressing play
-* Twitch - when seeking, the player shows a brief pause then unpause. Seems the docs are wrong about seeking/buffering being counted as playing? OInly for longer seeks?
-      This isn't a big issue, but if the network is slow then it looks like the video is paused when it's just buffering. Maybe we can improve the UI here?
+* updatePlayPauseButton: unknown state - This happens with "Buffering" state sometimes after seeking on Twitch, leaving it stuck with the seeking icon.
+
 
 
 Blockers:
