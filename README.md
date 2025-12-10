@@ -70,8 +70,6 @@ Playback:
 * For Twitch vod, if phone has been sleeping for a while (with internet off?) and then resume VOD, after a few seconds it shows an error and needs refreshing
 * Twitch - when there's a "network error" it resets the time to zero and then saves this!
     * Can repro by just disconnecting internet while playing a video
-* Twitch video start time  - if starting a VOD that you were previously watching live, it seems to ignore this and instead jump to that time? May also do this even if didn't watch it live, but the video is still live now?
-* Twitch - starting to watch a video that already watched some of live will start at that time ratehr than 0 as intended!
 
 
 Blockers:

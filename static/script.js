@@ -474,11 +474,6 @@ function createSavedPositionTableRow(savedPosition, isHighlight) {
     linkParams.set('videoId', savedPosition.video_id);
     linkParams.set('time', savedPosition.position);
 
-    // Each cell in the row has an <a> tag in it so that the browser treats it as a regular link,
-    // so that it can be (e.g.) ctrl-clicked to open the video in a new tab.
-    // However we want to intercept the regular click case so that we can avoid reloading the page
-    // if all we want to do is seek within the current video.
-
     function onCellLinkClick(event) {
         // If the user is using a modifier (Ctrl, Cmd, Shift, Middle-click) then let the browser handle it normally
         // so that the video can be opened in a new tab/window etc.
@@ -511,6 +506,10 @@ function createSavedPositionTableRow(savedPosition, isHighlight) {
     }
 
     function addCell(cell) {
+        // Each cell in the row has an <a> tag in it so that the browser treats it as a regular link,
+        // so that it can be (e.g.) ctrl-clicked to open the video in a new tab.
+        // However we want to intercept the regular click case so that we can avoid reloading the page
+        // if all we want to do is seek within the current video.
         var cell = document.createElement("div");
         let a = document.createElement("a");
         a.href = "?" + linkParams.toString();
@@ -1312,9 +1311,10 @@ function onAPIReady() {
     if (params.has('time')) {
         startTime = decodeFriendlyTimeString(params.get('time'));
     }
-    // There seem to be issues with requesting a small start time != 0, especially for live streams. So put a lower limit on it.
-    // Also for live stream videos, 0 seems to be interpreted as starting from live, which could be a spoiler.
-    if (isYoutube && startTime < 10) {
+    // YouTube: There seem to be issues with requesting a small start time != 0, especially for live streams. So put a lower limit on it.
+    //  Also for live stream videos, 0 seems to be interpreted as starting from live, which could be a spoiler.
+    // Twitch: Again for livestreams, 0 is interpreted as 'from live' which can be a spoiler
+    if (startTime < 10) {
         startTime = 10;
     }
     startTime = Math.round(startTime); // Fractional numbers are invalid and won't work!
