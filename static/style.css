@@ -70,19 +70,6 @@ body {
     font-size: 5vmin;
 }
 
-/* Blocker elements - black boxes that cover up elements of the native player's UI */
-/* =============================================================================== */
-#blocker-full {
-    background: black;
-    position: absolute;
-    display: none; /* Initially hidden - will be shown by javascript when needed */
-    /* Full-screen */
-    inset: 0px;
-    /* Color and font-size for the message that we show here (end of video) */
-    color: hsl(243, 100%, 85%);
-    font-size: 5vmin;
-}
-
 /* Loading status - shows a message in the middle of the screen whilst a video is loading */
 /* Note this needs to be shown above the blockers.
 /* In order to centre the message, it is a child of a full-screen container and we center

@@ -57,16 +57,13 @@ TODO:
 * The 'no select' thing doesn't seem to be weorking (double clicking around reandomly can now select thigns)
 * Sometimes the saved position list looks like it's loaded, but hasn't actually refreshed so it shows old stuff. Need to re-open the menu for it to refresh properly.
 * Tests!!
+* Hide then re-show spoiler-free controls after video has ended - doesn't reshow the blocker
 
 Playback:
 
-* Twitch better handling of ENDED - if ends naturally then the blocker doesn't always appear
-   also, if refresh the video when it's at the end, the blocker doesn't appear either!
-   also seeking away from the end of the video seems a bit broken (time at bottom remains in 'seeking' mode)
-* Youtube also has some dodgy behaviour with ended videos and seeking/pressing play
+* Twitch - if refresh the video when it's at (or near) the end, it gets into a weird state - see comment in onPlayerStateChange
+* Twitch - if naturally reaches the end of the video then our logic to disable the play button doesn't work - see comment in onPlayerStateChange
 * updatePlayPauseButton: unknown state - This happens with "Buffering" state sometimes after seeking on Twitch, leaving it stuck with the seeking icon.
-
-
 
 Blockers:
 

@@ -7,11 +7,12 @@ var lastUploadedPosition = null; // The last video position successfully uploade
 // The wall clock time when the video first started playing. Used to hide spoilers (see usages).
 var firstPlayTime = null;
 
-// Remembers the current state of the top and bottom 'blocker' bars, which are implemented
+// Remembers the current state of the top/bottom/full 'blocker' bars, which are implemented
 // using clip-path on the player. Although we could instead extract this information from the style.clipPath
 // string, that would be a bit clunky.
 let topBlockerShowing = false;
 let bottomBlockerShowing = false;
+let fullBlockerShowing = false;
 
 var videoPlatform = null; // 'twitch' or 'youtube'
 var isTwitch = false;
@@ -646,26 +647,32 @@ function updateVideoTitle() {
 }
 
 function updatePlayPauseButton(newStateStr = null) {
-    if (isSeeking()) {
+    let button = document.getElementById('play-pause-button');
+    if (newStateStr == "ended" || (newStateStr === null && isEnded())) {
+        // When video is ended we don't allow clicking the button (see togglePlayPause() comments)
+        button.classList.remove("icon-pause");
+        button.classList.add("icon-seeking");
+        button.classList.remove("icon-play");
+        button.classList.remove("clickable");
+    } else if (isSeeking()) {
         // When seeking we show a special icon as clicking the button doesn't play or pause the video,
         // and will do weird things depending on the state (and player type).
         // Also on Twitch when seeking a larger jump, the player shows a brief pause then unpause. (Seems the docs are wrong about seeking/buffering being counted as playing?)
         // This isn't a big issue, but if the network is slow then it looks like the video is paused when it's just buffering.
-        document.getElementById('play-pause-button').classList.remove("icon-pause");
-        document.getElementById('play-pause-button').classList.add("icon-seeking");
-        document.getElementById('play-pause-button').classList.remove("icon-play");
-    } else if (newStateStr == "playing" || (newStateStr === null && isPlaying())) {
-        document.getElementById('play-pause-button').classList.remove("icon-play");
-        document.getElementById('play-pause-button').classList.remove("icon-seeking");
-        document.getElementById('play-pause-button').classList.add("icon-pause");
+        button.classList.remove("icon-pause");
+        button.classList.add("icon-seeking");
+        button.classList.remove("icon-play");
+        button.classList.remove("clickable");
+   } else if (newStateStr == "playing" || (newStateStr === null && isPlaying())) {
+        button.classList.remove("icon-play");
+        button.classList.remove("icon-seeking");
+        button.classList.add("icon-pause");
+        button.classList.add("clickable");
     } else if (newStateStr == "paused" || (newStateStr === null && isPaused())) {
-        document.getElementById('play-pause-button').classList.remove("icon-pause");
-        document.getElementById('play-pause-button').classList.remove("icon-seeking");
-        document.getElementById('play-pause-button').classList.add("icon-play");
-    } else if (newStateStr == "ended" || (newStateStr === null && isEnded())) {
-        document.getElementById('play-pause-button').classList.remove("icon-pause");
-        document.getElementById('play-pause-button').classList.remove("icon-seeking");
-        document.getElementById('play-pause-button').classList.add("icon-play");
+        button.classList.remove("icon-pause");
+        button.classList.remove("icon-seeking");
+        button.classList.add("icon-play");
+        button.classList.add("clickable");
     } else {
         console.log("updatePlayPauseButton: unknown state");
     }
@@ -716,6 +723,8 @@ function onPlayerReady() {
             // from the player! Which means we can be more relaxed about showing our blockers over these.
             // Note that this does seem to take a short time to take effect - the player will still show the title/progress bar
             // for a few seconds after this call.
+            //
+            // It also stop the player from auto-loading the next video when reaching the end of the current one
             player.setVideo("invalid");
         }
 
@@ -810,7 +819,7 @@ function seekTo(target) {
     // and the video title at the top, so we have to show the blockers when seeking,
     // (Twitch) Note this is only the case for shorter seeks (e.g. 5 secs), as for longer seeks we experience a brief 'pause' then 'unpause' which
     // shows the blockers anyway.
-    updateBlockerVisibility(true, true);
+    updateBlockerVisibility(true, true, null);
     hideBlockersShortly();
 
     onTimer(); // Update UI to show that we are seeking (as the player state change callback might be delayed)
@@ -937,7 +946,7 @@ function onPlayerStateChange(newStateStr) {
     if (newStateStr == "paused") {
         // Even though we show the pause blockers just before pausing the video, we also do it here just in case the video
         // gets paused through other means (not initiated by us)
-        updateBlockerVisibility(true, true);
+        updateBlockerVisibility(true, true, null);
     }
     else if (newStateStr == "playing") {
         if (!firstPlayTime) {
@@ -960,10 +969,14 @@ function onPlayerStateChange(newStateStr) {
     }
     else if (newStateStr == "ended") {
         // Hide related videos that fill the player area at the end of the video
-        document.getElementById('blocker-full').style.display = 'block';
+        updateBlockerVisibility(null, null, true);
 
         if (isTwitch) {
-            player.setVideo("0"); // Stop the player from auto-loading the next video (random hack that seems to work quite well)
+            // The Twitch player has seem weird behaviour at the end of the video - if the video plays to the end naturally
+            // then we get the 'ended' state as expected, but then immediately transition to the 'paused' state.
+            // If the video is loaded already too close to the end (within maybe 10 secs or so), then it goes immediately to the
+            // 'ended' state and doesn't seem able to be brought out of it - even after seeking if you then play the video
+            // it will restart from time 0! (we don't allow pressing play in the ended state, so need to use the console to test this)
         }
     }
     updatePlayPauseButton(newStateStr);
@@ -978,15 +991,7 @@ function hideBlockersShortly() {
     doSomethingAfterDelay("hideBottomBlocker", delay, function() {
         // Make sure video hasn't been paused again during the timer
         if (isPlaying()) {
-            updateBlockerVisibility(null, false);
-        }
-    });
-
-    // Full blocker - related videos shown at end-of-video
-    doSomethingAfterDelay("hideFullBlocker", 250, function () {
-        // Make sure video hasn't been paused again during the timer
-        if (isPlaying()) {
-            document.getElementById('blocker-full').style.display = 'none';
+            updateBlockerVisibility(null, false, null);
         }
     });
 
@@ -997,7 +1002,7 @@ function hideBlockersShortly() {
     doSomethingAfterDelay("hideTopBlocker", delay, function () {
         // Make sure video hasn't been paused again during the timer
         if (isPlaying()) {
-            updateBlockerVisibility(false, null);
+            updateBlockerVisibility(false, null, null);
        }
     });
 }
@@ -1076,6 +1081,17 @@ function onOverlayControlsClick(event) {
 }
 
 function togglePlayPause() {
+    if (isEnded()) {
+        // Calling play() when at the end of the video will cause the player to restart from the beginning.
+        // This almost certainly isn't what we want, and causes false-positives with the error-detection with zero time (see onTimer)
+        return;
+    }
+    if (isSeeking()) {
+        // When seeking, clicking the button doesn't play or pause the video,
+        // and will do weird things depending on the state (and player type).
+        return;
+    }
+
     if (isPlaying()) {
         pause();
     } else {
@@ -1124,7 +1140,7 @@ function play() {
 function pause() {
     // Before telling the player to pause, show the blockers. This ensures that they are visible before the player shows the title etc.,
     // so we don't catch a frame that might contain a spoiler.
-    updateBlockerVisibility(true, true);
+    updateBlockerVisibility(true, true, null);
 
     if (isYoutube) {
         player.pauseVideo();
@@ -1148,9 +1164,9 @@ function getVideoAspectRatio() {
     }
 }
 
-// Sets the clip-path of the player element to block out the top and/or bottom sections to hide spoilers.
-// If either parameter is null, that blocker's visibility will remain as it was (i.e. no change).
-function updateBlockerVisibility(showTopBlocker, showBottomBlocker) {
+// Sets the clip-path of the player element to block out the top and/or bottom sections to hide spoilers (or the full player)
+// If any parameter is null, that blocker's visibility will remain as it was (i.e. no change).
+function updateBlockerVisibility(showTopBlocker, showBottomBlocker, showFullBlocker) {
     if (window.getComputedStyle(document.getElementById("player-overlay")).display === "none") {
         // Overlay is hidden, so must be using 'native controls' mode, in which case we don't want to show any blockers even when asked
         return;
@@ -1162,6 +1178,9 @@ function updateBlockerVisibility(showTopBlocker, showBottomBlocker) {
     }
     if (showBottomBlocker === null) {
         showBottomBlocker = bottomBlockerShowing;
+    }
+    if (showFullBlocker === null) {
+        showFullBlocker = fullBlockerShowing;
     }
 
     // We used to use <div> elements on the player overlay to block things we didn't want to see, but that caused
@@ -1184,8 +1203,13 @@ function updateBlockerVisibility(showTopBlocker, showBottomBlocker) {
     // Show our video info at the top whenever the top blocker is showing
     document.getElementById("top-info").style.display = showTopBlocker ? "flex" : "none";
 
+    if (showFullBlocker) {
+        player.style.clipPath = `rect(0px 0px 0px 0px)`; // Hide whole player
+    }
+
     topBlockerShowing = showTopBlocker;
     bottomBlockerShowing = showBottomBlocker;
+    fullBlockerShowing = showFullBlocker;
 
     // If blockers are showing then shrink the effective width of the player so that the video is squashed into
     // a smaller area in the middle to make sure that the whole video is visible (otherwise the clipped parts of the
@@ -1230,7 +1254,7 @@ function updateBlockerVisibility(showTopBlocker, showBottomBlocker) {
     // and even after the player is 'ready' there is a short delay (at least for Twitch).
     // The player size can change if the user resizes the window or rotates their phone.
     if (topBlockerShowing || bottomBlockerShowing) {
-        doSomethingAfterDelay("updateBlockerVisibility", 100, function() { updateBlockerVisibility(null, null); });
+        doSomethingAfterDelay("updateBlockerVisibility", 100, function() { updateBlockerVisibility(null, null, null); });
     }
 }
 
@@ -1351,6 +1375,11 @@ function onTimer() {
                     console.error('Error saving position to server:', error);
                 });
         }
+    }
+
+    if (fullBlockerShowing && !isEnded()) {
+        // If the video is no longer ended (i.e. the user seeked to an earlier time), hide the full blocker
+        updateBlockerVisibility(null, null, false);
     }
 }
 
