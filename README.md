@@ -63,7 +63,7 @@ Playback:
 
 * Twitch - if refresh the video when it's at (or near) the end, it gets into a weird state - see comment in onPlayerStateChange
 * Twitch - if naturally reaches the end of the video then our logic to disable the play button doesn't work - see comment in onPlayerStateChange
-* updatePlayPauseButton: unknown state - This happens with "Buffering" state sometimes after seeking on Twitch, leaving it stuck with the seeking icon.
+* YouTube - on video load it shows the dots, not a play icon!
 
 Blockers:
 

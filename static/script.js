@@ -646,13 +646,14 @@ function updateVideoTitle() {
     }
 }
 
-function updatePlayPauseButton(newStateStr = null) {
+function updatePlayPauseButton() {
     let button = document.getElementById('play-pause-button');
-    if (newStateStr == "ended" || (newStateStr === null && isEnded())) {
+    if (isEnded()) {
         // When video is ended we don't allow clicking the button (see togglePlayPause() comments)
         button.classList.remove("icon-pause");
-        button.classList.add("icon-seeking");
+        button.classList.remove("icon-seeking");
         button.classList.remove("icon-play");
+        button.classList.add("icon-ended");
         button.classList.remove("clickable");
     } else if (isSeeking()) {
         // When seeking we show a special icon as clicking the button doesn't play or pause the video,
@@ -662,19 +663,23 @@ function updatePlayPauseButton(newStateStr = null) {
         button.classList.remove("icon-pause");
         button.classList.add("icon-seeking");
         button.classList.remove("icon-play");
+        button.classList.remove("icon-ended");
         button.classList.remove("clickable");
-   } else if (newStateStr == "playing" || (newStateStr === null && isPlaying())) {
+   } else if (isPlaying()) {
         button.classList.remove("icon-play");
         button.classList.remove("icon-seeking");
         button.classList.add("icon-pause");
+        button.classList.remove("icon-ended");
         button.classList.add("clickable");
-    } else if (newStateStr == "paused" || (newStateStr === null && isPaused())) {
+    } else if (isPaused()) {
         button.classList.remove("icon-pause");
         button.classList.remove("icon-seeking");
         button.classList.add("icon-play");
+        button.classList.remove("icon-ended");
         button.classList.add("clickable");
     } else {
         console.log("updatePlayPauseButton: unknown state");
+        // This can happen if the video is in a buffering state, so just skip this update and we'll update it on the next timer tick
     }
 }
 
@@ -938,7 +943,10 @@ function onPlayerStateChange(newStateStr) {
     // Note that during this function, directly querying the player's state will behave differently on YouTube vs Twitch:
     //   * For YouTube, it retrieves the new state
     //   * For Twitch, it retrieves the old state
-    // Therefore it's best to use the newStateStr parameter where possible
+    // Therefore it's best to use the newStateStr parameter where possible.
+    // Also note that this callback isn't as reliable as we'd like (especially for Twitch), e.g.
+    // when seeking we get this callback to say that playback has continued, but the current time reported by the video can
+    // still be out-of-date.
     console.log("onPlayerStateChange: " + newStateStr);
 
     // Toggle visibility of blocker box to hide related videos bar at bottom, which can spoil future games.
@@ -979,10 +987,11 @@ function onPlayerStateChange(newStateStr) {
             // it will restart from time 0! (we don't allow pressing play in the ended state, so need to use the console to test this)
         }
     }
-    updatePlayPauseButton(newStateStr);
 
-    // Keep the UI responsive to changes in player state (rather than waiting for the next tick)
-    onTimer();
+    // Keep the UI responsive to changes in player state (rather than waiting for the next tick).
+    // Because of the issues mentioned above about Twitch's player state being out-of-date, defer this slightly to allow
+    // the player state to 'catch up' so that we report the most recent state.
+    window.setTimeout(onTimer, 0);
 }
 
 function hideBlockersShortly() {
@@ -1313,13 +1322,6 @@ function onTimer() {
         return;
     }
 
-    document.getElementById("current-time-span").innerText = toFriendlyTimeStringColons(effectiveCurrentTime);
-    if (isSeeking()) {
-        document.getElementById("current-time-span").classList.add("seeking");
-    } else {
-        document.getElementById("current-time-span").classList.remove("seeking");
-    }
-
     // Clear seek time if we were seeking and have now reached the target.
     // We allow a little leeway as there the player might not seek to exactly the time we requested
     // The Twitch player seems to be quite laggy with reporting time updates, so even after the video has visually
@@ -1329,6 +1331,13 @@ function onTimer() {
     {
         seekTarget = null;
         updatePlayPauseButton(); // To remove 'seeking' icon
+    }
+
+    document.getElementById("current-time-span").innerText = toFriendlyTimeStringColons(effectiveCurrentTime);
+    if (isSeeking()) {
+        document.getElementById("current-time-span").classList.add("seeking");
+    } else {
+        document.getElementById("current-time-span").classList.remove("seeking");
     }
 
     // Check if we should change the quality to the user's favourite. We check this in the timer
@@ -1376,6 +1385,9 @@ function onTimer() {
                 });
         }
     }
+
+    // Update this every tick as we can't catch everything in onPlayerStateChange (especially with Twitch)
+    updatePlayPauseButton();
 
     if (fullBlockerShowing && !isEnded()) {
         // If the video is no longer ended (i.e. the user seeked to an earlier time), hide the full blocker
@@ -1683,7 +1695,7 @@ function startup() {
         document.getElementById("lock-controls-slider").style.display = 'block';
 
         // Start background refresh timer
-        window.setInterval(onTimer, 500);
+        window.setInterval(onTimer, 200);
 
         // Detect if the video ID is for Twitch or YouTube
         if (videoId.match(youtubeVideoIdRegex)) {
