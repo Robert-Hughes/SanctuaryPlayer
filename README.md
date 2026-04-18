@@ -58,12 +58,14 @@ TODO:
 * Sometimes the saved position list looks like it's loaded, but hasn't actually refreshed so it shows old stuff. Need to re-open the menu for it to refresh properly.
 * Tests!!
 * Hide then re-show spoiler-free controls after video has ended - doesn't reshow the blocker
+* Open menu, click play, then click on backgroudn to show controls - menu is still open so easy to misclick if trying to pause quickly
 
 Playback:
 
 * Twitch - if refresh the video when it's at (or near) the end, it gets into a weird state - see comment in onPlayerStateChange
 * Twitch - if naturally reaches the end of the video then our logic to disable the play button doesn't work - see comment in onPlayerStateChange
 * YouTube - on video load it shows the dots, not a play icon!
+* YouTube if skip past the end of a (live?) video, it just stays in the 'seeking' mode forever. Maybe we aren't clamping the seekTo() time properly?
 
 Blockers:
 

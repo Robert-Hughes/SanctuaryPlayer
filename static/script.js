@@ -1098,6 +1098,13 @@ function togglePlayPause() {
     if (isSeeking()) {
         // When seeking, clicking the button doesn't play or pause the video,
         // and will do weird things depending on the state (and player type).
+        // On Twitch there is an annoying bug where the current time reported by the player won't always be updated after a seek
+        // when it's paused, which means that we'll never consider the seek finished and so the user won't be able to
+        // play the video! To workaround this we allow pressing the "seeking" button to play when using Twitch.
+        if (isTwitch) {
+            play();
+        }
+
         return;
     }
 
