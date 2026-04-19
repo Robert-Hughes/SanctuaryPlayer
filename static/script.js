@@ -1130,6 +1130,9 @@ function play() {
         // otherwise when the opacity is set back to 1, the controls will reappear for a second then disappear again,
         // which is confusing.
         document.getElementById("player-overlay-controls").style.display = 'none';
+        // Also close the menu if it's open, so it isn't open the next time the user brings up the controls
+        closeMenu();
+
         firstPlayAttemptTime = performance.now();
         let tryPlay = function() {
             if (isPlaying()) {
