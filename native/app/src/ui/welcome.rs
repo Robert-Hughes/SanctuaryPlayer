@@ -1,7 +1,9 @@
+use crate::app::AppState;
 use crate::model::AppCommand;
-use crate::video::VideoSource;
 
-pub fn render(ui: &mut egui::Ui, adapter_summary: &str) -> Vec<AppCommand> {
+use super::menu;
+
+pub fn render(ui: &mut egui::Ui, state: &mut AppState, adapter_summary: &str) -> Vec<AppCommand> {
     let mut commands = Vec::new();
     let rect = ui.max_rect();
     ui.painter()
@@ -17,16 +19,12 @@ pub fn render(ui: &mut egui::Ui, adapter_summary: &str) -> Vec<AppCommand> {
             egui::RichText::new("Please select a video from the Menu\n(top-right corner)")
                 .size(22.0),
         );
-        ui.add_space(30.0);
-        if ui.button("Load dummy video").clicked() {
-            commands.push(AppCommand::OpenVideo(
-                VideoSource::parse("2386400830").expect("constant dummy source"),
-            ));
-        }
         ui.add_space(20.0);
         ui.small(format!("GPU: {adapter_summary}"));
     });
 
+    menu::render_button(ui, state);
+    menu::render(ui, state, &mut commands);
     commands
 }
 

@@ -90,8 +90,7 @@ impl VideoSource {
 
 fn last_nonempty_path_segment(url: &Url) -> Option<String> {
     url.path_segments()?
-        .filter(|part| !part.is_empty())
-        .next_back()
+        .rfind(|part| !part.is_empty())
         .map(str::to_owned)
 }
 

@@ -6,6 +6,7 @@
 
 pub mod app;
 mod graphics;
+mod input;
 pub mod model;
 pub mod playback;
 pub mod services;
@@ -15,20 +16,25 @@ mod ui;
 pub mod video;
 
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use app::{AppEffect, AppState};
 use graphics::{Graphics, RenderStatus};
+use input::command_for_key;
 use winit::application::ApplicationHandler;
-use winit::event::WindowEvent;
-use winit::event_loop::ActiveEventLoop;
+use winit::event::{ElementState, WindowEvent};
+use winit::event_loop::{ActiveEventLoop, ControlFlow};
+use winit::keyboard::PhysicalKey;
 use winit::window::{Fullscreen, Window, WindowAttributes, WindowId};
+
+const ANIMATION_FRAME_INTERVAL: Duration = Duration::from_millis(16);
 
 pub struct SanctuaryPlayerApp {
     window: Option<Arc<Window>>,
     graphics: Option<Graphics>,
     state: AppState,
     last_update: Instant,
+    next_animation_frame: Instant,
 }
 
 impl SanctuaryPlayerApp {
@@ -38,6 +44,7 @@ impl SanctuaryPlayerApp {
             graphics: None,
             state: AppState::new(),
             last_update: Instant::now(),
+            next_animation_frame: Instant::now(),
         }
     }
 
@@ -52,6 +59,13 @@ impl SanctuaryPlayerApp {
                 window.set_fullscreen(next);
             }
         }
+    }
+
+    fn apply_command(&mut self, window: &Window, command: crate::model::AppCommand) {
+        if let Some(effect) = self.state.apply(command) {
+            Self::apply_effect(window, effect);
+        }
+        window.request_redraw();
     }
 }
 
@@ -86,6 +100,7 @@ impl ApplicationHandler for SanctuaryPlayerApp {
             }
         };
         self.last_update = Instant::now();
+        self.next_animation_frame = self.last_update;
         window.request_redraw();
         self.window = Some(window);
         self.graphics = Some(graphics);
@@ -96,11 +111,18 @@ impl ApplicationHandler for SanctuaryPlayerApp {
         self.window = None;
     }
 
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         if self.state.needs_animation() {
-            if let Some(window) = self.window.as_ref() {
-                window.request_redraw();
+            let now = Instant::now();
+            if now >= self.next_animation_frame {
+                if let Some(window) = self.window.as_ref() {
+                    window.request_redraw();
+                }
+                self.next_animation_frame = now + ANIMATION_FRAME_INTERVAL;
             }
+            event_loop.set_control_flow(ControlFlow::WaitUntil(self.next_animation_frame));
+        } else {
+            event_loop.set_control_flow(ControlFlow::Wait);
         }
     }
 
@@ -110,15 +132,18 @@ impl ApplicationHandler for SanctuaryPlayerApp {
         window_id: WindowId,
         event: WindowEvent,
     ) {
-        let Some(window) = self.window.as_ref() else {
+        let Some(window) = self.window.clone() else {
             return;
         };
         if window.id() != window_id {
             return;
         }
-        if let Some(graphics) = self.graphics.as_mut() {
-            graphics.on_window_event(window, &event);
-        }
+        let window = window.as_ref();
+        let egui_consumed = self
+            .graphics
+            .as_mut()
+            .map(|graphics| graphics.on_window_event(window, &event))
+            .unwrap_or(false);
 
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
@@ -140,15 +165,22 @@ impl ApplicationHandler for SanctuaryPlayerApp {
                                 graphics.reconfigure();
                             }
                             for command in frame.commands {
-                                if let Some(effect) = self.state.apply(command) {
-                                    Self::apply_effect(window, effect);
-                                }
+                                self.apply_command(window, command);
                             }
                         }
                         Err(error) => {
                             eprintln!("SanctuaryPlayer: GPU surface error: {error}");
                             event_loop.exit();
                         }
+                    }
+                }
+            }
+            WindowEvent::KeyboardInput { event, .. }
+                if !egui_consumed && event.state == ElementState::Pressed && !event.repeat =>
+            {
+                if let PhysicalKey::Code(code) = event.physical_key {
+                    if let Some(command) = command_for_key(code, &self.state) {
+                        self.apply_command(window, command);
                     }
                 }
             }

@@ -20,7 +20,7 @@ pub fn render(ui: &mut egui::Ui, state: &mut AppState) -> Vec<AppCommand> {
     }
 
     paint_top_info(ui, state);
-    paint_menu_button(ui, state);
+    menu::render_button(ui, state);
     paint_centre_controls(ui, state, &mut commands);
     paint_bottom_controls(ui, state, &mut commands);
     paint_lock_slider(ui, state, &mut commands);
@@ -64,21 +64,6 @@ fn paint_top_info(ui: &mut egui::Ui, state: &AppState) {
                         .size(16.0)
                         .color(egui::Color32::from_gray(180)),
                 );
-            }
-        });
-}
-
-fn paint_menu_button(ui: &mut egui::Ui, state: &mut AppState) {
-    let ctx = ui.ctx().clone();
-    let screen = ctx.content_rect();
-    egui::Area::new(egui::Id::new("menu-button"))
-        .fixed_pos(egui::pos2(screen.right() - 92.0, 10.0))
-        .show(&ctx, |ui| {
-            if ui
-                .add_enabled(!state.ui.controls_locked, egui::Button::new("Menu"))
-                .clicked()
-            {
-                state.toggle_menu();
             }
         });
 }

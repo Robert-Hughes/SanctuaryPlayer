@@ -3,6 +3,21 @@ use crate::model::AppCommand;
 use crate::spoilers::sanitise_title;
 use crate::time_format::{format_age, format_colon_time, format_relative_position};
 
+pub fn render_button(ui: &mut egui::Ui, state: &mut AppState) {
+    let ctx = ui.ctx().clone();
+    let screen = ctx.content_rect();
+    egui::Area::new(egui::Id::new("menu-button"))
+        .fixed_pos(egui::pos2(screen.right() - 92.0, 10.0))
+        .show(&ctx, |ui| {
+            if ui
+                .add_enabled(!state.ui.controls_locked, egui::Button::new("Menu"))
+                .clicked()
+            {
+                state.toggle_menu();
+            }
+        });
+}
+
 pub fn render(ui: &mut egui::Ui, state: &mut AppState, commands: &mut Vec<AppCommand>) {
     if !state.ui.menu_open {
         return;

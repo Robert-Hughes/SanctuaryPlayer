@@ -7,10 +7,7 @@ pub fn sanitise_title(title: &str) -> String {
     let mut title = game.replace_all(title, "Game _").into_owned();
     let mut search_from = 0;
 
-    loop {
-        let Some(captures) = versus.captures(&title[search_from..]) else {
-            break;
-        };
+    while let Some(captures) = versus.captures(&title[search_from..]) {
         let whole = captures.get(0).expect("whole regex match");
         let marker = captures.get(1).expect("versus capture");
         let match_start = search_from + whole.start();

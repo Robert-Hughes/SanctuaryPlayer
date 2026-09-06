@@ -17,7 +17,7 @@ pub fn render(ui: &mut egui::Ui, state: &mut AppState, adapter_summary: &str) ->
     let mut commands = if state.has_video() {
         player::render(ui, state)
     } else {
-        welcome::render(ui, adapter_summary)
+        welcome::render(ui, state, adapter_summary)
     };
     dialogs::render(ui, state, &mut commands);
     commands

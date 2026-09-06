@@ -120,6 +120,10 @@ impl AppState {
     }
 
     pub fn apply(&mut self, command: AppCommand) -> Option<AppEffect> {
+        if self.ui.controls_locked && !matches!(command, AppCommand::ToggleControlsLock) {
+            return None;
+        }
+
         match command {
             AppCommand::OpenVideo(source) => {
                 if self.playback.open(&source).is_ok() {
@@ -332,6 +336,19 @@ impl AppState {
             .unwrap_or_default()
     }
 
+    pub fn adjacent_playback_rate(&self, direction: i32) -> Option<f32> {
+        let rates = self.available_rates();
+        let current = rates
+            .iter()
+            .position(|rate| (*rate - self.playback_rate()).abs() < f32::EPSILON)?;
+        let next = if direction > 0 {
+            current.checked_add(1)?
+        } else {
+            current.checked_sub(1)?
+        };
+        rates.get(next).copied()
+    }
+
     pub fn needs_animation(&self) -> bool {
         matches!(
             self.playback.state(),
@@ -402,6 +419,44 @@ mod tests {
             device_id: "Desktop".into(),
         });
         assert!(!state.saved_positions().is_empty());
+    }
+
+    #[test]
+    fn ended_video_does_not_restart_when_toggle_is_pressed() {
+        let mut state = loaded_state();
+        state.apply(AppCommand::SeekAbsolute(state.duration().unwrap()));
+        state.update(Duration::from_secs(1));
+        assert_eq!(state.playback_state(), &PlaybackState::Ended);
+        let ended_position = state.position();
+        state.apply(AppCommand::TogglePlayback);
+        state.update(Duration::from_secs(1));
+        assert_eq!(state.playback_state(), &PlaybackState::Ended);
+        assert_eq!(state.position(), ended_position);
+    }
+
+    #[test]
+    fn locked_controls_block_commands_until_unlocked() {
+        let mut state = loaded_state();
+        state.apply(AppCommand::ToggleControlsLock);
+        assert!(state.ui.controls_locked);
+        state.apply(AppCommand::Play);
+        state.update(Duration::from_secs(2));
+        assert_eq!(state.position(), Duration::ZERO);
+        state.apply(AppCommand::SeekRelative(60));
+        assert_eq!(state.position(), Duration::ZERO);
+        state.apply(AppCommand::ToggleControlsLock);
+        state.apply(AppCommand::Play);
+        state.update(Duration::from_secs(2));
+        assert_eq!(state.position(), Duration::from_secs(2));
+    }
+
+    #[test]
+    fn adjacent_rate_stops_at_available_rate_boundaries() {
+        let mut state = loaded_state();
+        assert_eq!(state.adjacent_playback_rate(1), Some(1.5));
+        state.apply(AppCommand::SetPlaybackRate(2.0));
+        assert_eq!(state.adjacent_playback_rate(1), None);
+        assert_eq!(state.adjacent_playback_rate(-1), Some(1.5));
     }
 
     #[test]
