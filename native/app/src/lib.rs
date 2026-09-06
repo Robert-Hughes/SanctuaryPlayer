@@ -69,6 +69,15 @@ impl SanctuaryPlayerApp {
         }
         window.request_redraw();
     }
+
+    fn shutdown(&mut self, event_loop: &ActiveEventLoop) {
+        self.next_egui_repaint = None;
+        if let Some(graphics) = self.graphics.take() {
+            drop(graphics);
+        }
+        self.window = None;
+        event_loop.exit();
+    }
 }
 
 impl Default for SanctuaryPlayerApp {
@@ -163,6 +172,13 @@ impl ApplicationHandler for SanctuaryPlayerApp {
         if window.id() != window_id {
             return;
         }
+
+        if matches!(event, WindowEvent::CloseRequested | WindowEvent::Destroyed) {
+            drop(window);
+            self.shutdown(event_loop);
+            return;
+        }
+
         let window = window.as_ref();
         let egui_consumed = self
             .graphics
@@ -171,7 +187,6 @@ impl ApplicationHandler for SanctuaryPlayerApp {
             .unwrap_or(false);
 
         match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(size) => {
                 if let Some(graphics) = self.graphics.as_mut() {
                     graphics.resize(size.width, size.height);
