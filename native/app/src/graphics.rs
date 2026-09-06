@@ -1,7 +1,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use winit::event::WindowEvent;
+use winit::event::{ElementState, WindowEvent};
+use winit::keyboard::{KeyCode, ModifiersState, PhysicalKey};
 use winit::window::Window;
 
 use crate::app::AppState;
@@ -19,6 +20,8 @@ pub(crate) struct Graphics {
     egui_context: egui::Context,
     egui_winit: egui_winit::State,
     egui_renderer: egui_wgpu::Renderer,
+    modifiers: ModifiersState,
+    pending_egui_events: Vec<egui::Event>,
 }
 
 impl Graphics {
@@ -141,11 +144,31 @@ impl Graphics {
             egui_context,
             egui_winit,
             egui_renderer,
+            modifiers: ModifiersState::empty(),
+            pending_egui_events: Vec::new(),
         })
     }
 
     pub(crate) fn on_window_event(&mut self, window: &Window, event: &WindowEvent) -> bool {
-        self.egui_winit.on_window_event(window, event).consumed
+        let response = self.egui_winit.on_window_event(window, event);
+
+        match event {
+            WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers.state(),
+            WindowEvent::KeyboardInput { event, .. }
+                if legacy_shift_insert_paste(self.modifiers, event.state, event.physical_key) =>
+            {
+                if let Some(contents) = self.egui_winit.clipboard_text() {
+                    let contents = contents.replace("\r\n", "\n");
+                    if !contents.is_empty() {
+                        self.pending_egui_events.push(egui::Event::Paste(contents));
+                    }
+                }
+                return true;
+            }
+            _ => {}
+        }
+
+        response.consumed
     }
 
     pub(crate) fn resize(&mut self, width: u32, height: u32) {
@@ -185,7 +208,8 @@ impl Graphics {
                 label: Some("sanctuary-player-frame"),
             });
 
-        let raw_input = self.egui_winit.take_egui_input(window);
+        let mut raw_input = self.egui_winit.take_egui_input(window);
+        raw_input.events.append(&mut self.pending_egui_events);
         let mut commands = Vec::new();
         let full_output = self.egui_context.run_ui(raw_input, |root_ui| {
             commands = ui::render(root_ui, state);
@@ -282,4 +306,59 @@ pub(crate) enum RenderStatus {
     Presented,
     Reconfigure,
     Skip,
+}
+
+fn legacy_shift_insert_paste(
+    modifiers: ModifiersState,
+    state: ElementState,
+    physical_key: PhysicalKey,
+) -> bool {
+    cfg!(any(
+        target_os = "linux",
+        target_os = "freebsd",
+        target_os = "dragonfly",
+        target_os = "netbsd",
+        target_os = "openbsd"
+    )) && state == ElementState::Pressed
+        && modifiers.shift_key()
+        && matches!(physical_key, PhysicalKey::Code(KeyCode::Insert))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shift_insert_is_legacy_paste_on_supported_unix_desktops() {
+        let supported = cfg!(any(
+            target_os = "linux",
+            target_os = "freebsd",
+            target_os = "dragonfly",
+            target_os = "netbsd",
+            target_os = "openbsd"
+        ));
+        assert_eq!(
+            legacy_shift_insert_paste(
+                ModifiersState::SHIFT,
+                ElementState::Pressed,
+                PhysicalKey::Code(KeyCode::Insert),
+            ),
+            supported
+        );
+        assert!(!legacy_shift_insert_paste(
+            ModifiersState::empty(),
+            ElementState::Pressed,
+            PhysicalKey::Code(KeyCode::Insert),
+        ));
+        assert!(!legacy_shift_insert_paste(
+            ModifiersState::SHIFT,
+            ElementState::Released,
+            PhysicalKey::Code(KeyCode::Insert),
+        ));
+        assert!(!legacy_shift_insert_paste(
+            ModifiersState::SHIFT,
+            ElementState::Pressed,
+            PhysicalKey::Code(KeyCode::Delete),
+        ));
+    }
 }
