@@ -1,3 +1,6 @@
 __pycache__/
 # Service account key (secret! so don't check in!)
 GOOGLE_APPLICATION_CREDENTIALS.json
+
+# Native Rust build output
+/native/target/
