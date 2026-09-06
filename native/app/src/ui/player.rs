@@ -10,20 +10,32 @@ pub fn render(ui: &mut egui::Ui, state: &mut AppState) -> Vec<AppCommand> {
     ui.painter().rect_filled(rect, 0.0, egui::Color32::BLACK);
     paint_dummy_video(ui, state);
 
-    if !state.ui.controls_visible {
-        let response = ui.interact(rect, egui::Id::new("reveal-controls"), egui::Sense::click());
-        if response.clicked() {
-            state.note_interaction();
+    let mut protected_regions = Vec::new();
+    if state.ui.controls_visible {
+        protected_regions.push(paint_top_info(ui, state));
+        protected_regions.push(menu::render_button(ui, state));
+        protected_regions.push(paint_centre_controls(ui, state, &mut commands));
+        paint_bottom_controls(ui, state, &mut commands, &mut protected_regions);
+        protected_regions.push(paint_lock_slider(ui, state, &mut commands));
+        if let Some(menu_rect) = menu::render(ui, state, &mut commands) {
+            protected_regions.push(menu_rect);
         }
-        return commands;
     }
 
-    paint_top_info(ui, state);
-    menu::render_button(ui, state);
-    paint_centre_controls(ui, state, &mut commands);
-    paint_bottom_controls(ui, state, &mut commands);
-    paint_lock_slider(ui, state, &mut commands);
-    menu::render(ui, state, &mut commands);
+    let background_click_pos = ui.ctx().input(|input| {
+        input
+            .pointer
+            .primary_released()
+            .then(|| input.pointer.interact_pos())
+            .flatten()
+    });
+    if let Some(pos) = background_click_pos
+        && state.ui.dialog.is_none()
+        && !protected_regions.iter().any(|rect| rect.contains(pos))
+    {
+        commands.push(AppCommand::ToggleControlsVisibility);
+    }
+
     commands
 }
 
@@ -45,10 +57,10 @@ fn paint_dummy_video(ui: &mut egui::Ui, state: &AppState) {
     );
 }
 
-fn paint_top_info(ui: &mut egui::Ui, state: &AppState) {
+fn paint_top_info(ui: &mut egui::Ui, state: &AppState) -> egui::Rect {
     let ctx = ui.ctx().clone();
     let vmin = theme::vmin(ui);
-    egui::Area::new(egui::Id::new("player-top-info"))
+    let area = egui::Area::new(egui::Id::new("player-top-info"))
         .fixed_pos(egui::pos2(vmin, 0.5 * vmin))
         .show(&ctx, |ui| {
             ui.set_max_width((ui.ctx().content_rect().width() - 14.0 * vmin).max(10.0 * vmin));
@@ -68,6 +80,7 @@ fn paint_top_info(ui: &mut egui::Ui, state: &AppState) {
                 );
             }
         });
+    area.response.rect
 }
 
 #[derive(Clone, Copy)]
@@ -77,6 +90,26 @@ enum PlayerIcon {
     Seeking,
     Ended,
     Fullscreen,
+}
+
+fn icon_image(icon: PlayerIcon) -> egui::Image<'static> {
+    match icon {
+        PlayerIcon::Play => {
+            egui::Image::new(egui::include_image!("../../assets/player-icons/play.svg"))
+        }
+        PlayerIcon::Pause => {
+            egui::Image::new(egui::include_image!("../../assets/player-icons/pause.svg"))
+        }
+        PlayerIcon::Seeking => egui::Image::new(egui::include_image!(
+            "../../assets/player-icons/seeking.svg"
+        )),
+        PlayerIcon::Ended => {
+            egui::Image::new(egui::include_image!("../../assets/player-icons/ended.svg"))
+        }
+        PlayerIcon::Fullscreen => egui::Image::new(egui::include_image!(
+            "../../assets/player-icons/fullscreen.svg"
+        )),
+    }
 }
 
 fn icon_button(
@@ -99,89 +132,25 @@ fn icon_button(
     };
     ui.painter().rect_filled(rect, radius, fill);
 
-    let alpha = if enabled { 255 } else { 128 };
-    let colour = egui::Color32::from_rgba_unmultiplied(
-        theme::ICON_PURPLE.r(),
-        theme::ICON_PURPLE.g(),
-        theme::ICON_PURPLE.b(),
-        alpha,
-    );
-    let c = rect.center();
-    let s = size;
-    match icon {
-        PlayerIcon::Play => {
-            ui.painter().add(egui::Shape::convex_polygon(
-                vec![
-                    egui::pos2(c.x - 0.18 * s, c.y - 0.28 * s),
-                    egui::pos2(c.x - 0.18 * s, c.y + 0.28 * s),
-                    egui::pos2(c.x + 0.28 * s, c.y),
-                ],
-                colour,
-                egui::Stroke::NONE,
-            ));
-        }
-        PlayerIcon::Pause => {
-            for x in [-0.13_f32, 0.13_f32] {
-                let bar = egui::Rect::from_center_size(
-                    egui::pos2(c.x + x * s, c.y),
-                    egui::vec2(0.12 * s, 0.48 * s),
-                );
-                ui.painter().rect_filled(bar, 0.0, colour);
-            }
-        }
-        PlayerIcon::Seeking => {
-            for x in [-0.16_f32, 0.0, 0.16] {
-                let dot = egui::Rect::from_center_size(
-                    egui::pos2(c.x + x * s, c.y),
-                    egui::vec2(0.08 * s, 0.08 * s),
-                );
-                ui.painter().rect_filled(dot, 0.0, colour);
-            }
-        }
-        PlayerIcon::Ended => {
-            let stroke = egui::Stroke::new((0.06 * s).max(2.0), colour);
-            ui.painter().line_segment(
-                [
-                    egui::pos2(c.x - 0.22 * s, c.y - 0.22 * s),
-                    egui::pos2(c.x + 0.22 * s, c.y + 0.22 * s),
-                ],
-                stroke,
-            );
-            ui.painter().line_segment(
-                [
-                    egui::pos2(c.x + 0.22 * s, c.y - 0.22 * s),
-                    egui::pos2(c.x - 0.22 * s, c.y + 0.22 * s),
-                ],
-                stroke,
-            );
-        }
-        PlayerIcon::Fullscreen => {
-            let stroke = egui::Stroke::new((0.035 * s).max(2.0), colour);
-            let outer = 0.28 * s;
-            let inner = 0.10 * s;
-            for (sx, sy) in [(-1.0_f32, -1.0_f32), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
-                let corner = egui::pos2(c.x + sx * outer, c.y + sy * outer);
-                ui.painter().line_segment(
-                    [corner, egui::pos2(corner.x - sx * inner, corner.y)],
-                    stroke,
-                );
-                ui.painter().line_segment(
-                    [corner, egui::pos2(corner.x, corner.y - sy * inner)],
-                    stroke,
-                );
-            }
-        }
+    let mut image = icon_image(icon);
+    if !enabled {
+        image = image.tint(egui::Color32::from_white_alpha(128));
     }
+    image.paint_at(ui, rect);
     response
 }
 
-fn paint_centre_controls(ui: &mut egui::Ui, state: &AppState, commands: &mut Vec<AppCommand>) {
+fn paint_centre_controls(
+    ui: &mut egui::Ui,
+    state: &AppState,
+    commands: &mut Vec<AppCommand>,
+) -> egui::Rect {
     let ctx = ui.ctx().clone();
     let vmin = theme::vmin(ui);
     let size = 20.0 * vmin;
     let gap = 1.0 * vmin;
     let radius = 1.0 * vmin;
-    egui::Area::new(egui::Id::new("centre-controls"))
+    let area = egui::Area::new(egui::Id::new("centre-controls"))
         .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
         .show(&ctx, |ui| {
             ui.spacing_mut().item_spacing.x = gap;
@@ -216,43 +185,139 @@ fn paint_centre_controls(ui: &mut egui::Ui, state: &AppState, commands: &mut Vec
                 }
             });
         });
+    area.response.rect
 }
 
-fn seek_button(ui: &mut egui::Ui, label: &str, vmin: f32, enabled: bool) -> egui::Response {
-    ui.add_enabled(
-        enabled,
-        theme::rounded_button(
-            egui::RichText::new(label)
-                .size(5.0 * vmin)
-                .color(theme::PURPLE),
-            vmin,
-        ),
-    )
+fn text_control_button(
+    ui: &mut egui::Ui,
+    label: &str,
+    font_size: f32,
+    padding: f32,
+    radius: f32,
+    enabled: bool,
+    active_fill: Option<egui::Color32>,
+) -> egui::Response {
+    let font_id = egui::FontId::proportional(font_size);
+    let colour = if enabled {
+        theme::PURPLE
+    } else {
+        egui::Color32::from_rgba_unmultiplied(
+            theme::PURPLE.r(),
+            theme::PURPLE.g(),
+            theme::PURPLE.b(),
+            128,
+        )
+    };
+    let galley = ui
+        .painter()
+        .layout_no_wrap(label.to_owned(), font_id, colour);
+    let desired = galley.size() + egui::vec2(2.0 * padding, 2.0 * padding);
+    let sense = if enabled {
+        egui::Sense::click()
+    } else {
+        egui::Sense::hover()
+    };
+    let (rect, response) = ui.allocate_exact_size(desired, sense);
+    let fill = active_fill.unwrap_or_else(|| {
+        if enabled && response.hovered() {
+            theme::LIGHT_PURPLE
+        } else {
+            theme::WHITE
+        }
+    });
+    ui.painter().rect_filled(rect, radius, fill);
+    ui.painter().galley(
+        rect.center() - galley.size() * 0.5,
+        galley,
+        egui::Color32::WHITE,
+    );
+    response
 }
 
-fn paint_bottom_controls(ui: &mut egui::Ui, state: &mut AppState, commands: &mut Vec<AppCommand>) {
+fn text_control_size(ui: &egui::Ui, label: &str, font_size: f32, padding: f32) -> egui::Vec2 {
+    let galley = ui.painter().layout_no_wrap(
+        label.to_owned(),
+        egui::FontId::proportional(font_size),
+        theme::PURPLE,
+    );
+    galley.size() + egui::vec2(2.0 * padding, 2.0 * padding)
+}
+
+fn paint_bottom_controls(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    commands: &mut Vec<AppCommand>,
+    protected_regions: &mut Vec<egui::Rect>,
+) {
     let ctx = ui.ctx().clone();
+    let screen = ctx.content_rect();
     let vmin = theme::vmin(ui);
     let enabled = !state.ui.controls_locked;
-    egui::Area::new(egui::Id::new("bottom-controls"))
-        .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -0.5 * vmin))
-        .show(&ctx, |ui| {
-            ui.spacing_mut().item_spacing = egui::vec2(vmin, vmin);
-            ui.horizontal(|ui| {
-                for (label, offset) in [("-10m", -600), ("-1m", -60), ("-5s", -5)] {
-                    if seek_button(ui, label, vmin, enabled).clicked() {
-                        commands.push(AppCommand::SeekRelative(offset));
-                    }
-                }
+    let gap = vmin;
+    let font_size = 5.0 * vmin;
+    let padding = 0.2 * vmin;
+    let radius = vmin;
+    let middle_width = 20.0 * vmin;
+    let middle_height = 11.5 * vmin;
+    let bottom = screen.bottom() - 0.5 * vmin;
 
-                ui.vertical_centered(|ui| {
-                    let rates = state.available_rates().to_vec();
-                    let mut selected_rate = state.playback_rate();
-                    ui.scope(|ui| {
+    let left = [("-10m", -600), ("-1m", -60), ("-5s", -5)];
+    let right = [("+5s", 5), ("+1m", 60), ("+10m", 600)];
+    let left_sizes: Vec<_> = left
+        .iter()
+        .map(|(label, _)| text_control_size(ui, label, font_size, padding))
+        .collect();
+    let right_sizes: Vec<_> = right
+        .iter()
+        .map(|(label, _)| text_control_size(ui, label, font_size, padding))
+        .collect();
+    let total_width = left_sizes.iter().map(|size| size.x).sum::<f32>()
+        + right_sizes.iter().map(|size| size.x).sum::<f32>()
+        + middle_width
+        + 6.0 * gap;
+    let mut x = screen.center().x - total_width * 0.5;
+
+    for ((label, offset), size) in left.into_iter().zip(left_sizes) {
+        let y = bottom - size.y;
+        let mut clicked = false;
+        let area = egui::Area::new(egui::Id::new(("bottom-seek", label)))
+            .fixed_pos(egui::pos2(x, y))
+            .order(egui::Order::Foreground)
+            .show(&ctx, |ui| {
+                clicked = text_control_button(ui, label, font_size, padding, radius, enabled, None)
+                    .clicked();
+            });
+        protected_regions.push(area.response.rect);
+        if clicked {
+            commands.push(AppCommand::SeekRelative(offset));
+        }
+        x += size.x + gap;
+    }
+
+    let middle_x = x;
+    let middle_area = egui::Area::new(egui::Id::new("bottom-controls-middle"))
+        .fixed_pos(egui::pos2(middle_x, bottom - middle_height))
+        .order(egui::Order::Foreground)
+        .show(&ctx, |ui| {
+            ui.set_min_size(egui::vec2(middle_width, middle_height));
+            ui.set_max_width(middle_width);
+            ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.y = vmin;
+                let rates = state.available_rates().to_vec();
+                let mut selected_rate = state.playback_rate();
+                let speed_width = 14.0 * vmin;
+                ui.allocate_ui_with_layout(
+                    egui::vec2(speed_width, 5.0 * vmin),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
                         ui.style_mut().override_font_id =
                             Some(egui::FontId::proportional(3.5 * vmin));
+                        ui.visuals_mut().widgets.inactive.weak_bg_fill = theme::WHITE;
+                        ui.visuals_mut().widgets.hovered.weak_bg_fill = theme::LIGHT_PURPLE;
+                        ui.visuals_mut().widgets.active.weak_bg_fill = theme::LIGHT_PURPLE;
                         ui.add_enabled_ui(enabled, |ui| {
                             egui::ComboBox::from_id_salt("speed-select")
+                                .width(speed_width)
                                 .selected_text(format!("{selected_rate}x"))
                                 .show_ui(ui, |ui| {
                                     for rate in rates {
@@ -269,54 +334,58 @@ fn paint_bottom_controls(ui: &mut egui::Ui, state: &mut AppState, commands: &mut
                                     }
                                 });
                         });
-                    });
-                    if ui
-                        .add_enabled(
-                            enabled,
-                            theme::rounded_button(
-                                egui::RichText::new(format_colon_time(state.position()))
-                                    .size(5.0 * vmin)
-                                    .color(theme::PURPLE),
-                                vmin,
-                            ),
-                        )
-                        .clicked()
-                    {
-                        state.open_seek_dialog();
-                    }
-                });
+                    },
+                );
 
-                for (label, offset) in [("+5s", 5), ("+1m", 60), ("+10m", 600)] {
-                    if seek_button(ui, label, vmin, enabled).clicked() {
-                        commands.push(AppCommand::SeekRelative(offset));
-                    }
+                let time_text = format_colon_time(state.position());
+                let time_fill =
+                    matches!(state.playback_state(), PlaybackState::Seeking).then_some(theme::PINK);
+                if text_control_button(
+                    ui, &time_text, font_size, padding, radius, enabled, time_fill,
+                )
+                .clicked()
+                {
+                    state.open_seek_dialog();
                 }
             });
         });
-}
+    protected_regions.push(middle_area.response.rect);
+    x += middle_width + gap;
 
-fn paint_lock_icon(painter: &egui::Painter, rect: egui::Rect, locked: bool) {
-    let colour = theme::ICON_PURPLE;
-    let stroke = egui::Stroke::new((rect.width() * 0.055).max(1.5), colour);
-    let c = rect.center();
-    let body = egui::Rect::from_center_size(
-        egui::pos2(c.x, c.y + rect.height() * 0.12),
-        egui::vec2(rect.width() * 0.50, rect.height() * 0.38),
-    );
-    painter.rect_stroke(body, rect.width() * 0.06, stroke, egui::StrokeKind::Inside);
-    let y = body.top();
-    let r = rect.width() * 0.16;
-    if locked {
-        painter.line_segment([egui::pos2(c.x - r, y), egui::pos2(c.x - r, y - r)], stroke);
-        painter.line_segment([egui::pos2(c.x + r, y), egui::pos2(c.x + r, y - r)], stroke);
-        painter.circle_stroke(egui::pos2(c.x, y - r), r, stroke);
-    } else {
-        painter.line_segment([egui::pos2(c.x + r, y), egui::pos2(c.x + r, y - r)], stroke);
-        painter.circle_stroke(egui::pos2(c.x + 2.0 * r, y - r), r, stroke);
+    for ((label, offset), size) in right.into_iter().zip(right_sizes) {
+        let y = bottom - size.y;
+        let mut clicked = false;
+        let area = egui::Area::new(egui::Id::new(("bottom-seek", label)))
+            .fixed_pos(egui::pos2(x, y))
+            .order(egui::Order::Foreground)
+            .show(&ctx, |ui| {
+                clicked = text_control_button(ui, label, font_size, padding, radius, enabled, None)
+                    .clicked();
+            });
+        protected_regions.push(area.response.rect);
+        if clicked {
+            commands.push(AppCommand::SeekRelative(offset));
+        }
+        x += size.x + gap;
     }
 }
 
-fn paint_lock_slider(ui: &mut egui::Ui, state: &mut AppState, commands: &mut Vec<AppCommand>) {
+fn paint_lock_icon(ui: &egui::Ui, rect: egui::Rect, locked: bool) {
+    let image = if locked {
+        egui::Image::new(egui::include_image!("../../assets/player-icons/locked.svg"))
+    } else {
+        egui::Image::new(egui::include_image!(
+            "../../assets/player-icons/unlocked.svg"
+        ))
+    };
+    image.paint_at(ui, rect);
+}
+
+fn paint_lock_slider(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    commands: &mut Vec<AppCommand>,
+) -> egui::Rect {
     let ctx = ui.ctx().clone();
     let screen = ctx.content_rect();
     let vmin = theme::vmin(ui);
@@ -324,22 +393,33 @@ fn paint_lock_slider(ui: &mut egui::Ui, state: &mut AppState, commands: &mut Vec
     let size = 7.0 * vmin;
     let x = state.ui.lock_drag_fraction * travel;
 
-    egui::Area::new(egui::Id::new("control-lock-slider"))
+    let area = egui::Area::new(egui::Id::new("control-lock-slider"))
         .fixed_pos(egui::pos2(x, screen.center().y - size * 0.5))
         .order(egui::Order::Foreground)
         .show(&ctx, |ui| {
             let (rect, response) =
                 ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::drag());
             let ready = state.ui.lock_drag_fraction >= 0.95;
-            let fill = if ready {
-                theme::PINK
-            } else if response.hovered() {
+            let fill = if response.hovered() {
                 theme::LIGHT_PURPLE
             } else {
                 theme::WHITE
             };
+            if ready {
+                for (expand, alpha) in [(1.0, 90), (2.0, 55), (3.0, 30)] {
+                    ui.painter().rect_stroke(
+                        rect.expand(expand * vmin),
+                        vmin,
+                        egui::Stroke::new(
+                            0.45 * vmin,
+                            theme::PINK.gamma_multiply(alpha as f32 / 255.0),
+                        ),
+                        egui::StrokeKind::Outside,
+                    );
+                }
+            }
             ui.painter().rect_filled(rect, vmin, fill);
-            paint_lock_icon(ui.painter(), rect, state.ui.controls_locked);
+            paint_lock_icon(ui, rect, state.ui.controls_locked);
 
             if response.dragged() {
                 state.ui.lock_drag_fraction = (response.drag_delta().x / travel).clamp(0.0, 1.0);
@@ -356,4 +436,5 @@ fn paint_lock_slider(ui: &mut egui::Ui, state: &mut AppState, commands: &mut Vec
             }
             response.on_hover_text("Drag right to lock/unlock controls");
         });
+    area.response.rect
 }

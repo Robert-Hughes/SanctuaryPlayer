@@ -42,4 +42,5 @@ pub enum AppCommand {
     SignOut,
     ToggleFullscreen,
     ToggleControlsLock,
+    ToggleControlsVisibility,
 }

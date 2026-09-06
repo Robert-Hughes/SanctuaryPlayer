@@ -105,8 +105,12 @@ impl AppState {
     pub fn update(&mut self, elapsed: Duration) {
         self.playback.update(elapsed);
 
-        if !self.has_video() || !matches!(self.playback.state(), PlaybackState::Playing) {
+        if !self.has_video() {
             self.ui.controls_visible = true;
+            self.ui.controls_idle = Duration::ZERO;
+            return;
+        }
+        if !matches!(self.playback.state(), PlaybackState::Playing) {
             self.ui.controls_idle = Duration::ZERO;
             return;
         }
@@ -122,7 +126,12 @@ impl AppState {
     }
 
     pub fn apply(&mut self, command: AppCommand) -> Option<AppEffect> {
-        if self.ui.controls_locked && !matches!(command, AppCommand::ToggleControlsLock) {
+        if self.ui.controls_locked
+            && !matches!(
+                command,
+                AppCommand::ToggleControlsLock | AppCommand::ToggleControlsVisibility
+            )
+        {
             return None;
         }
 
@@ -170,12 +179,24 @@ impl AppState {
                 self.account.device_id = Some(device_id);
             }
             AppCommand::SignOut => self.account = AccountState::default(),
-            AppCommand::ToggleFullscreen => return Some(AppEffect::ToggleFullscreen),
+            AppCommand::ToggleFullscreen => {
+                if self.has_video() {
+                    self.note_interaction();
+                }
+                return Some(AppEffect::ToggleFullscreen);
+            }
             AppCommand::ToggleControlsLock => {
                 self.ui.controls_locked = !self.ui.controls_locked;
                 self.ui.menu_open = false;
                 self.note_interaction();
             }
+            AppCommand::ToggleControlsVisibility => {
+                self.toggle_controls_visibility();
+                return None;
+            }
+        }
+        if self.has_video() {
+            self.note_interaction();
         }
         None
     }
@@ -204,6 +225,16 @@ impl AppState {
     pub(crate) fn note_interaction(&mut self) {
         self.ui.controls_visible = true;
         self.ui.controls_idle = Duration::ZERO;
+    }
+
+    pub(crate) fn toggle_controls_visibility(&mut self) {
+        if self.ui.controls_visible {
+            self.ui.controls_visible = false;
+            self.ui.menu_open = false;
+            self.ui.controls_idle = Duration::ZERO;
+        } else {
+            self.note_interaction();
+        }
     }
 
     pub(crate) fn toggle_menu(&mut self) {
@@ -406,6 +437,26 @@ mod tests {
         assert!(!state.ui.controls_visible);
         state.note_interaction();
         assert!(state.ui.controls_visible);
+    }
+
+    #[test]
+    fn manual_control_visibility_toggle_survives_paused_updates() {
+        let mut state = loaded_state();
+        state.ui.menu_open = true;
+
+        state.apply(AppCommand::ToggleControlsVisibility);
+        assert!(!state.ui.controls_visible);
+        assert!(!state.ui.menu_open);
+
+        state.update(Duration::from_secs(10));
+        assert!(!state.ui.controls_visible);
+
+        state.apply(AppCommand::ToggleControlsVisibility);
+        assert!(state.ui.controls_visible);
+
+        state.apply(AppCommand::ToggleControlsLock);
+        state.apply(AppCommand::ToggleControlsVisibility);
+        assert!(!state.ui.controls_visible);
     }
 
     #[test]

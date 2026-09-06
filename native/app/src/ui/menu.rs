@@ -5,13 +5,13 @@ use crate::time_format::{format_age, format_colon_time, format_relative_position
 
 use super::theme;
 
-pub fn render_button(ui: &mut egui::Ui, state: &mut AppState) {
+pub fn render_button(ui: &mut egui::Ui, state: &mut AppState) -> egui::Rect {
     let ctx = ui.ctx().clone();
     let screen = ctx.content_rect();
     let vmin = theme::vmin(ui);
     // CSS: 9vmin content + 1.5vmin padding on each side.
     let size = 12.0 * vmin;
-    egui::Area::new(egui::Id::new("menu-button"))
+    let area = egui::Area::new(egui::Id::new("menu-button"))
         .fixed_pos(egui::pos2(screen.right() - size, 0.0))
         .order(egui::Order::Foreground)
         .show(&ctx, |ui| {
@@ -45,13 +45,18 @@ pub fn render_button(ui: &mut egui::Ui, state: &mut AppState) {
                 ctx.request_repaint();
             }
         });
+    area.response.rect
 }
 
-pub fn render(ui: &mut egui::Ui, state: &mut AppState, commands: &mut Vec<AppCommand>) {
+pub fn render(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    commands: &mut Vec<AppCommand>,
+) -> Option<egui::Rect> {
     let ctx = ui.ctx().clone();
     let openness = ctx.animate_bool(egui::Id::new("player-menu-open"), state.ui.menu_open);
     if openness <= 0.001 {
-        return;
+        return None;
     }
 
     let screen = ctx.content_rect();
@@ -66,7 +71,7 @@ pub fn render(ui: &mut egui::Ui, state: &mut AppState, commands: &mut Vec<AppCom
     );
     let font_size = (2.0 * vmin).max(16.0);
 
-    egui::Area::new(egui::Id::new("player-menu"))
+    let area = egui::Area::new(egui::Id::new("player-menu"))
         .fixed_pos(pos)
         .order(egui::Order::Foreground)
         .show(&ctx, |ui| {
@@ -168,6 +173,7 @@ pub fn render(ui: &mut egui::Ui, state: &mut AppState, commands: &mut Vec<AppCom
                 });
             });
         });
+    Some(area.response.rect)
 }
 
 fn render_saved_positions(

@@ -17,34 +17,46 @@ pub fn render(ui: &mut egui::Ui, state: &mut AppState) -> Vec<AppCommand> {
     let logo_width = 50.0 * vmin;
     let logo_height = logo_width * 45.0 / 40.0;
 
-    ui.vertical_centered(|ui| {
-        // The web version centres the entire flex column, including margins.
-        let content_height = title_size * 1.2
-            + title_size // title's 0.5em top + bottom margin
-            + logo_height
-            + subtitle_size * 2.4
-            + subtitle_size; // subtitle 0.5em top + bottom margin
-        ui.add_space(((rect.height() - content_height) * 0.5).max(0.0));
+    // CSS flex centring includes each element's actual rendered height plus
+    // the title/subtitle 0.5em margins. Use egui's real glyph metrics instead
+    // of estimating line-height so the block is vertically centred exactly.
+    let title_galley = ui.painter().layout_no_wrap(
+        "Sanctuary Player".to_owned(),
+        egui::FontId::proportional(title_size),
+        theme::PURPLE,
+    );
+    let subtitle_galley = ui.painter().layout(
+        "Please select a video from the Menu\n(top-right corner)".to_owned(),
+        egui::FontId::proportional(subtitle_size),
+        theme::PINK,
+        f32::INFINITY,
+    );
+    let content_height = 0.5 * title_size
+        + title_galley.size().y
+        + 0.5 * title_size
+        + logo_height
+        + 0.5 * subtitle_size
+        + subtitle_galley.size().y
+        + 0.5 * subtitle_size;
+    let mut y = rect.center().y - content_height * 0.5;
 
-        ui.label(
-            egui::RichText::new("Sanctuary Player")
-                .size(title_size)
-                .color(theme::PURPLE),
-        );
-        ui.add_space(0.5 * title_size);
+    y += 0.5 * title_size;
+    let title_pos = egui::pos2(rect.center().x - title_galley.size().x * 0.5, y);
+    ui.painter()
+        .galley(title_pos, title_galley.clone(), theme::PURPLE);
+    y += title_galley.size().y + 0.5 * title_size;
 
-        ui.add(
-            egui::Image::new(egui::include_image!("../../assets/sanctuary-logo.svg"))
-                .fit_to_exact_size(egui::vec2(logo_width, logo_height)),
-        );
+    let logo_rect = egui::Rect::from_min_size(
+        egui::pos2(rect.center().x - logo_width * 0.5, y),
+        egui::vec2(logo_width, logo_height),
+    );
+    egui::Image::new(egui::include_image!("../../assets/sanctuary-logo.svg"))
+        .paint_at(ui, logo_rect);
+    y += logo_height + 0.5 * subtitle_size;
 
-        ui.add_space(0.5 * subtitle_size);
-        ui.label(
-            egui::RichText::new("Please select a video from the Menu\n(top-right corner)")
-                .size(subtitle_size)
-                .color(theme::PINK),
-        );
-    });
+    let subtitle_pos = egui::pos2(rect.center().x - subtitle_galley.size().x * 0.5, y);
+    ui.painter()
+        .galley(subtitle_pos, subtitle_galley, theme::PINK);
 
     menu::render_button(ui, state);
     menu::render(ui, state, &mut commands);
