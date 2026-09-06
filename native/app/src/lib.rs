@@ -139,10 +139,8 @@ impl ApplicationHandler for SanctuaryPlayerApp {
             self.next_egui_repaint = None;
         }
 
-        if requested_redraw {
-            if let Some(window) = self.window.as_ref() {
-                window.request_redraw();
-            }
+        if requested_redraw && let Some(window) = self.window.as_ref() {
+            window.request_redraw();
         }
 
         let playback_deadline = self
@@ -230,10 +228,10 @@ impl ApplicationHandler for SanctuaryPlayerApp {
             WindowEvent::KeyboardInput { event, .. }
                 if !egui_consumed && event.state == ElementState::Pressed && !event.repeat =>
             {
-                if let PhysicalKey::Code(code) = event.physical_key {
-                    if let Some(command) = command_for_key(code, &self.state) {
-                        self.apply_command(window, command);
-                    }
+                if let PhysicalKey::Code(code) = event.physical_key
+                    && let Some(command) = command_for_key(code, &self.state)
+                {
+                    self.apply_command(window, command);
                 }
             }
             _ => window.request_redraw(),
