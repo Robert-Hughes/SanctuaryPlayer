@@ -4,6 +4,11 @@
 //! [`SanctuaryPlayerApp`]. The application owns the wgpu device/surface and egui
 //! renderer so video rendering can later share the same GPU context.
 
+pub mod model;
+pub mod spoilers;
+pub mod time_format;
+pub mod video;
+
 use std::sync::Arc;
 
 use winit::application::ApplicationHandler;
