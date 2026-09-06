@@ -5,6 +5,8 @@
 //! renderer so video rendering can later share the same GPU context.
 
 pub mod model;
+pub mod playback;
+pub mod services;
 pub mod spoilers;
 pub mod time_format;
 pub mod video;
