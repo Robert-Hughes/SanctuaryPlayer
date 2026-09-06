@@ -46,6 +46,7 @@ pub(crate) struct UiState {
     pub(crate) controls_idle: Duration,
     pub(crate) lock_drag_fraction: f32,
     pub(crate) dialog: Option<DialogState>,
+    pub(crate) focus_first_dialog_input: bool,
 }
 
 impl Default for UiState {
@@ -57,6 +58,7 @@ impl Default for UiState {
             controls_idle: Duration::ZERO,
             lock_drag_fraction: 0.0,
             dialog: None,
+            focus_first_dialog_input: false,
         }
     }
 }
@@ -224,6 +226,7 @@ impl AppState {
             input: String::new(),
             error: None,
         });
+        self.ui.focus_first_dialog_input = true;
         self.note_interaction();
     }
 
@@ -232,6 +235,7 @@ impl AppState {
             input: crate::time_format::format_friendly_time(self.position()),
             error: None,
         });
+        self.ui.focus_first_dialog_input = true;
         self.note_interaction();
     }
 
@@ -239,6 +243,7 @@ impl AppState {
         self.ui.dialog = Some(DialogState::FavouriteQualities {
             input: self.preferences.favourite_qualities.clone(),
         });
+        self.ui.focus_first_dialog_input = true;
         self.note_interaction();
     }
 
@@ -251,16 +256,19 @@ impl AppState {
                 .clone()
                 .unwrap_or_else(|| "Device 1".into()),
         });
+        self.ui.focus_first_dialog_input = true;
         self.note_interaction();
     }
 
     pub(crate) fn open_sign_out_dialog(&mut self) {
         self.ui.dialog = Some(DialogState::ConfirmSignOut);
+        self.ui.focus_first_dialog_input = false;
         self.note_interaction();
     }
 
     pub(crate) fn close_dialog(&mut self) {
         self.ui.dialog = None;
+        self.ui.focus_first_dialog_input = false;
     }
 
     pub fn has_video(&self) -> bool {

@@ -8,6 +8,14 @@ pub fn render(ui: &mut egui::Ui, state: &mut AppState, commands: &mut Vec<AppCom
         return;
     };
     let ctx = ui.ctx().clone();
+    let focus_first_input = std::mem::take(&mut state.ui.focus_first_dialog_input);
+
+    if ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+        state.close_dialog();
+        return;
+    }
+    let accept_pressed =
+        ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
     let mut keep_open = true;
 
     match &mut dialog {
@@ -18,15 +26,18 @@ pub fn render(ui: &mut egui::Ui, state: &mut AppState, commands: &mut Vec<AppCom
                 .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
                 .show(&ctx, |ui| {
                     ui.label("Enter a YouTube/Twitch video URL or video ID:");
-                    let response = ui.text_edit_singleline(input);
-                    if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                        submit_video(input, error, commands, &mut keep_open);
+                    let response = ui.add(
+                        egui::TextEdit::singleline(input)
+                            .id(ui.make_persistent_id("change-video-input")),
+                    );
+                    if focus_first_input {
+                        response.request_focus();
                     }
                     if let Some(error) = error.as_ref() {
                         ui.colored_label(egui::Color32::LIGHT_RED, error);
                     }
                     ui.horizontal(|ui| {
-                        if ui.button("Open").clicked() {
+                        if ui.button("Open").clicked() || accept_pressed {
                             submit_video(input, error, commands, &mut keep_open);
                         }
                         if ui.button("Cancel").clicked() {
@@ -42,12 +53,18 @@ pub fn render(ui: &mut egui::Ui, state: &mut AppState, commands: &mut Vec<AppCom
                 .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
                 .show(&ctx, |ui| {
                     ui.label("Enter a time (e.g. 1h23m45s or 1:23:45):");
-                    ui.text_edit_singleline(input);
+                    let response = ui.add(
+                        egui::TextEdit::singleline(input)
+                            .id(ui.make_persistent_id("seek-to-input")),
+                    );
+                    if focus_first_input {
+                        response.request_focus();
+                    }
                     if let Some(error) = error.as_ref() {
                         ui.colored_label(egui::Color32::LIGHT_RED, error);
                     }
                     ui.horizontal(|ui| {
-                        if ui.button("Seek").clicked() {
+                        if ui.button("Seek").clicked() || accept_pressed {
                             if let Some(time) = parse_friendly_time(input) {
                                 commands.push(AppCommand::SeekAbsolute(time));
                                 keep_open = false;
@@ -68,9 +85,15 @@ pub fn render(ui: &mut egui::Ui, state: &mut AppState, commands: &mut Vec<AppCom
                 .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
                 .show(&ctx, |ui| {
                     ui.label("Comma- or semicolon-separated quality names, in preference order:");
-                    ui.text_edit_singleline(input);
+                    let response = ui.add(
+                        egui::TextEdit::singleline(input)
+                            .id(ui.make_persistent_id("favourite-qualities-input")),
+                    );
+                    if focus_first_input {
+                        response.request_focus();
+                    }
                     ui.horizontal(|ui| {
-                        if ui.button("Save").clicked() {
+                        if ui.button("Save").clicked() || accept_pressed {
                             commands.push(AppCommand::SetFavouriteQualities(input.clone()));
                             keep_open = false;
                         }
@@ -87,17 +110,25 @@ pub fn render(ui: &mut egui::Ui, state: &mut AppState, commands: &mut Vec<AppCom
                 .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
                 .show(&ctx, |ui| {
                     ui.label("User ID (same ID on another device to sync):");
-                    ui.text_edit_singleline(user_id);
+                    let response = ui.add(
+                        egui::TextEdit::singleline(user_id)
+                            .id(ui.make_persistent_id("sign-in-user-id-input")),
+                    );
+                    if focus_first_input {
+                        response.request_focus();
+                    }
                     ui.label("Device ID:");
-                    ui.text_edit_singleline(device_id);
+                    ui.add(
+                        egui::TextEdit::singleline(device_id)
+                            .id(ui.make_persistent_id("sign-in-device-id-input")),
+                    );
                     ui.small("Dummy/local only for now; no network requests are made.");
                     ui.horizontal(|ui| {
+                        let valid = !user_id.trim().is_empty() && !device_id.trim().is_empty();
                         if ui
-                            .add_enabled(
-                                !user_id.trim().is_empty() && !device_id.trim().is_empty(),
-                                egui::Button::new("Sign in"),
-                            )
+                            .add_enabled(valid, egui::Button::new("Sign in"))
                             .clicked()
+                            || (accept_pressed && valid)
                         {
                             commands.push(AppCommand::SignIn {
                                 user_id: user_id.trim().to_owned(),
@@ -123,7 +154,7 @@ pub fn render(ui: &mut egui::Ui, state: &mut AppState, commands: &mut Vec<AppCom
                         state.device_id().unwrap_or("?")
                     ));
                     ui.horizontal(|ui| {
-                        if ui.button("Sign out").clicked() {
+                        if ui.button("Sign out").clicked() || accept_pressed {
                             commands.push(AppCommand::SignOut);
                             keep_open = false;
                         }
