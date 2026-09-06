@@ -37,6 +37,9 @@ pub enum AppCommand {
     SeekRelative(i64),
     SetPlaybackRate(f32),
     SetQuality(String),
+    SetFavouriteQualities(String),
+    SignIn { user_id: String, device_id: String },
+    SignOut,
     ToggleFullscreen,
     ToggleControlsLock,
 }

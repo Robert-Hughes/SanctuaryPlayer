@@ -142,7 +142,7 @@ impl Graphics {
     pub(crate) fn render(
         &mut self,
         window: &Window,
-        state: &AppState,
+        state: &mut AppState,
     ) -> Result<RenderFrame, String> {
         let (output, reconfigure_after_present) = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(output) => (output, false),

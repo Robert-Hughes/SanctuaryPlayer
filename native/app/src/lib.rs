@@ -134,7 +134,7 @@ impl ApplicationHandler for SanctuaryPlayerApp {
                 self.last_update = now;
 
                 if let Some(graphics) = self.graphics.as_mut() {
-                    match graphics.render(window, &self.state) {
+                    match graphics.render(window, &mut self.state) {
                         Ok(frame) => {
                             if frame.status == RenderStatus::Reconfigure {
                                 graphics.reconfigure();
