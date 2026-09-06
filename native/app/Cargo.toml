@@ -15,6 +15,7 @@ wgpu.workspace = true
 egui.workspace = true
 egui-winit.workspace = true
 egui-wgpu.workspace = true
+egui_extras.workspace = true
 pollster.workspace = true
 
 regex = "1"

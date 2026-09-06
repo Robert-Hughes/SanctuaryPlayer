@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use winit::event::WindowEvent;
 use winit::window::Window;
@@ -18,7 +19,6 @@ pub(crate) struct Graphics {
     egui_context: egui::Context,
     egui_winit: egui_winit::State,
     egui_renderer: egui_wgpu::Renderer,
-    adapter_summary: String,
 }
 
 impl Graphics {
@@ -93,7 +93,21 @@ impl Graphics {
         surface.configure(&device, &surface_config);
 
         let egui_context = egui::Context::default();
-        egui_context.set_visuals(egui::Visuals::dark());
+        let mut style = (*egui_context.global_style()).clone();
+        style.interaction.selectable_labels = false;
+        let mut visuals = egui::Visuals::light();
+        visuals.override_text_color = Some(crate::ui::theme::PURPLE);
+        visuals.panel_fill = crate::ui::theme::WHITE;
+        visuals.window_fill = crate::ui::theme::WHITE;
+        visuals.faint_bg_color = crate::ui::theme::LIGHT_PURPLE;
+        visuals.widgets.noninteractive.bg_fill = crate::ui::theme::WHITE;
+        visuals.widgets.inactive.bg_fill = crate::ui::theme::WHITE;
+        visuals.widgets.hovered.bg_fill = crate::ui::theme::LIGHT_PURPLE;
+        visuals.widgets.active.bg_fill = crate::ui::theme::LIGHT_PURPLE;
+        visuals.widgets.open.bg_fill = crate::ui::theme::LIGHT_PURPLE;
+        style.visuals = visuals;
+        egui_context.set_global_style(style);
+        egui_extras::install_image_loaders(&egui_context);
         let egui_winit = egui_winit::State::new(
             egui_context.clone(),
             egui::ViewportId::ROOT,
@@ -104,11 +118,10 @@ impl Graphics {
         );
         let egui_renderer =
             egui_wgpu::Renderer::new(&device, format, egui_wgpu::RendererOptions::default());
-        let adapter_summary = format!(
-            "{} ({:?}, {:?})",
+        eprintln!(
+            "SanctuaryPlayer: GPU {} ({:?}, {:?})",
             adapter_info.name, adapter_info.device_type, adapter_info.backend
         );
-        eprintln!("SanctuaryPlayer: GPU {adapter_summary}");
 
         Ok(Self {
             _instance: instance,
@@ -121,7 +134,6 @@ impl Graphics {
             egui_context,
             egui_winit,
             egui_renderer,
-            adapter_summary,
         })
     }
 
@@ -167,11 +179,15 @@ impl Graphics {
             });
 
         let raw_input = self.egui_winit.take_egui_input(window);
-        let adapter_summary = self.adapter_summary.clone();
         let mut commands = Vec::new();
         let full_output = self.egui_context.run_ui(raw_input, |root_ui| {
-            commands = ui::render(root_ui, state, &adapter_summary);
+            commands = ui::render(root_ui, state);
         });
+        let repaint_after = full_output
+            .viewport_output
+            .get(&egui::ViewportId::ROOT)
+            .map(|viewport| viewport.repaint_delay)
+            .filter(|delay| *delay != Duration::MAX);
         self.egui_winit
             .handle_platform_output(window, full_output.platform_output);
 
@@ -233,6 +249,7 @@ impl Graphics {
                 RenderStatus::Presented
             },
             commands,
+            repaint_after,
         })
     }
 }
@@ -240,6 +257,7 @@ impl Graphics {
 pub(crate) struct RenderFrame {
     pub(crate) status: RenderStatus,
     pub(crate) commands: Vec<AppCommand>,
+    pub(crate) repaint_after: Option<Duration>,
 }
 
 impl RenderFrame {
@@ -247,6 +265,7 @@ impl RenderFrame {
         Self {
             status,
             commands: Vec::new(),
+            repaint_after: None,
         }
     }
 }

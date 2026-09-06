@@ -1,57 +1,52 @@
 use crate::app::AppState;
 use crate::model::AppCommand;
 
-use super::menu;
+use super::{menu, theme};
 
-pub fn render(ui: &mut egui::Ui, state: &mut AppState, adapter_summary: &str) -> Vec<AppCommand> {
+pub fn render(ui: &mut egui::Ui, state: &mut AppState) -> Vec<AppCommand> {
     let mut commands = Vec::new();
     let rect = ui.max_rect();
-    ui.painter()
-        .rect_filled(rect, 0.0, egui::Color32::from_rgb(10, 9, 18));
+    let vmin = theme::vmin(ui);
+
+    // Match the original web welcome page: white page, purple title, exact SVG
+    // logo at 50vmin wide, and pink subtitle at 5vmin.
+    ui.painter().rect_filled(rect, 0.0, theme::WHITE);
+
+    let title_size = 10.0 * vmin;
+    let subtitle_size = 5.0 * vmin;
+    let logo_width = 50.0 * vmin;
+    let logo_height = logo_width * 45.0 / 40.0;
 
     ui.vertical_centered(|ui| {
-        ui.add_space((rect.height() * 0.15).max(40.0));
-        ui.heading(egui::RichText::new("Sanctuary Player").size(42.0).strong());
-        ui.add_space(30.0);
-        paint_shield(ui);
-        ui.add_space(24.0);
+        // The web version centres the entire flex column, including margins.
+        let content_height = title_size * 1.2
+            + title_size // title's 0.5em top + bottom margin
+            + logo_height
+            + subtitle_size * 2.4
+            + subtitle_size; // subtitle 0.5em top + bottom margin
+        ui.add_space(((rect.height() - content_height) * 0.5).max(0.0));
+
+        ui.label(
+            egui::RichText::new("Sanctuary Player")
+                .size(title_size)
+                .color(theme::PURPLE),
+        );
+        ui.add_space(0.5 * title_size);
+
+        ui.add(
+            egui::Image::new(egui::include_image!("../../assets/sanctuary-logo.svg"))
+                .fit_to_exact_size(egui::vec2(logo_width, logo_height)),
+        );
+
+        ui.add_space(0.5 * subtitle_size);
         ui.label(
             egui::RichText::new("Please select a video from the Menu\n(top-right corner)")
-                .size(22.0),
+                .size(subtitle_size)
+                .color(theme::PINK),
         );
-        ui.add_space(20.0);
-        ui.small(format!("GPU: {adapter_summary}"));
     });
 
     menu::render_button(ui, state);
     menu::render(ui, state, &mut commands);
     commands
-}
-
-fn paint_shield(ui: &mut egui::Ui) {
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(170.0, 190.0), egui::Sense::hover());
-    let c = rect.center();
-    let points = vec![
-        egui::pos2(c.x, rect.top()),
-        egui::pos2(rect.right() - 8.0, rect.top() + 42.0),
-        egui::pos2(rect.right() - 16.0, rect.bottom() - 58.0),
-        egui::pos2(c.x, rect.bottom()),
-        egui::pos2(rect.left() + 16.0, rect.bottom() - 58.0),
-        egui::pos2(rect.left() + 8.0, rect.top() + 42.0),
-    ];
-    ui.painter().add(egui::Shape::convex_polygon(
-        points,
-        egui::Color32::from_rgb(108, 99, 255),
-        egui::Stroke::new(3.0_f32, egui::Color32::from_rgb(181, 23, 158)),
-    ));
-    let play = vec![
-        egui::pos2(c.x - 24.0, c.y - 38.0),
-        egui::pos2(c.x - 24.0, c.y + 38.0),
-        egui::pos2(c.x + 42.0, c.y),
-    ];
-    ui.painter().add(egui::Shape::convex_polygon(
-        play,
-        egui::Color32::WHITE,
-        egui::Stroke::NONE,
-    ));
 }

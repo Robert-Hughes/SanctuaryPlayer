@@ -1,12 +1,13 @@
 mod dialogs;
 mod menu;
 mod player;
+pub(crate) mod theme;
 mod welcome;
 
 use crate::app::AppState;
 use crate::model::AppCommand;
 
-pub fn render(ui: &mut egui::Ui, state: &mut AppState, adapter_summary: &str) -> Vec<AppCommand> {
+pub fn render(ui: &mut egui::Ui, state: &mut AppState) -> Vec<AppCommand> {
     let pointer_activity = ui
         .ctx()
         .input(|input| input.pointer.any_pressed() || input.pointer.delta() != egui::Vec2::ZERO);
@@ -17,7 +18,7 @@ pub fn render(ui: &mut egui::Ui, state: &mut AppState, adapter_summary: &str) ->
     let mut commands = if state.has_video() {
         player::render(ui, state)
     } else {
-        welcome::render(ui, state, adapter_summary)
+        welcome::render(ui, state)
     };
     dialogs::render(ui, state, &mut commands);
     commands

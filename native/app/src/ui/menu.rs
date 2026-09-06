@@ -3,38 +3,94 @@ use crate::model::AppCommand;
 use crate::spoilers::sanitise_title;
 use crate::time_format::{format_age, format_colon_time, format_relative_position};
 
+use super::theme;
+
 pub fn render_button(ui: &mut egui::Ui, state: &mut AppState) {
     let ctx = ui.ctx().clone();
     let screen = ctx.content_rect();
+    let vmin = theme::vmin(ui);
+    // CSS: 9vmin content + 1.5vmin padding on each side.
+    let size = 12.0 * vmin;
     egui::Area::new(egui::Id::new("menu-button"))
-        .fixed_pos(egui::pos2(screen.right() - 92.0, 10.0))
+        .fixed_pos(egui::pos2(screen.right() - size, 0.0))
+        .order(egui::Order::Foreground)
         .show(&ctx, |ui| {
-            if ui
-                .add_enabled(!state.ui.controls_locked, egui::Button::new("Menu"))
-                .clicked()
-            {
+            let enabled = !state.ui.controls_locked;
+            let sense = if enabled {
+                egui::Sense::click()
+            } else {
+                egui::Sense::hover()
+            };
+            let (rect, response) = ui.allocate_exact_size(egui::vec2(size, size), sense);
+            let fill = if state.ui.menu_open || (enabled && response.hovered()) {
+                theme::LIGHT_PURPLE
+            } else {
+                theme::WHITE
+            };
+            ui.painter().rect_filled(rect, vmin, fill);
+            let icon_rect = rect.shrink(1.5 * vmin);
+            let stroke = egui::Stroke::new((0.9 * vmin).max(2.0), theme::ICON_PURPLE);
+            for y in [0.15_f32, 0.5, 0.85] {
+                let yy = egui::lerp(icon_rect.top()..=icon_rect.bottom(), y);
+                ui.painter().line_segment(
+                    [
+                        egui::pos2(icon_rect.left(), yy),
+                        egui::pos2(icon_rect.right(), yy),
+                    ],
+                    stroke,
+                );
+            }
+            if response.clicked() {
                 state.toggle_menu();
+                ctx.request_repaint();
             }
         });
 }
 
 pub fn render(ui: &mut egui::Ui, state: &mut AppState, commands: &mut Vec<AppCommand>) {
-    if !state.ui.menu_open {
+    let ctx = ui.ctx().clone();
+    let openness = ctx.animate_bool(egui::Id::new("player-menu-open"), state.ui.menu_open);
+    if openness <= 0.001 {
         return;
     }
 
-    let ctx = ui.ctx().clone();
     let screen = ctx.content_rect();
-    let pos = egui::pos2((screen.right() - 590.0).max(8.0), 52.0);
+    let vmin = theme::vmin(ui);
+    let width = (72.0 * vmin)
+        .min(screen.width() - 2.0 * vmin)
+        .max(30.0 * vmin);
+    let top = 12.0 * vmin;
+    let pos = egui::pos2(
+        screen.right() - width - vmin,
+        top - (1.0 - openness) * 2.0 * vmin,
+    );
+    let font_size = (2.0 * vmin).max(16.0);
+
     egui::Area::new(egui::Id::new("player-menu"))
         .fixed_pos(pos)
         .order(egui::Order::Foreground)
         .show(&ctx, |ui| {
-            egui::Frame::popup(ui.style()).show(ui, |ui| {
-                ui.set_max_width(570.0);
-                ui.set_max_height((screen.height() - 70.0).max(180.0));
+            if !state.ui.menu_open {
+                ui.disable();
+            }
+            ui.style_mut().override_font_id = Some(egui::FontId::proportional(font_size));
+            ui.spacing_mut().item_spacing.y = 0.5 * vmin;
+            let frame = egui::Frame::new()
+                .fill(theme::WHITE)
+                .stroke(egui::Stroke::new((0.1 * vmin).max(1.0), theme::PURPLE))
+                .corner_radius(vmin.round() as u8)
+                .inner_margin(egui::Margin::same(vmin.round() as i8));
+            frame.show(ui, |ui| {
+                ui.set_width(width - 2.0 * vmin);
+                ui.set_max_height((screen.height() - top - vmin).max(20.0 * vmin));
                 egui::ScrollArea::vertical().show(ui, |ui| {
-                    if ui.button("Change Video…").clicked() {
+                    if ui
+                        .add(theme::rounded_button(
+                            egui::RichText::new("Change Video…").color(theme::PURPLE),
+                            vmin,
+                        ))
+                        .clicked()
+                    {
                         state.open_change_video_dialog();
                         state.close_menu();
                     }
@@ -44,7 +100,11 @@ pub fn render(ui: &mut egui::Ui, state: &mut AppState, commands: &mut Vec<AppCom
                         let qualities = state.available_qualities().to_vec();
                         let current = state.quality().map(|quality| quality.id.clone());
                         ui.horizontal(|ui| {
-                            ui.label("Quality:");
+                            ui.label(
+                                egui::RichText::new("Quality:")
+                                    .strong()
+                                    .color(theme::PURPLE),
+                            );
                             let mut selected = current.clone().unwrap_or_default();
                             egui::ComboBox::from_id_salt("quality-select")
                                 .selected_text(
@@ -76,7 +136,7 @@ pub fn render(ui: &mut egui::Ui, state: &mut AppState, commands: &mut Vec<AppCom
                     }
 
                     ui.separator();
-                    render_saved_positions(ui, state, commands);
+                    render_saved_positions(ui, state, commands, vmin);
                     ui.separator();
 
                     if state.signed_in() {
@@ -85,11 +145,23 @@ pub fn render(ui: &mut egui::Ui, state: &mut AppState, commands: &mut Vec<AppCom
                             state.user_id().unwrap_or("?"),
                             state.device_id().unwrap_or("?")
                         );
-                        if ui.button(label).clicked() {
+                        if ui
+                            .add(theme::rounded_button(
+                                egui::RichText::new(label).color(theme::PURPLE),
+                                vmin,
+                            ))
+                            .clicked()
+                        {
                             state.open_sign_out_dialog();
                             state.close_menu();
                         }
-                    } else if ui.button("Sign in…").clicked() {
+                    } else if ui
+                        .add(theme::rounded_button(
+                            egui::RichText::new("Sign in…").color(theme::PURPLE),
+                            vmin,
+                        ))
+                        .clicked()
+                    {
                         state.open_sign_in_dialog();
                         state.close_menu();
                     }
@@ -98,10 +170,19 @@ pub fn render(ui: &mut egui::Ui, state: &mut AppState, commands: &mut Vec<AppCom
         });
 }
 
-fn render_saved_positions(ui: &mut egui::Ui, state: &mut AppState, commands: &mut Vec<AppCommand>) {
-    ui.strong("Saved Positions");
+fn render_saved_positions(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    commands: &mut Vec<AppCommand>,
+    vmin: f32,
+) {
+    ui.label(
+        egui::RichText::new("Saved Positions")
+            .strong()
+            .color(theme::PURPLE),
+    );
     if !state.signed_in() {
-        ui.label("Sign in to show synced positions (dummy data for now). ");
+        ui.label("Sign in to show synced positions (dummy data for now).");
         return;
     }
 
@@ -121,8 +202,7 @@ fn render_saved_positions(ui: &mut egui::Ui, state: &mut AppState, commands: &mu
 
     egui::ScrollArea::horizontal().show(ui, |ui| {
         egui::Grid::new("saved-positions-grid")
-            .striped(true)
-            .spacing(egui::vec2(12.0, 5.0))
+            .spacing(egui::vec2(1.5 * vmin, 0.5 * vmin))
             .show(ui, |ui| {
                 for heading in [
                     "Last Watched",
@@ -131,7 +211,11 @@ fn render_saved_positions(ui: &mut egui::Ui, state: &mut AppState, commands: &mu
                     "Video",
                     "Release Date",
                 ] {
-                    ui.strong(heading);
+                    ui.label(
+                        egui::RichText::new(heading)
+                            .strong()
+                            .color(egui::Color32::BLACK),
+                    );
                 }
                 ui.end_row();
 
@@ -160,16 +244,20 @@ fn render_saved_positions(ui: &mut egui::Ui, state: &mut AppState, commands: &mu
                         title,
                         release,
                     ];
-                    let fill =
-                        (highlight == Some(index)).then_some(egui::Color32::from_rgb(80, 35, 72));
+                    let fill = if highlight == Some(index) {
+                        egui::Color32::from_rgb(247, 161, 218)
+                    } else {
+                        theme::WHITE
+                    };
                     let mut clicked = false;
                     for cell in cells {
-                        let button = egui::Button::new(cell).frame(false);
-                        let response = if let Some(fill) = fill {
-                            ui.add(button.fill(fill))
-                        } else {
-                            ui.add(button)
-                        };
+                        let response = ui.add(
+                            egui::Button::new(
+                                egui::RichText::new(cell).color(egui::Color32::BLACK),
+                            )
+                            .fill(fill)
+                            .frame(true),
+                        );
                         clicked |= response.clicked();
                     }
                     ui.end_row();
