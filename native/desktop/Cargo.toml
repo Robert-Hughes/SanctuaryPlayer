@@ -13,3 +13,6 @@ path = "src/main.rs"
 [dependencies]
 sanctuary-player-app = { path = "../app" }
 winit.workspace = true
+
+[build-dependencies]
+winresource = { version = "0.1", default-features = false }

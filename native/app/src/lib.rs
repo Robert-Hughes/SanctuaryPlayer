@@ -6,6 +6,7 @@
 
 pub mod app;
 mod graphics;
+mod icon;
 mod input;
 pub mod model;
 pub mod playback;
@@ -93,6 +94,7 @@ impl ApplicationHandler for SanctuaryPlayerApp {
         }
         let attrs = WindowAttributes::default()
             .with_title("Sanctuary Player")
+            .with_window_icon(icon::app_icon())
             .with_inner_size(winit::dpi::PhysicalSize::new(1280, 720));
         let window = match event_loop.create_window(attrs) {
             Ok(window) => Arc::new(window),

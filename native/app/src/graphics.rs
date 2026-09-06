@@ -105,6 +105,13 @@ impl Graphics {
         visuals.widgets.hovered.bg_fill = crate::ui::theme::LIGHT_PURPLE;
         visuals.widgets.active.bg_fill = crate::ui::theme::LIGHT_PURPLE;
         visuals.widgets.open.bg_fill = crate::ui::theme::LIGHT_PURPLE;
+        // Keep button geometry stable across interaction states. Egui derives
+        // button padding from the state's border width, so its default 0px
+        // inactive / 1px hovered strokes make buttons contract on hover.
+        visuals.widgets.inactive.bg_stroke = egui::Stroke::NONE;
+        visuals.widgets.hovered.bg_stroke = egui::Stroke::NONE;
+        visuals.widgets.active.bg_stroke = egui::Stroke::NONE;
+        visuals.widgets.open.bg_stroke = egui::Stroke::NONE;
         style.visuals = visuals;
         egui_context.set_global_style(style);
         egui_extras::install_image_loaders(&egui_context);
