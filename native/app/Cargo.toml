@@ -17,6 +17,11 @@ egui-winit.workspace = true
 egui-wgpu.workspace = true
 egui_extras.workspace = true
 pollster.workspace = true
+oxideav.workspace = true
+oxideav-meta.workspace = true
+oxideav-pixfmt.workspace = true
+oxideav-audio-filter.workspace = true
+oxideav-sysaudio.workspace = true
 
 regex = "1"
 url = "2"
