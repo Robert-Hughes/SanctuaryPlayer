@@ -10,6 +10,7 @@ use crate::spoilers::sanitise_title;
 use crate::video::VideoSource;
 
 const CONTROLS_HIDE_AFTER: Duration = Duration::from_secs(2);
+const LOCK_SLIDE_BACK_DURATION: Duration = Duration::from_millis(500);
 
 pub struct AppState {
     playback: DummyPlayback,
@@ -45,6 +46,10 @@ pub(crate) struct UiState {
     pub(crate) controls_locked: bool,
     pub(crate) controls_idle: Duration,
     pub(crate) lock_drag_fraction: f32,
+    pub(crate) lock_dragging: bool,
+    pub(crate) lock_drag_origin_fraction: f32,
+    pub(crate) lock_return_from: Option<f32>,
+    pub(crate) lock_return_elapsed: Duration,
     pub(crate) dialog: Option<DialogState>,
     pub(crate) focus_first_dialog_input: bool,
 }
@@ -57,6 +62,10 @@ impl Default for UiState {
             controls_locked: false,
             controls_idle: Duration::ZERO,
             lock_drag_fraction: 0.0,
+            lock_dragging: false,
+            lock_drag_origin_fraction: 0.0,
+            lock_return_from: None,
+            lock_return_elapsed: Duration::ZERO,
             dialog: None,
             focus_first_dialog_input: false,
         }
@@ -104,6 +113,7 @@ impl AppState {
 
     pub fn update(&mut self, elapsed: Duration) {
         self.playback.update(elapsed);
+        self.update_lock_slider_return(elapsed);
 
         if !self.has_video() {
             self.ui.controls_visible = true;
@@ -114,7 +124,7 @@ impl AppState {
             self.ui.controls_idle = Duration::ZERO;
             return;
         }
-        if self.ui.menu_open || self.ui.dialog.is_some() {
+        if self.ui.menu_open || self.ui.dialog.is_some() || self.ui.lock_dragging {
             self.ui.controls_visible = true;
             self.ui.controls_idle = Duration::ZERO;
             return;
@@ -123,6 +133,48 @@ impl AppState {
         if self.ui.controls_idle >= CONTROLS_HIDE_AFTER {
             self.ui.controls_visible = false;
         }
+    }
+
+    fn update_lock_slider_return(&mut self, elapsed: Duration) {
+        let Some(from) = self.ui.lock_return_from else {
+            return;
+        };
+
+        self.ui.lock_return_elapsed = self.ui.lock_return_elapsed.saturating_add(elapsed);
+        let progress = (self.ui.lock_return_elapsed.as_secs_f32()
+            / LOCK_SLIDE_BACK_DURATION.as_secs_f32())
+        .clamp(0.0, 1.0);
+        self.ui.lock_drag_fraction = from * (1.0 - progress);
+
+        if self.ui.lock_return_elapsed >= LOCK_SLIDE_BACK_DURATION {
+            self.ui.lock_drag_fraction = 0.0;
+            self.ui.lock_return_from = None;
+            self.ui.lock_return_elapsed = Duration::ZERO;
+        }
+    }
+
+    pub(crate) fn begin_lock_drag(&mut self) {
+        self.ui.lock_dragging = true;
+        self.ui.lock_drag_origin_fraction = self.ui.lock_drag_fraction;
+        self.ui.lock_return_from = None;
+        self.ui.lock_return_elapsed = Duration::ZERO;
+        self.note_interaction();
+    }
+
+    pub(crate) fn set_lock_drag_delta(&mut self, delta_fraction: f32) {
+        self.ui.lock_drag_fraction =
+            (self.ui.lock_drag_origin_fraction + delta_fraction).clamp(0.0, 1.0);
+        self.note_interaction();
+    }
+
+    pub(crate) fn end_lock_drag(&mut self) -> bool {
+        let toggles_lock = self.ui.lock_drag_fraction >= 1.0;
+        self.ui.lock_dragging = false;
+        self.ui.lock_return_from =
+            (self.ui.lock_drag_fraction > 0.0).then_some(self.ui.lock_drag_fraction);
+        self.ui.lock_return_elapsed = Duration::ZERO;
+        self.note_interaction();
+        toggles_lock
     }
 
     pub fn apply(&mut self, command: AppCommand) -> Option<AppEffect> {
@@ -392,7 +444,7 @@ impl AppState {
         matches!(
             self.playback.state(),
             PlaybackState::Playing | PlaybackState::Seeking
-        )
+        ) || self.ui.lock_return_from.is_some()
     }
 }
 
@@ -437,6 +489,48 @@ mod tests {
         assert!(!state.ui.controls_visible);
         state.note_interaction();
         assert!(state.ui.controls_visible);
+    }
+
+    #[test]
+    fn lock_drag_keeps_controls_visible_while_playing() {
+        let mut state = loaded_state();
+        state.apply(AppCommand::Play);
+        state.begin_lock_drag();
+        state.update(Duration::from_secs(10));
+        assert!(state.ui.controls_visible);
+        state.end_lock_drag();
+    }
+
+    #[test]
+    fn lock_slider_returns_over_web_transition_duration() {
+        let mut state = loaded_state();
+        state.begin_lock_drag();
+        state.set_lock_drag_delta(0.8);
+        assert!(!state.end_lock_drag());
+        assert!(state.needs_animation());
+
+        state.update(Duration::from_millis(250));
+        assert!((state.ui.lock_drag_fraction - 0.4).abs() < 1e-6);
+
+        state.update(Duration::from_millis(250));
+        assert_eq!(state.ui.lock_drag_fraction, 0.0);
+        assert!(state.ui.lock_return_from.is_none());
+        assert!(!state.needs_animation());
+    }
+
+    #[test]
+    fn lock_slider_regrab_continues_from_return_position() {
+        let mut state = loaded_state();
+        state.begin_lock_drag();
+        state.set_lock_drag_delta(0.8);
+        assert!(!state.end_lock_drag());
+        state.update(Duration::from_millis(250));
+        assert!((state.ui.lock_drag_fraction - 0.4).abs() < 1e-6);
+
+        state.begin_lock_drag();
+        state.set_lock_drag_delta(0.1);
+        assert!((state.ui.lock_drag_fraction - 0.5).abs() < 1e-6);
+        assert!(state.ui.lock_return_from.is_none());
     }
 
     #[test]

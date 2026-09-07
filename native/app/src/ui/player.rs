@@ -7,32 +7,24 @@ use super::{menu, theme};
 pub fn render(ui: &mut egui::Ui, state: &mut AppState) -> Vec<AppCommand> {
     let mut commands = Vec::new();
     let rect = ui.max_rect();
+    let background = ui.interact(
+        rect,
+        egui::Id::new("player-background"),
+        egui::Sense::click(),
+    );
     ui.painter().rect_filled(rect, 0.0, egui::Color32::BLACK);
     paint_dummy_video(ui, state);
 
-    let mut protected_regions = Vec::new();
     if state.ui.controls_visible {
-        protected_regions.push(paint_top_info(ui, state));
-        protected_regions.push(menu::render_button(ui, state));
-        protected_regions.push(paint_centre_controls(ui, state, &mut commands));
-        paint_bottom_controls(ui, state, &mut commands, &mut protected_regions);
-        protected_regions.push(paint_lock_slider(ui, state, &mut commands));
-        if let Some(menu_rect) = menu::render(ui, state, &mut commands) {
-            protected_regions.push(menu_rect);
-        }
+        paint_top_info(ui, state);
+        menu::render_button(ui, state);
+        paint_centre_controls(ui, state, &mut commands);
+        paint_bottom_controls(ui, state, &mut commands);
+        paint_lock_slider(ui, state, &mut commands);
+        menu::render(ui, state, &mut commands);
     }
 
-    let background_click_pos = ui.ctx().input(|input| {
-        input
-            .pointer
-            .primary_released()
-            .then(|| input.pointer.interact_pos())
-            .flatten()
-    });
-    if let Some(pos) = background_click_pos
-        && state.ui.dialog.is_none()
-        && !protected_regions.iter().any(|rect| rect.contains(pos))
-    {
+    if background.clicked() && state.ui.dialog.is_none() {
         commands.push(AppCommand::ToggleControlsVisibility);
     }
 
@@ -243,12 +235,7 @@ fn text_control_size(ui: &egui::Ui, label: &str, font_size: f32, padding: f32) -
     galley.size() + egui::vec2(2.0 * padding, 2.0 * padding)
 }
 
-fn paint_bottom_controls(
-    ui: &mut egui::Ui,
-    state: &mut AppState,
-    commands: &mut Vec<AppCommand>,
-    protected_regions: &mut Vec<egui::Rect>,
-) {
+fn paint_bottom_controls(ui: &mut egui::Ui, state: &mut AppState, commands: &mut Vec<AppCommand>) {
     let ctx = ui.ctx().clone();
     let screen = ctx.content_rect();
     let vmin = theme::vmin(ui);
@@ -280,14 +267,13 @@ fn paint_bottom_controls(
     for ((label, offset), size) in left.into_iter().zip(left_sizes) {
         let y = bottom - size.y;
         let mut clicked = false;
-        let area = egui::Area::new(egui::Id::new(("bottom-seek", label)))
+        egui::Area::new(egui::Id::new(("bottom-seek", label)))
             .fixed_pos(egui::pos2(x, y))
             .order(egui::Order::Foreground)
             .show(&ctx, |ui| {
                 clicked = text_control_button(ui, label, font_size, padding, radius, enabled, None)
                     .clicked();
             });
-        protected_regions.push(area.response.rect);
         if clicked {
             commands.push(AppCommand::SeekRelative(offset));
         }
@@ -295,7 +281,7 @@ fn paint_bottom_controls(
     }
 
     let middle_x = x;
-    let middle_area = egui::Area::new(egui::Id::new("bottom-controls-middle"))
+    egui::Area::new(egui::Id::new("bottom-controls-middle"))
         .fixed_pos(egui::pos2(middle_x, bottom - middle_height))
         .order(egui::Order::Foreground)
         .show(&ctx, |ui| {
@@ -349,20 +335,18 @@ fn paint_bottom_controls(
                 }
             });
         });
-    protected_regions.push(middle_area.response.rect);
     x += middle_width + gap;
 
     for ((label, offset), size) in right.into_iter().zip(right_sizes) {
         let y = bottom - size.y;
         let mut clicked = false;
-        let area = egui::Area::new(egui::Id::new(("bottom-seek", label)))
+        egui::Area::new(egui::Id::new(("bottom-seek", label)))
             .fixed_pos(egui::pos2(x, y))
             .order(egui::Order::Foreground)
             .show(&ctx, |ui| {
                 clicked = text_control_button(ui, label, font_size, padding, radius, enabled, None)
                     .clicked();
             });
-        protected_regions.push(area.response.rect);
         if clicked {
             commands.push(AppCommand::SeekRelative(offset));
         }
@@ -399,7 +383,7 @@ fn paint_lock_slider(
         .show(&ctx, |ui| {
             let (rect, response) =
                 ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::drag());
-            let ready = state.ui.lock_drag_fraction >= 0.95;
+            let ready = state.ui.lock_drag_fraction >= 1.0;
             let fill = if response.hovered() {
                 theme::LIGHT_PURPLE
             } else {
@@ -421,17 +405,20 @@ fn paint_lock_slider(
             ui.painter().rect_filled(rect, vmin, fill);
             paint_lock_icon(ui, rect, state.ui.controls_locked);
 
-            if response.dragged() {
-                state.ui.lock_drag_fraction = (response.drag_delta().x / travel).clamp(0.0, 1.0);
-                state.note_interaction();
+            if response.drag_started() {
+                state.begin_lock_drag();
+                ctx.request_repaint();
+            }
+            if response.dragged()
+                && let Some(delta) = response.total_drag_delta()
+            {
+                state.set_lock_drag_delta(delta.x / travel);
                 ctx.request_repaint();
             }
             if response.drag_stopped() {
-                if state.ui.lock_drag_fraction >= 0.95 {
+                if state.end_lock_drag() {
                     commands.push(AppCommand::ToggleControlsLock);
                 }
-                state.ui.lock_drag_fraction = 0.0;
-                state.note_interaction();
                 ctx.request_repaint();
             }
             response.on_hover_text("Drag right to lock/unlock controls");
