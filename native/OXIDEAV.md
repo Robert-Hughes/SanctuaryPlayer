@@ -121,10 +121,16 @@ The resolver deliberately implements only the playback flow Sanctuary needs:
    available to the native player.
 
 There is no separate Twitch metadata request and the resolver does not fetch the
-master playlist itself; the eventual OxideAV HLS source performs that GET. The
-resolver is blocking and must run on a media/background worker rather than the
-winit event thread. At the media-session boundary, convert the returned ordinary
-`https://...m3u8` URL to OxideAV's `hls+https://...` source URI.
+master playlist itself. `AppCommand::OpenVideo` now dispatches Twitch VOD resolution
+onto a worker thread, keeps the winit event thread responsive, and polls the result
+through normal app updates. For the current bring-up stage, success is shown in a
+copyable `Twitch HLS URL` dialog and resolver failures are shown as errors; recognised
+YouTube inputs are rejected with an explicit currently-unsupported dialog.
+
+The next media-session step is to replace the success dialog with an OxideAV HLS
+open. At that boundary, convert the returned ordinary `https://...m3u8` URL to
+OxideAV's `hls+https://...` source URI; the OxideAV HLS source then performs the
+master-playlist GET.
 
 This depends on Twitch's web-player GraphQL/Usher protocol rather than a stable
 public playback API, so all Twitch-specific request shape, client ID and token

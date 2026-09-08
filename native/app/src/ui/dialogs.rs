@@ -164,6 +164,48 @@ pub fn render(ui: &mut egui::Ui, state: &mut AppState, commands: &mut Vec<AppCom
                     });
                 });
         }
+        DialogState::TwitchResolving { video_id } => {
+            egui::Window::new("Opening Twitch video")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .show(&ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(format!("Resolving Twitch VOD {video_id}…"));
+                    });
+                });
+        }
+        DialogState::TwitchResolved { url } => {
+            egui::Window::new("Twitch HLS URL")
+                .collapsible(false)
+                .resizable(true)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .default_width(640.0)
+                .show(&ctx, |ui| {
+                    ui.label("Resolved master playlist URL:");
+                    ui.add(
+                        egui::TextEdit::multiline(url)
+                            .desired_width(f32::INFINITY)
+                            .desired_rows(4),
+                    );
+                    if ui.button("OK").clicked() || accept_pressed {
+                        keep_open = false;
+                    }
+                });
+        }
+        DialogState::Message { title, message } => {
+            egui::Window::new(title.as_str())
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .show(&ctx, |ui| {
+                    ui.label(message.as_str());
+                    if ui.button("OK").clicked() || accept_pressed {
+                        keep_open = false;
+                    }
+                });
+        }
     }
 
     if keep_open {
