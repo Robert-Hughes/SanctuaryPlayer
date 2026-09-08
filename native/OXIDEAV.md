@@ -50,8 +50,9 @@ The local OxideAV workspace provides the pieces needed for native playback:
 `oxideplay` also demonstrates lease retention through a player queue, direct
 arena-backed YUV420P upload to wgpu (`ad91b3c`, `1a0f621`, `4d0350c`), and the
 FreeBSD/NVIDIA zero-CPU-copy hardware path from a retained VDPAU surface through
-GLX interop into the existing wgpu/Vulkan renderer (`23a415e`, `07d07e9`). Those
-commits are useful reference implementations, not application dependencies.
+GLX interop into the existing wgpu/Vulkan renderer (`23a415e`, `07d07e9`,
+`ac54031`). Those commits are useful reference implementations, not application
+dependencies.
 
 ## Native media boundary
 
@@ -83,10 +84,14 @@ reading the surface. The reference player now proves a Vulkan-preserving
 zero-CPU-copy route on the GTX 1080/NVIDIA stack: `GL_NV_vdpau_interop2` exposes
 full-frame Y plus interleaved UV textures, a GL shader converts them to RGBA in
 Vulkan-exported external memory, and a raw Vulkan GPU copy moves that image into a
-normal wgpu-owned texture. Sanctuary should mirror or extract that bridge rather
-than materialising the lease to CPU. The current reference path is deliberately
-not literal zero-copy yet: it performs the GL conversion plus one Vulkan image
-copy and uses conservative synchronization; those are later optimisation points.
+normal wgpu-owned texture. The current player uses four independent in-flight
+bridge slots; each slot retains its hardware lease until a non-blocking Vulkan
+fence poll proves the dependent copy finished. GL/Vulkan ordering uses GPU
+semaphores and `glFlush`, with no `glFinish()` or per-frame fence wait. If all
+slots are busy, the frame is dropped rather than stalling or materialising to CPU.
+Sanctuary should mirror or extract that lease/slot model rather than depending on
+`oxideplay`. Literal zero-copy remains a later optimisation because the GL
+YUV->RGBA pass and final Vulkan image copy are still present.
 
 ## Audio integration
 
