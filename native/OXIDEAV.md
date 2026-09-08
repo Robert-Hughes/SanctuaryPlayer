@@ -17,11 +17,12 @@ The native workspace keeps normal versioned dependencies in `native/Cargo.toml`:
 ```toml
 oxideav = "0.0.3"
 oxideav-meta = { version = "0.0.1", default-features = false, features = [
-    "aac", "h264", "mp4", "mpegts", "source", "http", "hls",
+    "aac", "h264", "mp4", "mpegts", "source", "http", "hls", "vdpau",
 ] }
 oxideav-pixfmt = "0.1"
 oxideav-audio-filter = "0.1"
 oxideav-sysaudio = "0.1"
+oxideav-vdpau = "0.0.2"
 ```
 
 Local co-development uses `[patch.crates-io]` entries pointing at
@@ -84,23 +85,35 @@ There is no `materialize()`, `VideoFrame` allocation, `plane_tight()` equivalent
 full-frame CPU repack on the ordinary 4:2:0 path. The renderer deliberately rejects
 non-arena/non-YUV420P output rather than silently copying it.
 
-For hardware H.264, retain the `HardwareVideo` lease until GPU work has finished
-reading the surface. The reference player now proves a Vulkan-preserving
-zero-CPU-copy route on the GTX 1080/NVIDIA stack: `GL_NV_vdpau_interop2` exposes
-full-frame Y plus interleaved UV textures, a GL shader converts them to RGBA in
-Vulkan-exported external memory, and a raw Vulkan GPU copy moves that image into a
-normal wgpu-owned texture. The current player uses four independent in-flight
-bridge slots; each slot retains its hardware lease until a non-blocking Vulkan
-fence poll proves the dependent copy finished. GL/Vulkan ordering uses GPU
-semaphores and `glFlush`, with no `glFinish()` or per-frame fence wait. If all
-slots are busy, the frame is dropped rather than stalling or materialising to CPU.
-Sanctuary should mirror or extract that lease/slot model rather than depending on
-`oxideplay`. Literal zero-copy remains a later optimisation because the GL
-YUV->RGBA pass and final Vulkan image copy are still present.
-When reproducing the external-memory import, also mirror `981e3ae`: Vulkan uses
-`VkMemoryDedicatedAllocateInfo` for the shared image, so the GL memory object must
-be marked `GL_DEDICATED_MEMORY_OBJECT_EXT` before `glImportMemoryFdEXT`. NVIDIA may
-otherwise accept the import while framebuffer writes remain invisible.
+The application now exposes three explicit decode/presentation contracts through
+`--decode-mode`:
+
+- `cpu` (default) sets `CodecPreferences::no_hardware`, so software H.264 is selected
+  even though VDPAU is compiled into the same runtime. Output must remain
+  `FrameLease::ArenaVideo`; the renderer refuses a silent materialisation fallback.
+- `vdpau-readback` sets `CodecPreferences::require_hardware` and prefers
+  `h264_vdpau`. The renderer requires a VDPAU `HardwareVideo` lease, explicitly calls
+  its `materialize()` implementation (`VdpVideoSurfaceGetBitsYCbCr` -> CPU I420), and
+  uploads those planes through the existing wgpu YUV path. This deliberately measures
+  hardware decode while retaining CPU readback before presentation.
+- `vdpau-direct` uses the same required-VDPAU selection but never materialises the
+  hardware frame. Sanctuary owns a port of the proven reference bridge:
+  `GL_NV_vdpau_interop2` exposes full-frame Y plus interleaved UV textures, a GL
+  shader converts them to RGBA in Vulkan-exported external memory, and a raw Vulkan
+  GPU copy moves that image into a normal wgpu-owned texture. Four independent slots
+  retain their hardware leases until a non-blocking Vulkan fence proves the dependent
+  copy complete. If every slot is busy, the video frame is dropped rather than
+  stalling or falling back to CPU.
+
+The two VDPAU modes are deliberately strict: failure to obtain hardware decode or to
+execute the selected presentation path is an error, not a request to silently switch
+modes. `7b9a06d` supplies the generic `Executor::with_codec_preferences()` plumbing
+that makes the per-session selection possible while all implementations stay
+registered. The direct path remains zero-CPU-copy rather than literal zero-copy: it
+still performs the GL YUV->RGBA render and one GPU-local Vulkan image copy. It also
+retains the `981e3ae` dedicated-memory requirement: because Vulkan allocates the
+shared image with `VkMemoryDedicatedAllocateInfo`, the GL memory object is marked
+`GL_DEDICATED_MEMORY_OBJECT_EXT` before `glImportMemoryFdEXT`.
 
 The corrected post-`981e3ae` reference-player benchmark used the local 10.03 s,
 1280x720/60 fps Twitch segment (600 frames, five muted paced runs per path).
@@ -130,10 +143,10 @@ job, and starts an `Executor` with a Sanctuary-owned `JobSink`. The job requests
 the video track, so AAC is neither decoded nor sent to an audio device in this
 bring-up milestone.
 
-The current native workspace intentionally omits the `vdpau` feature from
-`oxideav-meta`. That forces H.264 through the software decoder while this CPU lease
-path is established; VDPAU remains available in the local OxideAV checkout and will
-be re-enabled for the hardware milestone.
+The native workspace enables the `vdpau` feature alongside software H.264. Selection
+is per playback session rather than compile-time: `cpu` explicitly excludes hardware,
+while both VDPAU modes explicitly require it. There is therefore no priority-dependent
+software/hardware fallback hidden behind the command-line choice.
 
 The Sanctuary sink forwards each decoded `FrameLease` unchanged through a bounded
 two-frame channel into a four-frame presentation queue. Playback starts paused and
@@ -142,18 +155,30 @@ be shown while paused. Once playing, Sanctuary advances its wall-clock timeline 
 presents due video leases by PTS. The HLS source currently chooses one rendition at
 open (the existing OxideAV default is at most 720p); dynamic ABR/quality switching
 is not yet implemented. The desktop launcher accepts `--video <URL-or-ID>` (or a
-positional video) and `--play`/`--autoplay`, using the same `VideoSource::parse`
-rules as the in-app Change Video flow.
+positional video), `--play`/`--autoplay`, and
+`--decode-mode cpu|vdpau-readback|vdpau-direct`, using the same `VideoSource::parse`
+rules as the in-app Change Video flow. The decode mode defaults to `cpu`.
 
-A sustained GhostBSD validation against Twitch VOD `2845804307` used
-`sanctuary-player --video 2845804307 --play`. Sanctuary resolved the signed HLS URL,
-selected the 1280x720/60 rendition, opened the 4,275-segment VOD, and remained alive
-for the full 20-second bounded run until the external test timeout stopped it. The
-renderer did not report a non-arena lease, and the decoder/pipeline reported no
-`ResourceExhausted` or playback failure. This specifically re-tests the earlier
-failure mode where excessive downstream retention caused an H.264 arena to be
-materialised into `Owned` storage; that automatic fallback no longer exists in
-`d8ca4c2`. The run remained video-only, so no audio device was used.
+Bounded GhostBSD validations against Twitch VOD `2845804307` exercise all three
+modes from the same native binary. Each run resolved the signed HLS URL and selected
+the 1280x720/60, 4,275-segment VOD:
+
+```text
+sanctuary-player --video 2845804307 --play --decode-mode cpu
+sanctuary-player --video 2845804307 --play --decode-mode vdpau-readback
+sanctuary-player --video 2845804307 --play --decode-mode vdpau-direct
+```
+
+The CPU run showed no VDPAU initialisation. The readback run reported the NVIDIA
+580.173.02 VDPAU streaming decoder followed by Sanctuary's explicit 1280x720 CPU-I420
+readback path. The direct run reported the same VDPAU decoder followed by the
+four-slot `GLX interop2 -> Vulkan -> wgpu` bridge. Both hardware runs stayed alive
+for the full 20-second external timeout with no playback/bridge failure; the direct
+run reported no busy-slot drops. The jobs remain video-only, so no audio device was
+opened during these tests. The same two hardware modes were also run for 12 seconds
+against Twitch VOD `2386400830` (the stream that exposed the earlier software-path
+problem); both selected 1280x720 VDPAU output with no H.264 slice-skip or bridge
+errors. Its URL start-time remains unapplied until HLS seeking is wired.
 
 This Twitch web-player GraphQL/Usher protocol is not a stable public playback API,
 so all Twitch-specific request shape, client ID and token handling remain isolated
@@ -194,14 +219,17 @@ is explicitly authorised; use `--ao none`, null/hash sinks or equivalent.
 
 ## Current SanctuaryPlayer follow-ups
 
-1. Add the real audio path, configuring/reconfiguring the sink from the decoder's
+1. Fix playback starvation/pacing so Sanctuary's wall clock cannot run ahead when a
+   selected decode path cannot supply frames in real time; software 720p60 is a known
+   case, while the tested Twitch 480p30 rendition is comfortably CPU-decodable.
+2. Add the real audio path, configuring/reconfiguring the sink from the decoder's
    authoritative AAC output parameters and establishing A/V sync.
-2. Re-enable FreeBSD VDPAU and port/extract the proven GLX/Vulkan bridge into the
-   Sanctuary-owned renderer, retaining each `HardwareVideo` lease until GPU work is
-   complete and keeping CPU materialisation only as an explicit fallback.
 3. Wire media-relative HLS seeking (including `VideoSource::start_time`) rather than
    moving Sanctuary's presentation clock without moving the demuxer/decoder.
 4. Expose useful rendition/quality selection and later ABR once the source layer can
    switch safely during playback.
-5. Extend HLS support for discontinuities, byte ranges, fMP4/MAP, encryption, live
+5. Consider eliminating the final GPU-local image copy in `vdpau-direct` only if wgpu
+   can safely own/sample the externally-written image without weakening resource-state
+   correctness.
+6. Extend HLS support for discontinuities, byte ranges, fMP4/MAP, encryption, live
    reload and other source shapes only as real inputs require them.
