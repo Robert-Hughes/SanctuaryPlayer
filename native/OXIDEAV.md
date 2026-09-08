@@ -47,9 +47,11 @@ The local OxideAV workspace provides the pieces needed for native playback:
   `26f4127`, `b760012`).
 - Decoder output parameters for late-discovered output shape (`72ef547`, `a0c9d78`).
 
-`oxideplay` also demonstrates lease retention through a player queue and direct
-arena-backed YUV420P upload to wgpu (`ad91b3c`, `1a0f621`, `4d0350c`). Those commits
-are useful reference implementations, not application dependencies.
+`oxideplay` also demonstrates lease retention through a player queue, direct
+arena-backed YUV420P upload to wgpu (`ad91b3c`, `1a0f621`, `4d0350c`), and the
+FreeBSD/NVIDIA zero-CPU-copy hardware path from a retained VDPAU surface through
+GLX interop into the existing wgpu/Vulkan renderer (`23a415e`, `07d07e9`). Those
+commits are useful reference implementations, not application dependencies.
 
 ## Native media boundary
 
@@ -77,8 +79,14 @@ logic grows beyond a small adapter, prefer extracting a reusable OxideAV wgpu he
 rather than depending on `oxideplay`.
 
 For hardware H.264, retain the `HardwareVideo` lease until GPU work has finished
-reading the surface. Direct VDPAU → wgpu/Vulkan import/sampling is not implemented
-yet; materialisation remains the compatibility path until that interop exists.
+reading the surface. The reference player now proves a Vulkan-preserving
+zero-CPU-copy route on the GTX 1080/NVIDIA stack: `GL_NV_vdpau_interop2` exposes
+full-frame Y plus interleaved UV textures, a GL shader converts them to RGBA in
+Vulkan-exported external memory, and a raw Vulkan GPU copy moves that image into a
+normal wgpu-owned texture. Sanctuary should mirror or extract that bridge rather
+than materialising the lease to CPU. The current reference path is deliberately
+not literal zero-copy yet: it performs the GL conversion plus one Vulkan image
+copy and uses conservative synchronization; those are later optimisation points.
 
 ## Audio integration
 
@@ -119,8 +127,9 @@ is explicitly authorised; use `--ao none`, null/hash sinks or equivalent.
 2. Carry `FrameLease` through Sanctuary's queues and implement direct arena YUV420P
    upload in the Sanctuary-owned wgpu renderer.
 3. Configure the audio sink from authoritative decoder output parameters.
-4. Add direct hardware-surface import/sampling for `HardwareVideo` leases when the
-   required VDPAU/Vulkan/wgpu interop is available.
+4. Port or extract the proven oxideplay VDPAU/GLX/Vulkan bridge into the
+   Sanctuary-owned renderer, keeping `HardwareVideo` leases GPU-resident and
+   retaining CPU materialisation only as fallback.
 5. Integrate HLS media-relative seeking/timeline behaviour as OxideAV gains it.
 6. Extend source support for HLS discontinuities, byte ranges, fMP4/MAP, encryption,
    live reload and ABR only as real sources require them.
