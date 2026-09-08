@@ -16,6 +16,7 @@ pub mod time_format;
 pub mod twitch;
 mod ui;
 pub mod video;
+mod video_renderer;
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -35,6 +36,8 @@ pub struct SanctuaryPlayerApp {
     window: Option<Arc<Window>>,
     graphics: Option<Graphics>,
     state: AppState,
+    initial_video: Option<video::VideoSource>,
+    initial_autoplay: bool,
     last_update: Instant,
     next_animation_frame: Instant,
     next_egui_repaint: Option<Instant>,
@@ -46,10 +49,23 @@ impl SanctuaryPlayerApp {
             window: None,
             graphics: None,
             state: AppState::new(),
+            initial_video: None,
+            initial_autoplay: false,
             last_update: Instant::now(),
             next_animation_frame: Instant::now(),
             next_egui_repaint: None,
         }
+    }
+
+    pub fn with_initial_video(source: video::VideoSource) -> Self {
+        Self::with_initial_video_options(source, false)
+    }
+
+    pub fn with_initial_video_options(source: video::VideoSource, autoplay: bool) -> Self {
+        let mut app = Self::new();
+        app.initial_video = Some(source);
+        app.initial_autoplay = autoplay;
+        app
     }
 
     fn apply_effect(window: &Window, effect: AppEffect) {
@@ -116,9 +132,16 @@ impl ApplicationHandler for SanctuaryPlayerApp {
         self.last_update = Instant::now();
         self.next_animation_frame = self.last_update;
         self.next_egui_repaint = None;
-        window.request_redraw();
-        self.window = Some(window);
+        self.window = Some(window.clone());
         self.graphics = Some(graphics);
+        if let Some(source) = self.initial_video.take() {
+            if self.initial_autoplay {
+                self.state.play_when_opened();
+            }
+            self.apply_command(window.as_ref(), crate::model::AppCommand::OpenVideo(source));
+        } else {
+            window.request_redraw();
+        }
     }
 
     fn suspended(&mut self, _event_loop: &ActiveEventLoop) {

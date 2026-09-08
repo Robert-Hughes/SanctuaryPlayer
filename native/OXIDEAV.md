@@ -17,7 +17,7 @@ The native workspace keeps normal versioned dependencies in `native/Cargo.toml`:
 ```toml
 oxideav = "0.0.3"
 oxideav-meta = { version = "0.0.1", default-features = false, features = [
-    "aac", "h264", "mp4", "mpegts", "source", "http", "hls", "vdpau",
+    "aac", "h264", "mp4", "mpegts", "source", "http", "hls",
 ] }
 oxideav-pixfmt = "0.1"
 oxideav-audio-filter = "0.1"
@@ -41,7 +41,9 @@ The local OxideAV workspace provides the pieces needed for native playback:
 - FreeBSD VDPAU H.264 streaming decode (`1abfbe8`) with explicit unsupported-case
   fallback rather than silent approximation (`6417b12`).
 - Retainable decoded-frame ownership through `FrameLease` (`c6e6f02`, `4c7099a`).
-- Native pooled software-H.264 arena output (`46f8433`, `94b6372`, `fda3143`).
+- Native pooled software-H.264 arena output (`46f8433`, `94b6372`, `fda3143`),
+  including arena-backed PAFF/SCP assembly and hard pool-exhaustion semantics
+  (`d8ca4c2`).
 - Retainable VDPAU hardware-surface leases (`67ca9af`, `c0e23db`).
 - Native AAC fast enough for real-time playback without Symphonia (`38a8443`,
   `26f4127`, `b760012`).
@@ -70,14 +72,17 @@ decoded FrameLease + audio frames
 Sanctuary-owned renderer / audio sink / playback clock
 ```
 
-The media-session sink should retain `FrameLease`s directly. For software H.264,
-`FrameLease::ArenaVideo` can remain on the same pooled CPU allocation from decoder
-reconstruction, through queues, to the wgpu upload call. The app should implement
-the same lease-aware idea as the `oxideplay` reference path: validate native
-YUV420P arena geometry/strides and pass the borrowed plane slices directly to
-`wgpu::Queue::write_texture()` without `materialize()` or a plane repack. If that
-logic grows beyond a small adapter, prefer extracting a reusable OxideAV wgpu helper
-rather than depending on `oxideplay`.
+The first Sanctuary media-session implementation now retains `FrameLease`s directly.
+For ordinary frame-coded software H.264, `FrameLease::ArenaVideo` stays on the pooled
+decoder allocation through the OxideAV sink, Sanctuary's bounded video queue, and
+the renderer boundary. `d8ca4c2` also guarantees that PAFF/SCP assembly still emits
+`ArenaVideo` and that picture-pool exhaustion returns `ResourceExhausted` rather than
+silently converting a ready frame to `Owned`. `native/app/src/video_renderer.rs`
+validates native YUV420P arena geometry/strides and passes the original borrowed
+Y/U/V plane slices and their real strides directly to `wgpu::Queue::write_texture()`.
+There is no `materialize()`, `VideoFrame` allocation, `plane_tight()` equivalent, or
+full-frame CPU repack on the ordinary 4:2:0 path. The renderer deliberately rejects
+non-arena/non-YUV420P output rather than silently copying it.
 
 For hardware H.264, retain the `HardwareVideo` lease until GPU work has finished
 reading the surface. The reference player now proves a Vulkan-preserving
@@ -106,35 +111,53 @@ about 235.9 to 239.1 MiB. Earlier measurements made while the external-memory
 target rendered black are superseded by these post-fix numbers. Treat these as a
 GhostBSD/GTX-1080 reference result, not a portable performance guarantee.
 
-## Twitch VOD manifest acquisition
+## Twitch VOD acquisition and first native playback path
 
-Twitch VOD source extraction is SanctuaryPlayer-owned rather than an OxideAV
+Twitch VOD source extraction remains SanctuaryPlayer-owned rather than an OxideAV
 framework concern. `native/app/src/twitch.rs` resolves a numeric Twitch VOD ID to
-its signed HLS master-playlist URL without invoking yt-dlp.
-
-The resolver deliberately implements only the playback flow Sanctuary needs:
+its signed HLS master-playlist URL without invoking yt-dlp:
 
 1. POST one GraphQL query to `gql.twitch.tv` for
    `videoPlaybackAccessToken { value signature }`.
 2. Construct the signed `usher.ttvnw.net/vod/<id>.m3u8` URL locally.
 3. Advertise only H.264 in `supported_codecs`, matching the codecs currently
-   available to the native player.
+   requested by the native player.
 
-There is no separate Twitch metadata request and the resolver does not fetch the
-master playlist itself. `AppCommand::OpenVideo` now dispatches Twitch VOD resolution
-onto a worker thread, keeps the winit event thread responsive, and polls the result
-through normal app updates. For the current bring-up stage, success is shown in a
-copyable `Twitch HLS URL` dialog and resolver failures are shown as errors; recognised
-YouTube inputs are rejected with an explicit currently-unsupported dialog.
+`AppCommand::OpenVideo` now keeps both URL resolution and OxideAV source opening off
+the winit event thread. After the Twitch resolver succeeds, the worker converts the
+ordinary `https://...m3u8` URL to `hls+https://...`, creates a video-only OxideAV
+job, and starts an `Executor` with a Sanctuary-owned `JobSink`. The job requests only
+the video track, so AAC is neither decoded nor sent to an audio device in this
+bring-up milestone.
 
-The next media-session step is to replace the success dialog with an OxideAV HLS
-open. At that boundary, convert the returned ordinary `https://...m3u8` URL to
-OxideAV's `hls+https://...` source URI; the OxideAV HLS source then performs the
-master-playlist GET.
+The current native workspace intentionally omits the `vdpau` feature from
+`oxideav-meta`. That forces H.264 through the software decoder while this CPU lease
+path is established; VDPAU remains available in the local OxideAV checkout and will
+be re-enabled for the hardware milestone.
 
-This depends on Twitch's web-player GraphQL/Usher protocol rather than a stable
-public playback API, so all Twitch-specific request shape, client ID and token
-handling remain isolated in that module for straightforward future replacement.
+The Sanctuary sink forwards each decoded `FrameLease` unchanged through a bounded
+two-frame channel into a four-frame presentation queue. Playback starts paused and
+keeps repainting until the first decoded frame is available, so the first picture can
+be shown while paused. Once playing, Sanctuary advances its wall-clock timeline and
+presents due video leases by PTS. The HLS source currently chooses one rendition at
+open (the existing OxideAV default is at most 720p); dynamic ABR/quality switching
+is not yet implemented. The desktop launcher accepts `--video <URL-or-ID>` (or a
+positional video) and `--play`/`--autoplay`, using the same `VideoSource::parse`
+rules as the in-app Change Video flow.
+
+A sustained GhostBSD validation against Twitch VOD `2845804307` used
+`sanctuary-player --video 2845804307 --play`. Sanctuary resolved the signed HLS URL,
+selected the 1280x720/60 rendition, opened the 4,275-segment VOD, and remained alive
+for the full 20-second bounded run until the external test timeout stopped it. The
+renderer did not report a non-arena lease, and the decoder/pipeline reported no
+`ResourceExhausted` or playback failure. This specifically re-tests the earlier
+failure mode where excessive downstream retention caused an H.264 arena to be
+materialised into `Owned` storage; that automatic fallback no longer exists in
+`d8ca4c2`. The run remained video-only, so no audio device was used.
+
+This Twitch web-player GraphQL/Usher protocol is not a stable public playback API,
+so all Twitch-specific request shape, client ID and token handling remain isolated
+in `twitch.rs` for straightforward future replacement.
 
 ## Audio integration
 
@@ -171,13 +194,14 @@ is explicitly authorised; use `--ao none`, null/hash sinks or equivalent.
 
 ## Current SanctuaryPlayer follow-ups
 
-1. Build the native media-session layer directly against the OxideAV library crates.
-2. Carry `FrameLease` through Sanctuary's queues and implement direct arena YUV420P
-   upload in the Sanctuary-owned wgpu renderer.
-3. Configure the audio sink from authoritative decoder output parameters.
-4. Port or extract the proven oxideplay VDPAU/GLX/Vulkan bridge into the
-   Sanctuary-owned renderer, keeping `HardwareVideo` leases GPU-resident and
-   retaining CPU materialisation only as fallback.
-5. Integrate HLS media-relative seeking/timeline behaviour as OxideAV gains it.
-6. Extend source support for HLS discontinuities, byte ranges, fMP4/MAP, encryption,
-   live reload and ABR only as real sources require them.
+1. Add the real audio path, configuring/reconfiguring the sink from the decoder's
+   authoritative AAC output parameters and establishing A/V sync.
+2. Re-enable FreeBSD VDPAU and port/extract the proven GLX/Vulkan bridge into the
+   Sanctuary-owned renderer, retaining each `HardwareVideo` lease until GPU work is
+   complete and keeping CPU materialisation only as an explicit fallback.
+3. Wire media-relative HLS seeking (including `VideoSource::start_time`) rather than
+   moving Sanctuary's presentation clock without moving the demuxer/decoder.
+4. Expose useful rendition/quality selection and later ABR once the source layer can
+   switch safely during playback.
+5. Extend HLS support for discontinuities, byte ranges, fMP4/MAP, encryption, live
+   reload and other source shapes only as real inputs require them.

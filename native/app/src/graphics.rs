@@ -8,6 +8,7 @@ use winit::window::Window;
 use crate::app::AppState;
 use crate::model::AppCommand;
 use crate::ui;
+use crate::video_renderer::VideoRenderer;
 
 pub(crate) struct Graphics {
     _instance: wgpu::Instance,
@@ -20,6 +21,7 @@ pub(crate) struct Graphics {
     egui_context: egui::Context,
     egui_winit: egui_winit::State,
     egui_renderer: egui_wgpu::Renderer,
+    video_renderer: VideoRenderer,
     modifiers: ModifiersState,
     pending_egui_events: Vec<egui::Event>,
 }
@@ -128,6 +130,7 @@ impl Graphics {
         );
         let egui_renderer =
             egui_wgpu::Renderer::new(&device, format, egui_wgpu::RendererOptions::default());
+        let video_renderer = VideoRenderer::new(&device, &queue, format, max_texture_dimension_2d);
         eprintln!(
             "SanctuaryPlayer: GPU {} ({:?}, {:?})",
             adapter_info.name, adapter_info.device_type, adapter_info.backend
@@ -144,6 +147,7 @@ impl Graphics {
             egui_context,
             egui_winit,
             egui_renderer,
+            video_renderer,
             modifiers: ModifiersState::empty(),
             pending_egui_events: Vec::new(),
         })
@@ -208,6 +212,21 @@ impl Graphics {
                 label: Some("sanctuary-player-frame"),
             });
 
+        if !state.has_video() {
+            self.video_renderer.reset();
+        }
+        if let Some(frame) = state.take_video_frame_lease() {
+            self.video_renderer
+                .upload_lease(&self.device, &self.queue, &frame)?;
+        }
+        self.video_renderer.draw(
+            &self.queue,
+            &mut encoder,
+            &target,
+            self.surface_config.width,
+            self.surface_config.height,
+        );
+
         let mut raw_input = self.egui_winit.take_egui_input(window);
         raw_input.events.append(&mut self.pending_egui_events);
         let mut commands = Vec::new();
@@ -249,12 +268,7 @@ impl Graphics {
                         depth_slice: None,
                         resolve_target: None,
                         ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color {
-                                r: 0.015,
-                                g: 0.018,
-                                b: 0.025,
-                                a: 1.0,
-                            }),
+                            load: wgpu::LoadOp::Load,
                             store: wgpu::StoreOp::Store,
                         },
                     })],

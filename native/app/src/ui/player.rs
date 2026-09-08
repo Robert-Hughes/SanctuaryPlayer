@@ -12,8 +12,6 @@ pub fn render(ui: &mut egui::Ui, state: &mut AppState) -> Vec<AppCommand> {
         egui::Id::new("player-background"),
         egui::Sense::click(),
     );
-    ui.painter().rect_filled(rect, 0.0, egui::Color32::BLACK);
-    paint_dummy_video(ui, state);
 
     if state.ui.controls_visible {
         paint_top_info(ui, state);
@@ -29,24 +27,6 @@ pub fn render(ui: &mut egui::Ui, state: &mut AppState) -> Vec<AppCommand> {
     }
 
     commands
-}
-
-fn paint_dummy_video(ui: &mut egui::Ui, state: &AppState) {
-    let rect = ui.max_rect();
-    let vmin = theme::vmin(ui);
-    ui.painter()
-        .rect_filled(rect, 0.0, egui::Color32::from_rgb(8, 9, 13));
-    ui.painter().text(
-        rect.center(),
-        egui::Align2::CENTER_CENTER,
-        format!(
-            "DUMMY VIDEO\n{} {}\n1280 × 720",
-            state.source().unwrap().platform,
-            state.source().unwrap().id
-        ),
-        egui::FontId::proportional((2.2 * vmin).max(14.0)),
-        egui::Color32::from_gray(80),
-    );
 }
 
 fn paint_top_info(ui: &mut egui::Ui, state: &AppState) -> egui::Rect {

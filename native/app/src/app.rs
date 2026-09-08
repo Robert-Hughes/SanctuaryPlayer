@@ -4,8 +4,10 @@ use std::time::Duration;
 
 use url::Url;
 
+use ::oxideav::core::FrameLease;
+
 use crate::model::{AppCommand, PlaybackState, Quality};
-use crate::playback::{DummyPlayback, PlaybackBackend};
+use crate::playback::{DummyPlayback, OxidePlayback, PlaybackBackend};
 use crate::services::{DummyPositionService, PositionService, SavedPosition, VideoMetadata};
 use crate::spoilers::sanitise_title;
 use crate::twitch::{TwitchVodResolveError, resolve_vod_m3u8};
@@ -15,19 +17,26 @@ const CONTROLS_HIDE_AFTER: Duration = Duration::from_secs(2);
 const LOCK_SLIDE_BACK_DURATION: Duration = Duration::from_millis(500);
 
 type TwitchResolver = fn(&str) -> Result<Url, TwitchVodResolveError>;
+type PlaybackFactory = fn(VideoSource, Url) -> Result<Box<dyn PlaybackBackend>, String>;
 
-struct PendingTwitchResolution {
-    receiver: Receiver<Result<Url, TwitchVodResolveError>>,
+fn open_oxide_playback(source: VideoSource, url: Url) -> Result<Box<dyn PlaybackBackend>, String> {
+    OxidePlayback::open(source, url).map(|playback| Box::new(playback) as Box<dyn PlaybackBackend>)
+}
+
+struct PendingVideoOpen {
+    receiver: Receiver<Result<Box<dyn PlaybackBackend>, String>>,
 }
 
 pub struct AppState {
-    playback: DummyPlayback,
+    playback: Box<dyn PlaybackBackend>,
     positions_service: DummyPositionService,
     metadata: Option<VideoMetadata>,
     account: AccountState,
     preferences: Preferences,
     twitch_resolver: TwitchResolver,
-    pending_twitch_resolution: Option<PendingTwitchResolution>,
+    playback_factory: PlaybackFactory,
+    pending_video_open: Option<PendingVideoOpen>,
+    play_when_opened: bool,
     pub(crate) ui: UiState,
 }
 
@@ -102,9 +111,6 @@ pub(crate) enum DialogState {
     TwitchResolving {
         video_id: String,
     },
-    TwitchResolved {
-        url: String,
-    },
     Message {
         title: String,
         message: String,
@@ -114,13 +120,15 @@ pub(crate) enum DialogState {
 impl Default for AppState {
     fn default() -> Self {
         Self {
-            playback: DummyPlayback::new(),
+            playback: Box::new(DummyPlayback::new()),
             positions_service: DummyPositionService::new(),
             metadata: None,
             account: AccountState::default(),
             preferences: Preferences::default(),
             twitch_resolver: resolve_vod_m3u8,
-            pending_twitch_resolution: None,
+            playback_factory: open_oxide_playback,
+            pending_video_open: None,
+            play_when_opened: false,
             ui: UiState::default(),
         }
     }
@@ -131,8 +139,12 @@ impl AppState {
         Self::default()
     }
 
+    pub fn play_when_opened(&mut self) {
+        self.play_when_opened = true;
+    }
+
     pub fn update(&mut self, elapsed: Duration) {
-        self.poll_twitch_resolution();
+        self.poll_video_open();
         self.playback.update(elapsed);
         self.update_lock_slider_return(elapsed);
 
@@ -156,51 +168,69 @@ impl AppState {
         }
     }
 
-    fn poll_twitch_resolution(&mut self) {
-        let Some(pending) = self.pending_twitch_resolution.as_ref() else {
+    fn poll_video_open(&mut self) {
+        let Some(pending) = self.pending_video_open.as_ref() else {
             return;
         };
 
         let result = match pending.receiver.try_recv() {
-            Ok(result) => Some(result.map_err(|error| error.to_string())),
+            Ok(result) => Some(result),
             Err(TryRecvError::Empty) => None,
             Err(TryRecvError::Disconnected) => {
-                Some(Err("Twitch resolver worker stopped unexpectedly".into()))
+                Some(Err("video-open worker stopped unexpectedly".into()))
             }
         };
-
         let Some(result) = result else {
             return;
         };
-        self.pending_twitch_resolution = None;
-        self.ui.dialog = Some(match result {
-            Ok(url) => DialogState::TwitchResolved {
-                url: url.to_string(),
-            },
-            Err(message) => DialogState::Message {
-                title: "Unable to open Twitch video".into(),
-                message,
-            },
-        });
+
+        self.pending_video_open = None;
+        match result {
+            Ok(playback) => {
+                self.playback = playback;
+                self.metadata = None;
+                self.preferences.manually_selected_quality = false;
+                self.apply_favourite_quality();
+                if self.play_when_opened {
+                    self.playback.play();
+                    self.play_when_opened = false;
+                }
+                self.ui.dialog = None;
+            }
+            Err(message) => {
+                self.play_when_opened = false;
+                self.ui.dialog = Some(DialogState::Message {
+                    title: "Unable to open Twitch video".into(),
+                    message,
+                });
+            }
+        }
         self.note_interaction();
     }
 
-    fn begin_twitch_resolution(&mut self, video_id: String) {
+    fn begin_twitch_resolution(&mut self, source: VideoSource) {
         let resolver = self.twitch_resolver;
+        let playback_factory = self.playback_factory;
+        let video_id = source.id.clone();
         let worker_video_id = video_id.clone();
         let (sender, receiver) = mpsc::channel();
         thread::spawn(move || {
-            let _ = sender.send(resolver(&worker_video_id));
+            let result = resolver(&worker_video_id)
+                .map_err(|error| error.to_string())
+                .and_then(|url| playback_factory(source, url));
+            let _ = sender.send(result);
         });
 
-        self.pending_twitch_resolution = Some(PendingTwitchResolution { receiver });
+        self.playback = Box::new(DummyPlayback::new());
+        self.metadata = None;
+        self.pending_video_open = Some(PendingVideoOpen { receiver });
         self.ui.menu_open = false;
         self.ui.dialog = Some(DialogState::TwitchResolving { video_id });
         self.note_interaction();
     }
 
     fn show_message(&mut self, title: impl Into<String>, message: impl Into<String>) {
-        self.pending_twitch_resolution = None;
+        self.pending_video_open = None;
         self.ui.menu_open = false;
         self.ui.dialog = Some(DialogState::Message {
             title: title.into(),
@@ -263,7 +293,7 @@ impl AppState {
 
         match command {
             AppCommand::OpenVideo(source) => match source.platform {
-                VideoPlatform::Twitch => self.begin_twitch_resolution(source.id),
+                VideoPlatform::Twitch => self.begin_twitch_resolution(source),
                 VideoPlatform::YouTube => self.show_message(
                     "YouTube is not supported yet",
                     "SanctuaryPlayer recognises YouTube video IDs and URLs, but YouTube playback is currently unsupported.",
@@ -461,6 +491,10 @@ impl AppState {
         self.playback.quality()
     }
 
+    pub(crate) fn take_video_frame_lease(&mut self) -> Option<FrameLease> {
+        self.playback.take_video_frame_lease()
+    }
+
     pub fn safe_title(&self) -> Option<String> {
         self.metadata
             .as_ref()
@@ -512,11 +546,9 @@ impl AppState {
     }
 
     pub fn needs_animation(&self) -> bool {
-        matches!(
-            self.playback.state(),
-            PlaybackState::Playing | PlaybackState::Seeking
-        ) || self.ui.lock_return_from.is_some()
-            || self.pending_twitch_resolution.is_some()
+        self.playback.needs_animation()
+            || self.ui.lock_return_from.is_some()
+            || self.pending_video_open.is_some()
     }
 }
 
@@ -538,6 +570,15 @@ mod tests {
         Ok(Url::parse("https://usher.ttvnw.net/vod/2386400830.m3u8?sig=test").unwrap())
     }
 
+    fn test_playback_factory(
+        source: VideoSource,
+        _url: Url,
+    ) -> Result<Box<dyn PlaybackBackend>, String> {
+        let mut playback = DummyPlayback::new();
+        playback.open(&source)?;
+        Ok(Box::new(playback))
+    }
+
     #[test]
     fn youtube_open_reports_currently_unsupported() {
         let mut state = AppState::new();
@@ -550,7 +591,7 @@ mod tests {
             Some(DialogState::Message { ref title, ref message })
                 if title.contains("YouTube") && message.contains("unsupported")
         ));
-        assert!(state.pending_twitch_resolution.is_none());
+        assert!(state.pending_video_open.is_none());
         assert!(!state.has_video());
     }
 
@@ -558,11 +599,12 @@ mod tests {
     fn twitch_open_resolves_hls_url_without_blocking_the_command() {
         let mut state = AppState::new();
         state.twitch_resolver = test_twitch_resolver;
+        state.playback_factory = test_playback_factory;
         state.apply(AppCommand::OpenVideo(
             VideoSource::parse("2386400830").unwrap(),
         ));
 
-        assert!(state.pending_twitch_resolution.is_some());
+        assert!(state.pending_video_open.is_some());
         assert!(state.needs_animation());
         assert!(matches!(
             state.ui.dialog,
@@ -571,18 +613,38 @@ mod tests {
 
         for _ in 0..100 {
             state.update(Duration::ZERO);
-            if state.pending_twitch_resolution.is_none() {
+            if state.pending_video_open.is_none() {
                 break;
             }
             std::thread::sleep(Duration::from_millis(1));
         }
 
-        assert!(state.pending_twitch_resolution.is_none());
-        assert!(matches!(
-            state.ui.dialog,
-            Some(DialogState::TwitchResolved { ref url }) if url.contains(".m3u8")
+        assert!(state.pending_video_open.is_none());
+        assert!(state.ui.dialog.is_none());
+        assert!(state.has_video());
+    }
+
+    #[test]
+    fn autoplay_starts_after_async_video_open_completes() {
+        let mut state = AppState::new();
+        state.twitch_resolver = test_twitch_resolver;
+        state.playback_factory = test_playback_factory;
+        state.play_when_opened();
+        state.apply(AppCommand::OpenVideo(
+            VideoSource::parse("2386400830").unwrap(),
         ));
-        assert!(!state.has_video());
+
+        for _ in 0..100 {
+            state.update(Duration::ZERO);
+            if state.pending_video_open.is_none() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+
+        assert!(state.pending_video_open.is_none());
+        assert_eq!(state.playback_state(), &PlaybackState::Playing);
+        assert!(!state.play_when_opened);
     }
 
     #[test]
