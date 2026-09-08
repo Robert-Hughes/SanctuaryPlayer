@@ -1383,6 +1383,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d4a5ff6bcca6c4867b1c4fd4ef63e4db7436ef363e0ad7531d1558856bae64f4"
 
 [[package]]
+name = "linkme"
+version = "0.3.37"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3045e122bd98aef8ec3ad58ce84f0791f64e70163d1a02710af4aa11a4d54cc5"
+dependencies = [
+ "linkme-impl",
+]
+
+[[package]]
+name = "linkme-impl"
+version = "0.3.37"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "77060ebe535362c3da75682cd17b0431017b6e7c5661e714fc69a7ad017d1301"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.5",
+]
+
+[[package]]
 name = "linux-raw-sys"
 version = "0.4.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1953,6 +1973,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "oxideav-bitstream"
+version = "0.0.2"
+
+[[package]]
 name = "oxideav-core"
 version = "0.1.35"
 dependencies = [
@@ -2000,6 +2024,7 @@ dependencies = [
  "oxideav-mp4",
  "oxideav-mpegts",
  "oxideav-source",
+ "oxideav-vdpau",
 ]
 
 [[package]]
@@ -2051,6 +2076,17 @@ name = "oxideav-sysaudio"
 version = "0.1.1"
 dependencies = [
  "libloading 0.9.0",
+]
+
+[[package]]
+name = "oxideav-vdpau"
+version = "0.0.2"
+dependencies = [
+ "libloading 0.8.9",
+ "linkme",
+ "oxideav-bitstream",
+ "oxideav-core",
+ "oxideav-h264",
 ]
 
 [[package]]
@@ -2538,16 +2574,19 @@ dependencies = [
 name = "sanctuary-player-app"
 version = "0.1.0"
 dependencies = [
+ "ash",
  "bytemuck",
  "egui",
  "egui-wgpu",
  "egui-winit",
  "egui_extras",
+ "glow",
  "oxideav",
  "oxideav-audio-filter",
  "oxideav-meta",
  "oxideav-pixfmt",
  "oxideav-sysaudio",
+ "oxideav-vdpau",
  "pollster",
  "regex",
  "serde_json",
@@ -2555,6 +2594,7 @@ dependencies = [
  "url",
  "wgpu",
  "winit",
+ "x11-dl",
 ]
 
 [[package]]

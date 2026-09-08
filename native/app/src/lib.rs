@@ -15,6 +15,8 @@ pub mod spoilers;
 pub mod time_format;
 pub mod twitch;
 mod ui;
+#[cfg(target_os = "freebsd")]
+mod vdpau_vulkan_bridge;
 pub mod video;
 mod video_renderer;
 
@@ -24,6 +26,7 @@ use std::time::{Duration, Instant};
 use app::{AppEffect, AppState};
 use graphics::{Graphics, RenderStatus};
 use input::command_for_key;
+use playback::DecodeMode;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow};
@@ -61,8 +64,22 @@ impl SanctuaryPlayerApp {
         Self::with_initial_video_options(source, false)
     }
 
-    pub fn with_initial_video_options(source: video::VideoSource, autoplay: bool) -> Self {
+    pub fn with_decode_mode(decode_mode: DecodeMode) -> Self {
         let mut app = Self::new();
+        app.state = AppState::with_decode_mode(decode_mode);
+        app
+    }
+
+    pub fn with_initial_video_options(source: video::VideoSource, autoplay: bool) -> Self {
+        Self::with_initial_video_decode_options(source, autoplay, DecodeMode::Cpu)
+    }
+
+    pub fn with_initial_video_decode_options(
+        source: video::VideoSource,
+        autoplay: bool,
+        decode_mode: DecodeMode,
+    ) -> Self {
+        let mut app = Self::with_decode_mode(decode_mode);
         app.initial_video = Some(source);
         app.initial_autoplay = autoplay;
         app

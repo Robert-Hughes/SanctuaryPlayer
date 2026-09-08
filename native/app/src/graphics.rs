@@ -215,9 +215,10 @@ impl Graphics {
         if !state.has_video() {
             self.video_renderer.reset();
         }
+        let decode_mode = state.decode_mode();
         if let Some(frame) = state.take_video_frame_lease() {
             self.video_renderer
-                .upload_lease(&self.device, &self.queue, &frame)?;
+                .upload_lease(&self.device, &self.queue, &frame, decode_mode)?;
         }
         self.video_renderer.draw(
             &self.queue,

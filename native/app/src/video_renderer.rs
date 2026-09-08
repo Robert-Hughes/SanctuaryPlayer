@@ -1,15 +1,45 @@
 use ::oxideav::core::arena::sync::Frame as ArenaFrame;
-use ::oxideav::core::{FrameLease, PixelFormat};
+use ::oxideav::core::{FrameLease, PixelFormat, VideoFrame};
+
+use crate::playback::DecodeMode;
+#[cfg(target_os = "freebsd")]
+use crate::vdpau_vulkan_bridge::VdpauVulkanBridge;
+#[cfg(target_os = "freebsd")]
+use ::oxideav::core::HardwareVideoFrameStorage;
+#[cfg(target_os = "freebsd")]
+use oxideav_vdpau::VdpauVideoFrameStorage;
+
+#[cfg(target_os = "freebsd")]
+const VDPAU_BRIDGE_SLOTS: usize = 4;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Presentation {
+    None,
+    Yuv,
+    #[cfg(target_os = "freebsd")]
+    VdpauDirect(usize),
+}
 
 pub(crate) struct VideoRenderer {
     pipeline: wgpu::RenderPipeline,
     bind_group_layout: wgpu::BindGroupLayout,
+    #[cfg(target_os = "freebsd")]
+    rgba_pipeline: wgpu::RenderPipeline,
+    #[cfg(target_os = "freebsd")]
+    rgba_bind_group_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     uniform_buffer: wgpu::Buffer,
     textures: Option<YuvTextures>,
     bind_group: Option<wgpu::BindGroup>,
+    #[cfg(target_os = "freebsd")]
+    vdpau_bridges: Vec<VdpauVulkanBridge>,
+    #[cfg(target_os = "freebsd")]
+    vdpau_bind_groups: Vec<wgpu::BindGroup>,
+    #[cfg(target_os = "freebsd")]
+    vdpau_busy_drops: u64,
     dims: Option<(u32, u32)>,
-    has_frame: bool,
+    presentation: Presentation,
+    readback_logged: bool,
     max_texture_dimension_2d: u32,
 }
 
@@ -84,8 +114,80 @@ impl VideoRenderer {
             multiview_mask: None,
             cache: None,
         });
+
+        #[cfg(target_os = "freebsd")]
+        let rgba_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("sanctuary-rgba-to-screen"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("rgba_to_screen.wgsl").into()),
+        });
+        #[cfg(target_os = "freebsd")]
+        let rgba_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("sanctuary-rgba-bgl"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
+            });
+        #[cfg(target_os = "freebsd")]
+        let rgba_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("sanctuary-rgba-pl"),
+            bind_group_layouts: &[Some(&rgba_bind_group_layout)],
+            immediate_size: 0,
+        });
+        #[cfg(target_os = "freebsd")]
+        let rgba_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("sanctuary-rgba-pipeline"),
+            layout: Some(&rgba_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &rgba_shader,
+                entry_point: Some("vs"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &rgba_shader,
+                entry_point: Some("fs"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: surface_format,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("sanctuary-yuv-sampler"),
+            label: Some("sanctuary-video-sampler"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
             address_mode_w: wgpu::AddressMode::ClampToEdge,
@@ -95,7 +197,7 @@ impl VideoRenderer {
             ..Default::default()
         });
         let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("sanctuary-yuv-uniform"),
+            label: Some("sanctuary-video-uniform"),
             size: 16,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
@@ -109,18 +211,29 @@ impl VideoRenderer {
         Self {
             pipeline,
             bind_group_layout,
+            #[cfg(target_os = "freebsd")]
+            rgba_pipeline,
+            #[cfg(target_os = "freebsd")]
+            rgba_bind_group_layout,
             sampler,
             uniform_buffer,
             textures: None,
             bind_group: None,
+            #[cfg(target_os = "freebsd")]
+            vdpau_bridges: Vec::new(),
+            #[cfg(target_os = "freebsd")]
+            vdpau_bind_groups: Vec::new(),
+            #[cfg(target_os = "freebsd")]
+            vdpau_busy_drops: 0,
             dims: None,
-            has_frame: false,
+            presentation: Presentation::None,
+            readback_logged: false,
             max_texture_dimension_2d,
         }
     }
 
     pub(crate) fn reset(&mut self) {
-        self.has_frame = false;
+        self.presentation = Presentation::None;
     }
 
     pub(crate) fn upload_lease(
@@ -128,13 +241,84 @@ impl VideoRenderer {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         lease: &FrameLease,
+        decode_mode: DecodeMode,
+    ) -> Result<(), String> {
+        match decode_mode {
+            DecodeMode::Cpu => self.upload_cpu_lease(device, queue, lease),
+            DecodeMode::VdpauReadback => self.upload_vdpau_readback(device, queue, lease),
+            DecodeMode::VdpauDirect => {
+                #[cfg(target_os = "freebsd")]
+                {
+                    self.upload_vdpau_direct(device, queue, lease)
+                }
+                #[cfg(not(target_os = "freebsd"))]
+                {
+                    let _ = (device, queue, lease);
+                    Err("vdpau-direct presentation is only available on FreeBSD".into())
+                }
+            }
+        }
+    }
+
+    fn upload_cpu_lease(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        lease: &FrameLease,
     ) -> Result<(), String> {
         let arena = lease.as_arena_video().ok_or_else(|| {
-            "software playback produced a non-arena video lease; refusing CPU materialisation"
-                .to_owned()
+            "CPU decode produced a non-arena video lease; refusing materialisation".to_owned()
         })?;
         let view = arena_yuv420p_view(arena)
             .ok_or_else(|| "unsupported arena video layout (expected native YUV420P)".to_owned())?;
+        self.upload_yuv420p(device, queue, &view)
+    }
+
+    fn upload_vdpau_readback(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        lease: &FrameLease,
+    ) -> Result<(), String> {
+        let hardware = lease
+            .as_hardware_video()
+            .ok_or_else(|| "vdpau-readback mode received a non-hardware video lease".to_owned())?;
+        if hardware.backend() != "vdpau" {
+            return Err(format!(
+                "vdpau-readback mode received hardware backend {:?}",
+                hardware.backend()
+            ));
+        }
+        if hardware.pixel_format() != PixelFormat::Yuv420P {
+            return Err(format!(
+                "vdpau-readback mode received unsupported format {:?}",
+                hardware.pixel_format()
+            ));
+        }
+        let width = hardware.width();
+        let height = hardware.height();
+        let frame = hardware
+            .materialize()
+            .map_err(|error| format!("VDPAU CPU readback failed: {error}"))?;
+        let view = video_frame_yuv420p_view(&frame, width, height)
+            .ok_or_else(|| "VDPAU readback produced invalid YUV420P planes".to_owned())?;
+        self.upload_yuv420p(device, queue, &view)?;
+        if !self.readback_logged {
+            eprintln!(
+                "SanctuaryPlayer: VDPAU readback presentation active ({}x{}, hardware decode -> CPU I420 -> wgpu)",
+                width, height
+            );
+            self.readback_logged = true;
+        }
+        Ok(())
+    }
+
+    fn upload_yuv420p(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        view: &Yuv420pView<'_>,
+    ) -> Result<(), String> {
         if view.width > self.max_texture_dimension_2d || view.height > self.max_texture_dimension_2d
         {
             return Err(format!(
@@ -168,66 +352,176 @@ impl VideoRenderer {
             view.v_stride,
             view.v,
         );
-        self.has_frame = true;
+        self.presentation = Presentation::Yuv;
+        Ok(())
+    }
+
+    #[cfg(target_os = "freebsd")]
+    fn upload_vdpau_direct(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        lease: &FrameLease,
+    ) -> Result<(), String> {
+        let hardware = lease
+            .as_hardware_video()
+            .ok_or_else(|| "vdpau-direct mode received a non-hardware video lease".to_owned())?;
+        let storage = hardware
+            .downcast_ref::<VdpauVideoFrameStorage>()
+            .ok_or_else(|| "vdpau-direct mode received non-VDPAU hardware storage".to_owned())?;
+        let width = storage.width();
+        let height = storage.height();
+        if width == 0
+            || height == 0
+            || width > self.max_texture_dimension_2d
+            || height > self.max_texture_dimension_2d
+        {
+            return Err(format!("invalid VDPAU frame dimensions {width}x{height}"));
+        }
+
+        let rebuild = self
+            .vdpau_bridges
+            .first()
+            .is_none_or(|bridge| bridge.dimensions() != (width, height));
+        if rebuild {
+            self.vdpau_bridges.clear();
+            self.vdpau_bind_groups.clear();
+            for _ in 0..VDPAU_BRIDGE_SLOTS {
+                let bridge = VdpauVulkanBridge::new(device, queue, width, height)
+                    .map_err(|error| format!("VDPAU direct bridge unavailable: {error}"))?;
+                let view = bridge
+                    .output_texture()
+                    .create_view(&wgpu::TextureViewDescriptor::default());
+                let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("sanctuary-vdpau-rgba-bg"),
+                    layout: &self.rgba_bind_group_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(&view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::Sampler(&self.sampler),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: self.uniform_buffer.as_entire_binding(),
+                        },
+                    ],
+                });
+                drop(view);
+                self.vdpau_bridges.push(bridge);
+                self.vdpau_bind_groups.push(bind_group);
+            }
+            self.vdpau_busy_drops = 0;
+            self.presentation = Presentation::None;
+            eprintln!(
+                "SanctuaryPlayer: VDPAU direct presentation active (GLX interop2 -> Vulkan -> wgpu, {}x{}, {} async slots)",
+                width, height, VDPAU_BRIDGE_SLOTS
+            );
+        }
+
+        let slot = first_ready_slot(self.vdpau_bridges.len(), |index| {
+            self.vdpau_bridges[index]
+                .is_available()
+                .map_err(|error| error.to_string())
+        })?;
+        let Some(slot) = slot else {
+            self.vdpau_busy_drops += 1;
+            if self.vdpau_busy_drops == 1 || self.vdpau_busy_drops.is_multiple_of(120) {
+                eprintln!(
+                    "SanctuaryPlayer: all {VDPAU_BRIDGE_SLOTS} VDPAU direct slots are in flight; dropping video frame"
+                );
+            }
+            return Ok(());
+        };
+
+        self.vdpau_bridges[slot]
+            .copy_from_vdpau(hardware.clone())
+            .map_err(|error| format!("VDPAU direct bridge copy failed: {error}"))?;
+        self.dims = Some((width, height));
+        self.presentation = Presentation::VdpauDirect(slot);
         Ok(())
     }
 
     pub(crate) fn draw(
-        &self,
+        &mut self,
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
         target: &wgpu::TextureView,
         surface_width: u32,
         surface_height: u32,
     ) {
-        let Some((content_width, content_height)) = self.dims.filter(|_| self.has_frame) else {
+        let Some((content_width, content_height)) = self.dims else {
             clear_black(encoder, target);
             return;
         };
-        let Some(bind_group) = self.bind_group.as_ref() else {
+        if self.presentation == Presentation::None {
             clear_black(encoder, target);
             return;
-        };
+        }
 
-        let surface_aspect = surface_width as f32 / surface_height.max(1) as f32;
-        let content_aspect = content_width as f32 / content_height.max(1) as f32;
-        let (sx, sy, ox, oy) = if content_aspect > surface_aspect {
-            let height_fraction = surface_aspect / content_aspect;
-            (
-                1.0,
-                1.0 / height_fraction,
-                0.0,
-                (1.0 - height_fraction) * 0.5,
-            )
-        } else {
-            let width_fraction = content_aspect / surface_aspect;
-            (1.0 / width_fraction, 1.0, (1.0 - width_fraction) * 0.5, 0.0)
-        };
-        queue.write_buffer(
+        write_aspect_uniform(
+            queue,
             &self.uniform_buffer,
-            0,
-            bytemuck::cast_slice(&[sx, sy, ox, oy]),
+            content_width,
+            content_height,
+            surface_width,
+            surface_height,
         );
 
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("sanctuary-video-pass"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: target,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
-        pass.set_pipeline(&self.pipeline);
-        pass.set_bind_group(0, bind_group, &[]);
-        pass.draw(0..3, 0..1);
+        #[cfg(target_os = "freebsd")]
+        let direct_slot = match self.presentation {
+            Presentation::VdpauDirect(slot) => Some(slot),
+            _ => None,
+        };
+
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("sanctuary-video-pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            match self.presentation {
+                Presentation::Yuv => {
+                    let Some(bind_group) = self.bind_group.as_ref() else {
+                        return;
+                    };
+                    pass.set_pipeline(&self.pipeline);
+                    pass.set_bind_group(0, bind_group, &[]);
+                    pass.draw(0..3, 0..1);
+                }
+                #[cfg(target_os = "freebsd")]
+                Presentation::VdpauDirect(slot) => {
+                    let Some(bind_group) = self.vdpau_bind_groups.get(slot) else {
+                        return;
+                    };
+                    pass.set_pipeline(&self.rgba_pipeline);
+                    pass.set_bind_group(0, bind_group, &[]);
+                    pass.draw(0..3, 0..1);
+                }
+                Presentation::None => {}
+            }
+        }
+
+        #[cfg(target_os = "freebsd")]
+        if let Some(slot) = direct_slot
+            && let Some(bridge) = self.vdpau_bridges.get_mut(slot)
+        {
+            bridge.mark_sampled();
+        }
     }
 
     fn ensure_textures(&mut self, device: &wgpu::Device, width: u32, height: u32) {
@@ -310,6 +604,44 @@ impl VideoRenderer {
     }
 }
 
+#[cfg(target_os = "freebsd")]
+fn first_ready_slot<E>(
+    slot_count: usize,
+    mut poll: impl FnMut(usize) -> Result<bool, E>,
+) -> Result<Option<usize>, E> {
+    for index in 0..slot_count {
+        if poll(index)? {
+            return Ok(Some(index));
+        }
+    }
+    Ok(None)
+}
+
+fn write_aspect_uniform(
+    queue: &wgpu::Queue,
+    uniform_buffer: &wgpu::Buffer,
+    content_width: u32,
+    content_height: u32,
+    surface_width: u32,
+    surface_height: u32,
+) {
+    let surface_aspect = surface_width as f32 / surface_height.max(1) as f32;
+    let content_aspect = content_width as f32 / content_height.max(1) as f32;
+    let (sx, sy, ox, oy) = if content_aspect > surface_aspect {
+        let height_fraction = surface_aspect / content_aspect;
+        (
+            1.0,
+            1.0 / height_fraction,
+            0.0,
+            (1.0 - height_fraction) * 0.5,
+        )
+    } else {
+        let width_fraction = content_aspect / surface_aspect;
+        (1.0 / width_fraction, 1.0, (1.0 - width_fraction) * 0.5, 0.0)
+    };
+    queue.write_buffer(uniform_buffer, 0, bytemuck::cast_slice(&[sx, sy, ox, oy]));
+}
+
 fn texture_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding,
@@ -370,7 +702,7 @@ enum PlaneKind {
     V,
 }
 
-struct ArenaYuv420pView<'a> {
+struct Yuv420pView<'a> {
     width: u32,
     height: u32,
     y: &'a [u8],
@@ -381,7 +713,7 @@ struct ArenaYuv420pView<'a> {
     v_stride: u32,
 }
 
-fn arena_yuv420p_view(frame: &ArenaFrame) -> Option<ArenaYuv420pView<'_>> {
+fn arena_yuv420p_view(frame: &ArenaFrame) -> Option<Yuv420pView<'_>> {
     let header = frame.header();
     let width = header.width;
     let height = header.height;
@@ -398,20 +730,61 @@ fn arena_yuv420p_view(frame: &ArenaFrame) -> Option<ArenaYuv420pView<'_>> {
     let y = frame.plane(0)?;
     let u = frame.plane(1)?;
     let v = frame.plane(2)?;
-    let y_stride = frame.plane_stride(0)?;
-    let u_stride = frame.plane_stride(1)?;
-    let v_stride = frame.plane_stride(2)?;
+    yuv420p_view(
+        width,
+        height,
+        y,
+        frame.plane_stride(0)?,
+        u,
+        frame.plane_stride(1)?,
+        v,
+        frame.plane_stride(2)?,
+    )
+}
+
+fn video_frame_yuv420p_view(
+    frame: &VideoFrame,
+    width: u32,
+    height: u32,
+) -> Option<Yuv420pView<'_>> {
+    if frame.planes.len() < 3 {
+        return None;
+    }
+    yuv420p_view(
+        width,
+        height,
+        &frame.planes[0].data,
+        frame.planes[0].stride,
+        &frame.planes[1].data,
+        frame.planes[1].stride,
+        &frame.planes[2].data,
+        frame.planes[2].stride,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn yuv420p_view<'a>(
+    width: u32,
+    height: u32,
+    y: &'a [u8],
+    y_stride: usize,
+    u: &'a [u8],
+    u_stride: usize,
+    v: &'a [u8],
+    v_stride: usize,
+) -> Option<Yuv420pView<'a>> {
+    if width == 0 || height == 0 || !width.is_multiple_of(2) || !height.is_multiple_of(2) {
+        return None;
+    }
     let chroma_width = (width / 2) as usize;
     let chroma_height = (height / 2) as usize;
-
     if !plane_covers_image(y, y_stride, width as usize, height as usize)
         || !plane_covers_image(u, u_stride, chroma_width, chroma_height)
         || !plane_covers_image(v, v_stride, chroma_width, chroma_height)
     {
         return None;
     }
-
-    Some(ArenaYuv420pView {
+    Some(Yuv420pView {
         width,
         height,
         y,
@@ -457,5 +830,30 @@ mod tests {
         assert_eq!(view.y_stride, 4);
         assert_eq!(view.u_stride, 2);
         assert_eq!(view.v_stride, 2);
+    }
+
+    #[test]
+    fn materialised_view_uses_existing_plane_storage() {
+        let frame = VideoFrame {
+            pts: Some(7),
+            planes: vec![
+                ::oxideav::core::VideoPlane {
+                    stride: 4,
+                    data: vec![16; 8],
+                },
+                ::oxideav::core::VideoPlane {
+                    stride: 2,
+                    data: vec![128; 2],
+                },
+                ::oxideav::core::VideoPlane {
+                    stride: 2,
+                    data: vec![128; 2],
+                },
+            ],
+        };
+        let y_ptr = frame.planes[0].data.as_ptr();
+        let view = video_frame_yuv420p_view(&frame, 4, 2).unwrap();
+        assert_eq!(view.y.as_ptr(), y_ptr);
+        assert_eq!(view.y_stride, 4);
     }
 }

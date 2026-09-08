@@ -7,7 +7,7 @@ use url::Url;
 use ::oxideav::core::FrameLease;
 
 use crate::model::{AppCommand, PlaybackState, Quality};
-use crate::playback::{DummyPlayback, OxidePlayback, PlaybackBackend};
+use crate::playback::{DecodeMode, DummyPlayback, OxidePlayback, PlaybackBackend};
 use crate::services::{DummyPositionService, PositionService, SavedPosition, VideoMetadata};
 use crate::spoilers::sanitise_title;
 use crate::twitch::{TwitchVodResolveError, resolve_vod_m3u8};
@@ -17,10 +17,15 @@ const CONTROLS_HIDE_AFTER: Duration = Duration::from_secs(2);
 const LOCK_SLIDE_BACK_DURATION: Duration = Duration::from_millis(500);
 
 type TwitchResolver = fn(&str) -> Result<Url, TwitchVodResolveError>;
-type PlaybackFactory = fn(VideoSource, Url) -> Result<Box<dyn PlaybackBackend>, String>;
+type PlaybackFactory = fn(VideoSource, Url, DecodeMode) -> Result<Box<dyn PlaybackBackend>, String>;
 
-fn open_oxide_playback(source: VideoSource, url: Url) -> Result<Box<dyn PlaybackBackend>, String> {
-    OxidePlayback::open(source, url).map(|playback| Box::new(playback) as Box<dyn PlaybackBackend>)
+fn open_oxide_playback(
+    source: VideoSource,
+    url: Url,
+    decode_mode: DecodeMode,
+) -> Result<Box<dyn PlaybackBackend>, String> {
+    OxidePlayback::open(source, url, decode_mode)
+        .map(|playback| Box::new(playback) as Box<dyn PlaybackBackend>)
 }
 
 struct PendingVideoOpen {
@@ -35,6 +40,7 @@ pub struct AppState {
     preferences: Preferences,
     twitch_resolver: TwitchResolver,
     playback_factory: PlaybackFactory,
+    decode_mode: DecodeMode,
     pending_video_open: Option<PendingVideoOpen>,
     play_when_opened: bool,
     pub(crate) ui: UiState,
@@ -127,6 +133,7 @@ impl Default for AppState {
             preferences: Preferences::default(),
             twitch_resolver: resolve_vod_m3u8,
             playback_factory: open_oxide_playback,
+            decode_mode: DecodeMode::Cpu,
             pending_video_open: None,
             play_when_opened: false,
             ui: UiState::default(),
@@ -137,6 +144,17 @@ impl Default for AppState {
 impl AppState {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn with_decode_mode(decode_mode: DecodeMode) -> Self {
+        Self {
+            decode_mode,
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn decode_mode(&self) -> DecodeMode {
+        self.decode_mode
     }
 
     pub fn play_when_opened(&mut self) {
@@ -211,13 +229,14 @@ impl AppState {
     fn begin_twitch_resolution(&mut self, source: VideoSource) {
         let resolver = self.twitch_resolver;
         let playback_factory = self.playback_factory;
+        let decode_mode = self.decode_mode;
         let video_id = source.id.clone();
         let worker_video_id = video_id.clone();
         let (sender, receiver) = mpsc::channel();
         thread::spawn(move || {
             let result = resolver(&worker_video_id)
                 .map_err(|error| error.to_string())
-                .and_then(|url| playback_factory(source, url));
+                .and_then(|url| playback_factory(source, url, decode_mode));
             let _ = sender.send(result);
         });
 
@@ -573,6 +592,7 @@ mod tests {
     fn test_playback_factory(
         source: VideoSource,
         _url: Url,
+        _decode_mode: DecodeMode,
     ) -> Result<Box<dyn PlaybackBackend>, String> {
         let mut playback = DummyPlayback::new();
         playback.open(&source)?;

@@ -3,14 +3,14 @@ use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError};
 use std::time::Duration;
 
 use ::oxideav::core::{Error, Frame, FrameLease, MediaType, Packet, StreamInfo, TimeBase};
-use ::oxideav::pipeline::{Executor, ExecutorHandle, Job, JobSink};
+use ::oxideav::pipeline::{CodecPreferences, Executor, ExecutorHandle, Job, JobSink};
 use serde_json::json;
 use url::Url;
 
 use crate::model::{PlaybackState, Quality};
 use crate::video::VideoSource;
 
-use super::PlaybackBackend;
+use super::{DecodeMode, PlaybackBackend};
 
 const FRAME_CHANNEL_CAP: usize = 2;
 const VIDEO_QUEUE_TARGET: usize = 4;
@@ -88,7 +88,11 @@ impl JobSink for VideoSink {
 }
 
 impl OxidePlayback {
-    pub fn open(source: VideoSource, m3u8_url: Url) -> Result<Self, String> {
+    pub fn open(
+        source: VideoSource,
+        m3u8_url: Url,
+        decode_mode: DecodeMode,
+    ) -> Result<Self, String> {
         let input = format!("hls+{}", m3u8_url.as_str());
         let job_json = serde_json::to_string(&json!({
             "@in": { "all": [{ "from": input }] },
@@ -101,10 +105,24 @@ impl OxidePlayback {
         let mut registries = ::oxideav::Registries::new();
         oxideav_meta::register_all(&mut registries);
 
+        let codec_preferences = match decode_mode {
+            DecodeMode::Cpu => CodecPreferences {
+                no_hardware: true,
+                ..Default::default()
+            },
+            DecodeMode::VdpauReadback | DecodeMode::VdpauDirect => CodecPreferences {
+                prefer: vec!["h264_vdpau".into()],
+                require_hardware: true,
+                boost: 100,
+                ..Default::default()
+            },
+        };
+
         let (tx, rx) = mpsc::sync_channel(FRAME_CHANNEL_CAP);
         let sink = Box::new(VideoSink::new(tx));
         let executor = Executor::new(&job, &registries)
             .with_sink_override("@display", sink)
+            .with_codec_preferences(codec_preferences)
             .with_threads(0)
             .spawn()
             .map_err(|error| format!("start OxideAV playback: {error}"))?;
@@ -129,7 +147,8 @@ impl OxidePlayback {
 
         let duration = stream_duration(&video_stream);
         eprintln!(
-            "SanctuaryPlayer: OxideAV software video stream codec={} {}x{} time_base={}/{}",
+            "SanctuaryPlayer: OxideAV video stream mode={} codec={} {}x{} time_base={}/{}",
+            decode_mode,
             video_stream.params.codec_id,
             video_stream.params.width.unwrap_or(0),
             video_stream.params.height.unwrap_or(0),

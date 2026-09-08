@@ -1,14 +1,16 @@
 use sanctuary_player_app::SanctuaryPlayerApp;
+use sanctuary_player_app::playback::DecodeMode;
 use sanctuary_player_app::video::VideoSource;
 
 const USAGE: &str = "Usage: sanctuary-player [OPTIONS] [VIDEO]\n\n\
 VIDEO may be a YouTube/Twitch video ID or URL accepted by SanctuaryPlayer.\n\n\
-Options:\n  -v, --video <VIDEO>  Auto-load a video on startup\n      --play, --autoplay  Start playback after the video opens\n  -h, --help           Show this help";
+Options:\n  -v, --video <VIDEO>       Auto-load a video on startup\n      --play, --autoplay    Start playback after the video opens\n      --decode-mode <MODE>  cpu | vdpau-readback | vdpau-direct\n  -h, --help                Show this help";
 
 enum CliAction {
     Run {
         initial_video: Option<VideoSource>,
         autoplay: bool,
+        decode_mode: DecodeMode,
     },
     Help,
 }
@@ -25,6 +27,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let CliAction::Run {
         initial_video,
         autoplay,
+        decode_mode,
     } = action
     else {
         println!("{USAGE}");
@@ -38,8 +41,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let event_loop = winit::event_loop::EventLoop::new()?;
     let mut app = match initial_video {
-        Some(source) => SanctuaryPlayerApp::with_initial_video_options(source, autoplay),
-        None => SanctuaryPlayerApp::new(),
+        Some(source) => {
+            SanctuaryPlayerApp::with_initial_video_decode_options(source, autoplay, decode_mode)
+        }
+        None => SanctuaryPlayerApp::with_decode_mode(decode_mode),
     };
     event_loop.run_app(&mut app)?;
     Ok(())
@@ -49,11 +54,18 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliAction, Strin
     let mut args = args.into_iter();
     let mut video_input = None;
     let mut autoplay = false;
+    let mut decode_mode = DecodeMode::Cpu;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "-h" | "--help" => return Ok(CliAction::Help),
             "--play" | "--autoplay" => autoplay = true,
+            "--decode-mode" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| "--decode-mode requires a mode".to_owned())?;
+                decode_mode = value.parse()?;
+            }
             "-v" | "--video" => {
                 let value = args
                     .next()
@@ -65,6 +77,13 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliAction, Strin
                     set_video_input(&mut video_input, value)?;
                 }
                 break;
+            }
+            _ if arg.starts_with("--decode-mode=") => {
+                let value = &arg["--decode-mode=".len()..];
+                if value.is_empty() {
+                    return Err("--decode-mode requires a mode".into());
+                }
+                decode_mode = value.parse()?;
             }
             _ if arg.starts_with("--video=") => {
                 let value = arg["--video=".len()..].to_owned();
@@ -87,6 +106,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliAction, Strin
     Ok(CliAction::Run {
         initial_video,
         autoplay,
+        decode_mode,
     })
 }
 
@@ -114,6 +134,7 @@ mod tests {
         let CliAction::Run {
             initial_video: Some(source),
             autoplay,
+            decode_mode,
         } = parse(&[
             "--video",
             "https://www.twitch.tv/videos/2386400830?t=1h29m24s",
@@ -124,6 +145,7 @@ mod tests {
         };
 
         assert!(!autoplay);
+        assert_eq!(decode_mode, DecodeMode::Cpu);
         assert_eq!(source.platform, VideoPlatform::Twitch);
         assert_eq!(source.id, "2386400830");
         assert_eq!(source.start_time, Some(Duration::from_secs(5364)));
@@ -134,11 +156,13 @@ mod tests {
         let CliAction::Run {
             initial_video: Some(source),
             autoplay,
+            decode_mode,
         } = parse(&["2395077199"]).unwrap()
         else {
             panic!("expected initial video");
         };
         assert!(!autoplay);
+        assert_eq!(decode_mode, DecodeMode::Cpu);
         assert_eq!(source.platform, VideoPlatform::Twitch);
         assert_eq!(source.id, "2395077199");
     }
@@ -148,12 +172,31 @@ mod tests {
         let CliAction::Run {
             initial_video: Some(source),
             autoplay,
+            decode_mode,
         } = parse(&["--play", "2395077199"]).unwrap()
         else {
             panic!("expected initial video");
         };
         assert!(autoplay);
+        assert_eq!(decode_mode, DecodeMode::Cpu);
         assert_eq!(source.platform, VideoPlatform::Twitch);
+    }
+
+    #[test]
+    fn accepts_explicit_decode_modes() {
+        for (name, expected) in [
+            ("cpu", DecodeMode::Cpu),
+            ("vdpau-readback", DecodeMode::VdpauReadback),
+            ("vdpau-direct", DecodeMode::VdpauDirect),
+        ] {
+            let CliAction::Run { decode_mode, .. } =
+                parse(&["--decode-mode", name, "2395077199"]).unwrap()
+            else {
+                panic!("expected run action");
+            };
+            assert_eq!(decode_mode, expected);
+        }
+        assert!(parse(&["--decode-mode", "banana", "2395077199"]).is_err());
     }
 
     #[test]

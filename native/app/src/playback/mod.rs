@@ -11,6 +11,45 @@ use crate::video::VideoSource;
 pub use self::oxideav::OxidePlayback;
 pub use dummy::DummyPlayback;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DecodeMode {
+    #[default]
+    Cpu,
+    VdpauReadback,
+    VdpauDirect,
+}
+
+impl DecodeMode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Cpu => "cpu",
+            Self::VdpauReadback => "vdpau-readback",
+            Self::VdpauDirect => "vdpau-direct",
+        }
+    }
+}
+
+impl std::fmt::Display for DecodeMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for DecodeMode {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "cpu" => Ok(Self::Cpu),
+            "vdpau-readback" => Ok(Self::VdpauReadback),
+            "vdpau-direct" => Ok(Self::VdpauDirect),
+            _ => Err(format!(
+                "invalid decode mode {value:?}; expected cpu, vdpau-readback, or vdpau-direct"
+            )),
+        }
+    }
+}
+
 /// Application-facing playback API. The concrete implementation owns media
 /// scheduling while the renderer consumes retained decoded-frame leases.
 pub trait PlaybackBackend: Send {
