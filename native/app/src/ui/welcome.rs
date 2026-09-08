@@ -25,18 +25,22 @@ pub fn render(ui: &mut egui::Ui, state: &mut AppState) -> Vec<AppCommand> {
         egui::FontId::proportional(title_size),
         theme::PURPLE,
     );
-    let subtitle_galley = ui.painter().layout(
-        "Please select a video from the Menu\n(top-right corner)".to_owned(),
-        egui::FontId::proportional(subtitle_size),
+    let subtitle_font = egui::FontId::proportional(subtitle_size);
+    let subtitle_line_one = ui.painter().layout_no_wrap(
+        "Please select a video from the Menu".to_owned(),
+        subtitle_font.clone(),
         theme::PINK,
-        f32::INFINITY,
     );
+    let subtitle_line_two =
+        ui.painter()
+            .layout_no_wrap("(top-right corner)".to_owned(), subtitle_font, theme::PINK);
+    let subtitle_height = subtitle_line_one.size().y + subtitle_line_two.size().y;
     let content_height = 0.5 * title_size
         + title_galley.size().y
         + 0.5 * title_size
         + logo_height
         + 0.5 * subtitle_size
-        + subtitle_galley.size().y
+        + subtitle_height
         + 0.5 * subtitle_size;
     let mut y = rect.center().y - content_height * 0.5;
 
@@ -54,9 +58,13 @@ pub fn render(ui: &mut egui::Ui, state: &mut AppState) -> Vec<AppCommand> {
         .paint_at(ui, logo_rect);
     y += logo_height + 0.5 * subtitle_size;
 
-    let subtitle_pos = egui::pos2(rect.center().x - subtitle_galley.size().x * 0.5, y);
+    let subtitle_one_pos = egui::pos2(rect.center().x - subtitle_line_one.size().x * 0.5, y);
     ui.painter()
-        .galley(subtitle_pos, subtitle_galley, theme::PINK);
+        .galley(subtitle_one_pos, subtitle_line_one.clone(), theme::PINK);
+    y += subtitle_line_one.size().y;
+    let subtitle_two_pos = egui::pos2(rect.center().x - subtitle_line_two.size().x * 0.5, y);
+    ui.painter()
+        .galley(subtitle_two_pos, subtitle_line_two, theme::PINK);
 
     menu::render_button(ui, state);
     menu::render(ui, state, &mut commands);
