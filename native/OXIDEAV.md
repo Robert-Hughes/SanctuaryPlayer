@@ -51,8 +51,8 @@ The local OxideAV workspace provides the pieces needed for native playback:
 arena-backed YUV420P upload to wgpu (`ad91b3c`, `1a0f621`, `4d0350c`), and the
 FreeBSD/NVIDIA zero-CPU-copy hardware path from a retained VDPAU surface through
 GLX interop into the existing wgpu/Vulkan renderer (`23a415e`, `07d07e9`,
-`ac54031`). Those commits are useful reference implementations, not application
-dependencies.
+`ac54031`, `981e3ae`). Those commits are useful reference implementations, not
+application dependencies.
 
 ## Native media boundary
 
@@ -92,6 +92,10 @@ slots are busy, the frame is dropped rather than stalling or materialising to CP
 Sanctuary should mirror or extract that lease/slot model rather than depending on
 `oxideplay`. Literal zero-copy remains a later optimisation because the GL
 YUV->RGBA pass and final Vulkan image copy are still present.
+When reproducing the external-memory import, also mirror `981e3ae`: Vulkan uses
+`VkMemoryDedicatedAllocateInfo` for the shared image, so the GL memory object must
+be marked `GL_DEDICATED_MEMORY_OBJECT_EXT` before `glImportMemoryFdEXT`. NVIDIA may
+otherwise accept the import while framebuffer writes remain invisible.
 
 ## Audio integration
 
