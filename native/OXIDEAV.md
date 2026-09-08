@@ -97,6 +97,15 @@ When reproducing the external-memory import, also mirror `981e3ae`: Vulkan uses
 be marked `GL_DEDICATED_MEMORY_OBJECT_EXT` before `glImportMemoryFdEXT`. NVIDIA may
 otherwise accept the import while framebuffer writes remain invisible.
 
+The corrected post-`981e3ae` reference-player benchmark used the local 10.03 s,
+1280x720/60 fps Twitch segment (600 frames, five muted paced runs per path).
+Compared with VDPAU decode followed by CPU `materialize()` and wgpu upload, the
+four-slot async bridge reduced mean total process CPU time from 7.696 s to 2.752 s
+(**64.2% less**, 12.83 to 4.59 ms/frame), while peak process RSS rose only from
+about 235.9 to 239.1 MiB. Earlier measurements made while the external-memory
+target rendered black are superseded by these post-fix numbers. Treat these as a
+GhostBSD/GTX-1080 reference result, not a portable performance guarantee.
+
 ## Audio integration
 
 OxideAV AAC can discover the actual decoded sample rate/channel layout after the
