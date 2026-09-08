@@ -106,6 +106,30 @@ about 235.9 to 239.1 MiB. Earlier measurements made while the external-memory
 target rendered black are superseded by these post-fix numbers. Treat these as a
 GhostBSD/GTX-1080 reference result, not a portable performance guarantee.
 
+## Twitch VOD manifest acquisition
+
+Twitch VOD source extraction is SanctuaryPlayer-owned rather than an OxideAV
+framework concern. `native/app/src/twitch.rs` resolves a numeric Twitch VOD ID to
+its signed HLS master-playlist URL without invoking yt-dlp.
+
+The resolver deliberately implements only the playback flow Sanctuary needs:
+
+1. POST one GraphQL query to `gql.twitch.tv` for
+   `videoPlaybackAccessToken { value signature }`.
+2. Construct the signed `usher.ttvnw.net/vod/<id>.m3u8` URL locally.
+3. Advertise only H.264 in `supported_codecs`, matching the codecs currently
+   available to the native player.
+
+There is no separate Twitch metadata request and the resolver does not fetch the
+master playlist itself; the eventual OxideAV HLS source performs that GET. The
+resolver is blocking and must run on a media/background worker rather than the
+winit event thread. At the media-session boundary, convert the returned ordinary
+`https://...m3u8` URL to OxideAV's `hls+https://...` source URI.
+
+This depends on Twitch's web-player GraphQL/Usher protocol rather than a stable
+public playback API, so all Twitch-specific request shape, client ID and token
+handling remain isolated in that module for straightforward future replacement.
+
 ## Audio integration
 
 OxideAV AAC can discover the actual decoded sample rate/channel layout after the

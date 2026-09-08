@@ -13,6 +13,7 @@ pub mod playback;
 pub mod services;
 pub mod spoilers;
 pub mod time_format;
+pub mod twitch;
 mod ui;
 pub mod video;
 
