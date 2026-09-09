@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use ::oxideav::core::{AudioFrame, CodecParameters};
@@ -22,6 +22,9 @@ pub(crate) struct AudioOutput {
     stream: sysaudio::Stream,
     producer: ringbuf::HeapProd<f32>,
     played_samples: Arc<AtomicU64>,
+    underrun_callbacks: Arc<AtomicU64>,
+    underrun_samples: Arc<AtomicU64>,
+    callback_active: Arc<AtomicBool>,
     source_params: AudioStreamParams,
     device_rate: u32,
     device_channels: u16,
@@ -66,11 +69,24 @@ impl AudioOutput {
         let (producer, mut consumer) = rb.split();
         let played_samples = Arc::new(AtomicU64::new(0));
         let played_samples_cb = Arc::clone(&played_samples);
+        let underrun_callbacks = Arc::new(AtomicU64::new(0));
+        let underrun_callbacks_cb = Arc::clone(&underrun_callbacks);
+        let underrun_samples = Arc::new(AtomicU64::new(0));
+        let underrun_samples_cb = Arc::clone(&underrun_samples);
+        let callback_active = Arc::new(AtomicBool::new(false));
+        let callback_active_cb = Arc::clone(&callback_active);
         let callback_channels = source_channels.max(1) as usize;
 
         let request = StreamRequest::new(source_rate, source_channels);
         let mut stream = sysaudio::open(driver, request, move |out, _info| {
             let written = consumer.pop_slice(out);
+            if written < out.len() && callback_active_cb.load(Ordering::Relaxed) {
+                underrun_callbacks_cb.fetch_add(1, Ordering::Relaxed);
+                underrun_samples_cb.fetch_add(
+                    ((out.len() - written) / callback_channels) as u64,
+                    Ordering::Relaxed,
+                );
+            }
             out[written..].fill(0.0);
             debug_assert_eq!(written % callback_channels, 0);
             played_samples_cb.fetch_add((written / callback_channels) as u64, Ordering::Relaxed);
@@ -121,6 +137,9 @@ impl AudioOutput {
             stream,
             producer,
             played_samples,
+            underrun_callbacks,
+            underrun_samples,
+            callback_active,
             source_params,
             device_rate: device.sample_rate,
             device_channels: device.channels,
@@ -135,6 +154,10 @@ impl AudioOutput {
 
     pub(crate) fn set_media_origin(&mut self, origin: Duration) -> Result<(), String> {
         if self.media_origin.is_none() {
+            eprintln!(
+                "SanctuaryPlayer: audio clock anchored at {:.3}s",
+                origin.as_secs_f64()
+            );
             self.media_origin = Some(origin);
         }
         self.apply_play_state()
@@ -201,6 +224,10 @@ impl AudioOutput {
     fn maybe_finish_preroll(&mut self) -> Result<(), String> {
         if !self.preroll_done && self.queued_samples() >= self.preroll_target_samples {
             self.preroll_done = true;
+            eprintln!(
+                "SanctuaryPlayer: audio preroll ready queued={:.1}ms",
+                self.queued_duration().as_secs_f64() * 1000.0
+            );
             self.apply_play_state()?;
         }
         Ok(())
@@ -216,11 +243,21 @@ impl AudioOutput {
         if should_play == self.stream.is_playing() {
             return Ok(());
         }
+        eprintln!(
+            "SanctuaryPlayer: audio stream {} queued={:.1}ms played={:.3}s",
+            if should_play { "playing" } else { "paused" },
+            self.queued_duration().as_secs_f64() * 1000.0,
+            duration_from_samples(self.played_samples(), self.device_rate).as_secs_f64(),
+        );
+        self.callback_active.store(should_play, Ordering::Relaxed);
         let result = if should_play {
             self.stream.play()
         } else {
             self.stream.pause()
         };
+        if result.is_err() {
+            self.callback_active.store(false, Ordering::Relaxed);
+        }
         result.map_err(|error| {
             format!(
                 "oxideav-sysaudio {} {} failed: {error}",
@@ -242,14 +279,42 @@ impl AudioOutput {
         (self.producer.vacant_len() / self.device_channels.max(1) as usize) as u64
     }
 
-    pub(crate) fn headroom_floor_samples(&self) -> u64 {
-        (self.device_rate as u64 / 4).max(1)
+    pub(crate) fn queue_target_samples(&self) -> u64 {
+        (self.device_rate as u64 / 2).max(1)
+    }
+
+    pub(crate) fn minimum_headroom_samples(&self) -> u64 {
+        (self.device_rate as u64 / 10).max(1)
+    }
+
+    pub(crate) fn queued_duration(&self) -> Duration {
+        duration_from_samples(self.queued_samples(), self.device_rate)
+    }
+
+    pub(crate) fn headroom_duration(&self) -> Duration {
+        duration_from_samples(self.headroom_samples(), self.device_rate)
+    }
+
+    pub(crate) fn played_samples(&self) -> u64 {
+        self.played_samples.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn underrun_callbacks(&self) -> u64 {
+        self.underrun_callbacks.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn underrun_samples(&self) -> u64 {
+        self.underrun_samples.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn is_playing(&self) -> bool {
+        self.stream.is_playing()
     }
 
     pub(crate) fn media_position(&self) -> Option<Duration> {
         let origin = self.media_origin?;
         Some(origin.saturating_add(duration_from_samples(
-            self.played_samples.load(Ordering::Relaxed),
+            self.played_samples(),
             self.device_rate,
         )))
     }
