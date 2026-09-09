@@ -210,8 +210,25 @@ playback. Pitch-preserving time stretch/tempo control is a separate milestone; t
 must not move the media clock faster or slower than the samples actually consumed by
 the output device.
 
-The HLS source still chooses one rendition at open (currently at most 720p); dynamic
-ABR/quality switching is not yet implemented. The desktop launcher accepts
+Before opening playback, Sanctuary now calls `oxideav_hls::inspect_hls()` on the signed
+master playlist. That is one bounded GET of the master only: the inspection returns
+all non-I-frame variants with already-resolved media-playlist URLs plus bandwidth,
+resolution, frame rate, codecs and linked rendition-name/group metadata. Sanctuary
+builds its Quality menu from the video variants (resolution-bearing entries), excluding
+Twitch's audio-only variant. On the current Twitch shape this exposes `1080p60
+(Source)`, `720p60`, `480p`, `360p` and `160p`. The initial rendition remains the HLS
+source's existing fixed-selection preference (normally the highest resolution at or
+below 720p). Sanctuary then opens that selected **media playlist URL directly**, so the
+normal startup path is one master GET followed by one media-playlist GET; the master is
+not fetched a second time.
+
+Changing the Quality selection after `OxidePlayback` has opened currently changes only
+Sanctuary's selected-quality metadata. The active executor remains on the rendition it
+opened with and logs that distinction. Rebuilding/switching the live HLS session at a
+media-time-safe boundary is deliberately deferred; this milestone is enumeration and
+fixed initial selection, not mid-playback ABR/manual switching.
+
+The desktop launcher accepts
 `--video <URL-or-ID>` (or a positional video), `--play`/`--autoplay`, and
 `--decode-mode cpu|vdpau-readback|vdpau-direct`, using the same `VideoSource::parse`
 rules as the in-app Change Video flow. The decode mode defaults to `cpu`.
@@ -279,8 +296,8 @@ programme PCM.
    add explicit output-device / channel-layout / downmix policy.
 4. Add an Android backend to `oxideav-sysaudio` (or another Sanctuary Android audio
    implementation) before enabling real A/V playback there.
-5. Expose useful rendition/quality selection and later ABR once the source layer can
-   switch safely during playback.
+5. Rebuild/switch the active HLS session when the selected fixed quality changes, then
+   add ABR once the source layer can switch safely during playback.
 6. Consider eliminating the final GPU-local image copy in `vdpau-direct` only if wgpu
    can safely own/sample the externally-written image without weakening resource-state
    correctness.
