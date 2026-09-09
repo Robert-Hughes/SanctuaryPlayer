@@ -77,8 +77,10 @@ The first Sanctuary media-session implementation now retains `FrameLease`s direc
 For ordinary frame-coded software H.264, `FrameLease::ArenaVideo` stays on the pooled
 decoder allocation through the OxideAV sink, Sanctuary's bounded video queue, and
 the renderer boundary. `d8ca4c2` also guarantees that PAFF/SCP assembly still emits
-`ArenaVideo` and that picture-pool exhaustion returns `ResourceExhausted` rather than
-silently converting a ready frame to `Owned`. `native/app/src/video_renderer.rs`
+`ArenaVideo` without silently converting a ready frame to `Owned`. `94de8f2` makes
+software-decoder pool pressure block in the reusable arena allocator until a retained
+picture/assembly lease is released, so downstream back-pressure no longer surfaces as
+an H.264 slice-level `ResourceExhausted` failure. `native/app/src/video_renderer.rs`
 validates native YUV420P arena geometry/strides and passes the original borrowed
 Y/U/V plane slices and their real strides directly to `wgpu::Queue::write_texture()`.
 There is no `materialize()`, `VideoFrame` allocation, `plane_tight()` equivalent, or
