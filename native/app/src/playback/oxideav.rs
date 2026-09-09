@@ -3,7 +3,7 @@ use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError};
 use std::time::{Duration, Instant};
 
 use ::oxideav::core::{Error, Frame, FrameLease, MediaType, Packet, StreamInfo, TimeBase};
-use ::oxideav::pipeline::{CodecPreferences, Executor, ExecutorHandle, Job, JobSink};
+use ::oxideav::pipeline::{BarrierKind, CodecPreferences, Executor, ExecutorHandle, Job, JobSink};
 use oxideav_hls::{HlsPlaylistInfo, HlsVariant};
 use serde_json::json;
 use url::Url;
@@ -41,9 +41,23 @@ pub struct OxidePlayback {
     timeline_origin_seconds: Option<f64>,
     first_video_seconds: Option<f64>,
     first_audio_seconds: Option<f64>,
+    audio_anchor_seconds: Option<f64>,
     first_frame_presented: bool,
     sink_finished: bool,
+    seek_pending: Option<PendingSeek>,
+    seek_supported: bool,
     diagnostics: PlaybackDiagnostics,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct PendingSeek {
+    generation: u32,
+    requested: Duration,
+    prior_position: Duration,
+    resume_playing: bool,
+    barriers_remaining: usize,
+    landing: Option<(i64, TimeBase)>,
+    rejected: bool,
 }
 
 struct PlaybackDiagnostics {
@@ -69,6 +83,7 @@ impl PlaybackDiagnostics {
 enum SessionMsg {
     Started(Vec<StreamInfo>),
     Frame { kind: MediaType, frame: FrameLease },
+    Barrier(BarrierKind),
     Finished,
 }
 
@@ -85,6 +100,7 @@ impl SessionMsg {
                 ..
             } => "video",
             Self::Frame { .. } => "other",
+            Self::Barrier(_) => "barrier",
             Self::Finished => "finish",
         }
     }
@@ -157,6 +173,10 @@ impl JobSink for SessionSink {
             return Ok(());
         }
         self.send(SessionMsg::Frame { kind, frame })
+    }
+
+    fn barrier(&mut self, barrier: BarrierKind) -> ::oxideav::core::Result<()> {
+        self.send(SessionMsg::Barrier(barrier))
     }
 
     fn finish(&mut self) -> ::oxideav::core::Result<()> {
@@ -325,8 +345,11 @@ impl OxidePlayback {
             timeline_origin_seconds: session.timeline_origin_seconds,
             first_video_seconds: session.first_video_seconds,
             first_audio_seconds: session.first_audio_seconds,
+            audio_anchor_seconds: session.first_audio_seconds,
             first_frame_presented: false,
             sink_finished: false,
+            seek_pending: None,
+            seek_supported: true,
             diagnostics: PlaybackDiagnostics::new(),
         })
     }
@@ -363,8 +386,11 @@ impl OxidePlayback {
         self.timeline_origin_seconds = session.timeline_origin_seconds;
         self.first_video_seconds = session.first_video_seconds;
         self.first_audio_seconds = session.first_audio_seconds;
+        self.audio_anchor_seconds = session.first_audio_seconds;
         self.first_frame_presented = false;
         self.sink_finished = false;
+        self.seek_pending = None;
+        self.seek_supported = true;
         self.video_queue.clear();
         self.diagnostics = PlaybackDiagnostics::new();
     }
@@ -417,6 +443,13 @@ impl OxidePlayback {
         if matches!(self.state, PlaybackState::Error(_)) {
             return Some("playback-error");
         }
+        if self.seek_pending.is_some() {
+            // A seek barrier is ordered behind all pre-seek payload on each
+            // routed track. Drain unconditionally until every matching route
+            // barrier arrives; ordinary A/V forward-buffer limits would
+            // otherwise be able to hide the barrier behind stale frames.
+            return None;
+        }
 
         if let Some(audio) = self.audio_output.as_ref() {
             return av_pump_block_reason(AvPumpState {
@@ -468,6 +501,13 @@ impl OxidePlayback {
         match message {
             SessionMsg::Started(_) => Ok(()),
             SessionMsg::Frame { kind, frame } => {
+                if self.seek_pending.is_some() {
+                    if kind == MediaType::Video {
+                        self.diagnostics.dropped_video_frames =
+                            self.diagnostics.dropped_video_frames.saturating_add(1);
+                    }
+                    return Ok(());
+                }
                 self.observe_frame_timestamp(kind, frame.pts());
                 self.sync_audio_origin()?;
                 match kind {
@@ -510,6 +550,7 @@ impl OxidePlayback {
                     _ => Ok(()),
                 }
             }
+            SessionMsg::Barrier(barrier) => self.handle_seek_barrier(barrier),
             SessionMsg::Finished => {
                 if let Some(audio) = self.audio_output.as_mut() {
                     audio.finish_input()?;
@@ -518,6 +559,100 @@ impl OxidePlayback {
                 Ok(())
             }
         }
+    }
+
+    fn handle_seek_barrier(&mut self, barrier: BarrierKind) -> Result<(), String> {
+        let generation = match barrier {
+            BarrierKind::SeekFlush { generation, .. }
+            | BarrierKind::SeekRejected { generation } => generation,
+        };
+        let Some(pending) = self.seek_pending.as_mut() else {
+            eprintln!("SanctuaryPlayer: ignoring stale seek barrier generation={generation}");
+            return Ok(());
+        };
+        if generation != pending.generation {
+            eprintln!(
+                "SanctuaryPlayer: ignoring stale seek barrier generation={} current={}",
+                generation, pending.generation
+            );
+            return Ok(());
+        }
+
+        match barrier {
+            BarrierKind::SeekFlush {
+                landed_pts,
+                time_base,
+                ..
+            } => {
+                pending.landing.get_or_insert((landed_pts, time_base));
+            }
+            BarrierKind::SeekRejected { .. } => pending.rejected = true,
+        }
+        pending.barriers_remaining = pending.barriers_remaining.saturating_sub(1);
+        if pending.barriers_remaining != 0 {
+            return Ok(());
+        }
+
+        let pending = self
+            .seek_pending
+            .take()
+            .expect("matching seek barrier implies pending seek");
+        if pending.rejected {
+            self.seek_supported = false;
+            self.position = pending.prior_position;
+            self.state = PlaybackState::Paused;
+            if pending.resume_playing {
+                self.play();
+            }
+            eprintln!(
+                "SanctuaryPlayer: seek rejected generation={} restored={:.3}s",
+                pending.generation,
+                self.position.as_secs_f64()
+            );
+            return Ok(());
+        }
+
+        let (landed_pts, time_base) = pending
+            .landing
+            .ok_or_else(|| "OxideAV seek completed without a landing timestamp".to_owned())?;
+        let origin = self.timeline_origin_seconds.ok_or_else(|| {
+            "OxideAV seek landed before media timeline origin was known".to_owned()
+        })?;
+        let raw_landed_seconds = time_base.seconds_of(landed_pts);
+        if !raw_landed_seconds.is_finite() {
+            return Err("OxideAV seek returned a non-finite landing timestamp".into());
+        }
+        let landed = Duration::from_secs_f64((raw_landed_seconds - origin).max(0.0));
+
+        if let Some(audio) = self.audio_output.as_mut() {
+            audio.set_paused(true)?;
+        }
+        if let Some(stream) = self.audio_stream.as_ref() {
+            self.audio_output = Some(
+                AudioOutput::open(&stream.params)
+                    .map_err(|error| format!("reopen audio output after seek: {error}"))?,
+            );
+            // The first post-barrier decoded audio PTS establishes the new
+            // audio epoch relative to the source-wide timeline origin.
+            self.audio_anchor_seconds = None;
+        }
+
+        self.video_queue.clear();
+        self.first_frame_presented = false;
+        self.position = landed;
+        self.state = PlaybackState::Paused;
+        if pending.resume_playing {
+            self.play();
+        }
+        eprintln!(
+            "SanctuaryPlayer: seek landed generation={} requested={:.3}s landed={:.3}s raw={:.3}s resume_playing={}",
+            pending.generation,
+            pending.requested.as_secs_f64(),
+            landed.as_secs_f64(),
+            raw_landed_seconds,
+            pending.resume_playing,
+        );
+        Ok(())
     }
 
     fn observe_frame_timestamp(&mut self, kind: MediaType, pts: Option<i64>) {
@@ -547,6 +682,10 @@ impl OxidePlayback {
             }
             _ => {}
         }
+        if kind == MediaType::Audio && self.audio_anchor_seconds.is_none() {
+            self.audio_anchor_seconds = Some(seconds);
+            eprintln!("SanctuaryPlayer: audio epoch PTS={seconds:.3}s raw={pts}");
+        }
         if self.timeline_origin_seconds.is_none() {
             self.timeline_origin_seconds = timeline_origin_seconds(
                 self.first_video_seconds,
@@ -563,14 +702,14 @@ impl OxidePlayback {
     }
 
     fn sync_audio_origin(&mut self) -> Result<(), String> {
-        let (Some(origin), Some(first_audio), Some(audio)) = (
+        let (Some(origin), Some(audio_anchor), Some(audio)) = (
             self.timeline_origin_seconds,
-            self.first_audio_seconds,
+            self.audio_anchor_seconds,
             self.audio_output.as_mut(),
         ) else {
             return Ok(());
         };
-        let relative = (first_audio - origin).max(0.0);
+        let relative = (audio_anchor - origin).max(0.0);
         audio.set_media_origin(Duration::from_secs_f64(relative))
     }
 
@@ -675,6 +814,9 @@ impl OxidePlayback {
     }
 
     fn update_position(&mut self, elapsed: Duration) {
+        if matches!(self.state, PlaybackState::Seeking) {
+            return;
+        }
         if let Some(audio) = self.audio_output.as_ref() {
             if let Some(position) = audio.media_position() {
                 self.position = position;
@@ -805,9 +947,73 @@ impl PlaybackBackend for OxidePlayback {
         self.duration
     }
 
-    fn seek(&mut self, _position: Duration) {
-        // HLS media-relative seek integration is a separate milestone. Do not
-        // fake a seek by moving only Sanctuary's clock away from the decoder.
+    fn seek(&mut self, position: Duration) {
+        if !self.seek_supported {
+            eprintln!("SanctuaryPlayer: seek ignored; source rejected seeking earlier");
+            return;
+        }
+        let Some(origin) = self.timeline_origin_seconds else {
+            eprintln!("SanctuaryPlayer: seek ignored until media timeline origin is known");
+            return;
+        };
+        let Some(executor) = self.executor.as_ref() else {
+            return;
+        };
+        let target = self
+            .duration
+            .map_or(position, |duration| position.min(duration));
+        let stream = &self.video_stream;
+        let raw_seconds = origin + target.as_secs_f64();
+        let Some(pts) = stream_pts_for_media_position(stream, target, origin) else {
+            self.fail("cannot seek: invalid video time base".into());
+            return;
+        };
+
+        let (prior_position, resume_playing) = self
+            .seek_pending
+            .as_ref()
+            .map(|pending| (pending.prior_position, pending.resume_playing))
+            .unwrap_or((self.position, matches!(self.state, PlaybackState::Playing)));
+
+        // Freeze the application-owned audio clock before the seek command can
+        // move the source. Otherwise a fast source thread could land and start
+        // filling post-seek pipeline state while OSS is still consuming the
+        // old PCM ring.
+        if let Some(audio) = self.audio_output.as_mut()
+            && let Err(error) = audio.set_paused(true)
+        {
+            self.fail(error);
+            return;
+        }
+        let generation = match executor.seek_with_generation(stream.index, pts, stream.time_base) {
+            Ok(generation) => generation,
+            Err(error) => {
+                if resume_playing && let Some(audio) = self.audio_output.as_mut() {
+                    let _ = audio.set_paused(false);
+                }
+                self.fail(format!("dispatch OxideAV seek: {error}"));
+                return;
+            }
+        };
+        self.video_queue.clear();
+        self.position = target;
+        self.state = PlaybackState::Seeking;
+        self.seek_pending = Some(PendingSeek {
+            generation,
+            requested: target,
+            prior_position,
+            resume_playing,
+            barriers_remaining: usize::from(self.audio_stream.is_some()) + 1,
+            landing: None,
+            rejected: false,
+        });
+        eprintln!(
+            "SanctuaryPlayer: seek begin generation={} media={:.3}s raw={:.3}s resume_playing={}",
+            generation,
+            target.as_secs_f64(),
+            raw_seconds,
+            resume_playing,
+        );
     }
 
     fn available_rates(&self) -> &[f32] {
@@ -1064,6 +1270,21 @@ fn timeline_origin_seconds(
     }
 }
 
+fn stream_pts_for_media_position(
+    stream: &StreamInfo,
+    position: Duration,
+    origin_seconds: f64,
+) -> Option<i64> {
+    let tick_seconds = stream.time_base.as_rational().as_f64();
+    if !tick_seconds.is_finite() || tick_seconds <= 0.0 || !origin_seconds.is_finite() {
+        return None;
+    }
+    let raw_seconds = origin_seconds + position.as_secs_f64();
+    raw_seconds
+        .is_finite()
+        .then(|| (raw_seconds / tick_seconds).round() as i64)
+}
+
 fn relative_stream_position(
     stream: &StreamInfo,
     pts: i64,
@@ -1115,8 +1336,11 @@ mod tests {
                 timeline_origin_seconds: Some(0.0),
                 first_video_seconds: Some(0.0),
                 first_audio_seconds: None,
+                audio_anchor_seconds: None,
                 first_frame_presented: true,
                 sink_finished: false,
+                seek_pending: None,
+                seek_supported: true,
                 diagnostics: PlaybackDiagnostics::new(),
             },
             tx,
@@ -1378,6 +1602,81 @@ mod tests {
             relative_stream_position(&video_stream, 6_308_460, origin),
             Some(Duration::from_millis(70))
         );
+    }
+
+    #[test]
+    fn twitch_media_seek_converts_to_transport_pts() {
+        let stream = StreamInfo {
+            index: 0,
+            time_base: TimeBase::new(1, 90_000),
+            duration: None,
+            start_time: Some(6_302_160),
+            params: CodecParameters::video(CodecId::new("h264")),
+        };
+        assert_eq!(
+            stream_pts_for_media_position(&stream, Duration::from_secs(300), 70.024),
+            Some(33_302_160)
+        );
+    }
+
+    #[test]
+    fn seek_waits_for_every_routed_barrier_before_reanchoring() {
+        let (mut playback, _tx) = clock_test_playback();
+        playback.state = PlaybackState::Seeking;
+        playback.position = Duration::from_secs(30);
+        playback.seek_pending = Some(PendingSeek {
+            generation: 9,
+            requested: Duration::from_secs(30),
+            prior_position: Duration::from_secs(2),
+            resume_playing: true,
+            barriers_remaining: 2,
+            landing: None,
+            rejected: false,
+        });
+
+        playback
+            .handle_seek_barrier(BarrierKind::SeekFlush {
+                generation: 9,
+                landed_pts: 2_700_000,
+                time_base: TimeBase::new(1, 90_000),
+            })
+            .unwrap();
+        assert!(playback.seek_pending.is_some());
+        assert_eq!(playback.state, PlaybackState::Seeking);
+
+        playback
+            .handle_seek_barrier(BarrierKind::SeekFlush {
+                generation: 9,
+                landed_pts: 2_700_000,
+                time_base: TimeBase::new(1, 90_000),
+            })
+            .unwrap();
+        assert!(playback.seek_pending.is_none());
+        assert_eq!(playback.position, Duration::from_secs(30));
+        assert_eq!(playback.state, PlaybackState::Playing);
+        assert!(!playback.first_frame_presented);
+    }
+
+    #[test]
+    fn rejected_seek_restores_prior_position_and_disables_future_seeks() {
+        let (mut playback, _tx) = clock_test_playback();
+        playback.state = PlaybackState::Seeking;
+        playback.position = Duration::from_secs(30);
+        playback.seek_pending = Some(PendingSeek {
+            generation: 4,
+            requested: Duration::from_secs(30),
+            prior_position: Duration::from_secs(3),
+            resume_playing: false,
+            barriers_remaining: 1,
+            landing: None,
+            rejected: false,
+        });
+        playback
+            .handle_seek_barrier(BarrierKind::SeekRejected { generation: 4 })
+            .unwrap();
+        assert_eq!(playback.position, Duration::from_secs(3));
+        assert_eq!(playback.state, PlaybackState::Paused);
+        assert!(!playback.seek_supported);
     }
 
     #[test]
