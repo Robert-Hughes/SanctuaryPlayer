@@ -222,11 +222,20 @@ below 720p). Sanctuary then opens that selected **media playlist URL directly**,
 normal startup path is one master GET followed by one media-playlist GET; the master is
 not fetched a second time.
 
-Changing the Quality selection after `OxidePlayback` has opened currently changes only
-Sanctuary's selected-quality metadata. The active executor remains on the rendition it
-opened with and logs that distinction. Rebuilding/switching the live HLS session at a
-media-time-safe boundary is deliberately deferred; this milestone is enumeration and
-fixed initial selection, not mid-playback ABR/manual switching.
+Changing the Quality selection now performs a deliberately simple fixed-rendition
+restart. Sanctuary pauses the old audio output, disconnects the old bounded session
+receiver (so a sink blocked in `SyncSender::send()` cannot deadlock executor shutdown),
+aborts/joins the old executor, drops the old audio device and decoded-frame queue, then
+opens a fresh A/V session directly on the already-resolved URL for the selected variant.
+The master playlist is therefore not fetched again during a quality change. If the old
+session was playing, the replacement session is put back into Playing state after it is
+opened; if it was paused it remains paused.
+
+This is intentionally **not** media-time-safe switching yet. HLS seeking is still not
+wired, so the replacement pipeline starts decoding the selected rendition from its
+beginning and Sanctuary resets the playback clock to zero. Quality switching is also
+synchronous on the caller for now. Seamless switching at the current timestamp, async
+reopen, decoder overlap/cross-fade and ABR remain later work.
 
 The desktop launcher accepts
 `--video <URL-or-ID>` (or a positional video), `--play`/`--autoplay`, and
@@ -241,7 +250,7 @@ integration without producing sound. Both CPU and `vdpau-direct` runs selected t
 bridge. A hardware-free `oxideav-sysaudio` mock regression proves that the 50 ms
 preroll gates start, consumed PCM advances the master clock, and an empty ring causes
 the clock to remain fixed while the callback emits silence. The full Sanctuary app
-suite currently passes 52 tests.
+suite currently passes 59 tests.
 
 This Twitch web-player GraphQL/Usher protocol is not a stable public playback API,
 so all Twitch-specific request shape, client ID and token handling remain isolated
