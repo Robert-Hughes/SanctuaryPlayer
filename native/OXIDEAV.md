@@ -193,6 +193,28 @@ when necessary) and leaves an unknown start as `None`; Sanctuary then anchors fr
 first actual decoded A/V PTS values. Runtime logs print those first PTS values and the
 chosen media-timeline origin explicitly.
 
+Native HLS seeking is implemented by `b0234ab` (optional `PacketSource::seek_to`),
+`96e3e49` (packet-source seek/barrier integration and duration propagation), `982f5ae`
+(HLS `#EXTINF` segment-time indexing plus per-segment MPEG-TS seeking), and `61a8332`
+(Sanctuary playback integration). Sanctuary converts the requested media-relative
+position back onto the source transport PTS axis (`timeline_origin + media_position`)
+and dispatches it through `ExecutorHandle::seek_with_generation()`. While a seek is
+pending it exposes `PlaybackState::Seeking`, pauses OSS/WASAPI/CoreAudio, clears its
+video queue, drains/discards pre-seek frames and waits for the matching barriers from
+both routed A/V tracks. A successful `SeekFlush` carries the decode-safe MPEG-TS landing
+PTS; Sanctuary converts that back to media time, drops/reopens its PCM output so no
+pre-seek samples survive, resets video presentation, and lets the first post-seek AAC
+PTS establish the new audio-master epoch before normal preroll can resume. A rejected
+seek restores the previous position/play state and disables further seeks for that
+session. Rapid later seeks supersede older generations, whose stale barriers are ignored.
+
+The HLS source no longer models a VOD as one giant concatenated byte stream. It retains
+resolved segment URLs and cumulative `#EXTINF` timing, owns one MPEG-TS demuxer for the
+active segment, and on seek jumps directly to the target segment before asking the inner
+MPEG-TS demuxer for the nearest video access point at or before the raw target PTS. This
+avoids probing the byte lengths of every preceding segment. Playlist `#EXTINF` totals
+are also propagated as the player-visible duration.
+
 The audio and video frames arrive through one ordered, bounded session channel, so
 back-pressure must be decided for the A/V session as a whole. The first audio version
 incorrectly stopped draining that shared channel as soon as the four-frame video target
@@ -241,11 +263,12 @@ The master playlist is therefore not fetched again during a quality change. If t
 session was playing, the replacement session is put back into Playing state after it is
 opened; if it was paused it remains paused.
 
-This is intentionally **not** media-time-safe switching yet. HLS seeking is still not
-wired, so the replacement pipeline starts decoding the selected rendition from its
-beginning and Sanctuary resets the playback clock to zero. Quality switching is also
-synchronous on the caller for now. Seamless switching at the current timestamp, async
-reopen, decoder overlap/cross-fade and ABR remain later work.
+This is intentionally **not** media-time-safe switching yet. Although ordinary HLS
+seeking is now wired, the quality-restart path does not yet invoke it: a replacement
+rendition still starts from its beginning and Sanctuary resets the playback clock to
+zero. Quality switching is also synchronous on the caller for now. The next quality
+milestone can reuse the seek path to reopen at the current media position; decoder
+overlap/cross-fade and ABR remain later work.
 
 The desktop launcher accepts
 `--video <URL-or-ID>` (or a positional video), `--play`/`--autoplay`, and
@@ -259,8 +282,13 @@ integration without producing sound. Both CPU and `vdpau-direct` runs selected t
 580.173.02 streaming decoder and the four-slot `GLX interop2 -> Vulkan -> wgpu`
 bridge. A hardware-free `oxideav-sysaudio` mock regression proves that the 50 ms
 preroll gates start, consumed PCM advances the master clock, and an empty ring causes
-the clock to remain fixed while the callback emits silence. The full Sanctuary app
-suite currently passes 59 tests.
+the clock to remain fixed while the callback emits silence. A separate real-network
+seek smoke test was run through `OxidePlayback` while remaining paused throughout:
+Twitch 160p requested media 300.000 s, selected segment 29 (`#EXTINF` start 290.290 s),
+landed on a video access point at media 298.334 s / raw 368.358 s, then received the
+first post-seek AAC epoch at media 298.368 s. The OSS stream never entered Playing.
+The temporary network-dependent test was removed afterwards. The full Sanctuary app
+suite currently passes 63 tests.
 
 This Twitch web-player GraphQL/Usher protocol is not a stable public playback API,
 so all Twitch-specific request shape, client ID and token handling remain isolated
@@ -307,17 +335,16 @@ programme PCM.
 
 ## Current SanctuaryPlayer follow-ups
 
-1. Wire media-relative HLS seeking (including `VideoSource::start_time`) rather than
-   moving Sanctuary's presentation clock without moving the demuxer/decoder.
+1. Apply `VideoSource::start_time` through the real HLS seek path during initial open.
 2. Add pitch-preserving audio time-stretch before re-enabling 0.25x-2.0x rates for
    real A/V sessions.
 3. Apply output-latency compensation from `oxideav-sysaudio::Stream::latency()` and
    add explicit output-device / channel-layout / downmix policy.
 4. Add an Android backend to `oxideav-sysaudio` (or another Sanctuary Android audio
    implementation) before enabling real A/V playback there.
-5. Make fixed HLS quality changes media-time-safe (seek the replacement session to the
-   current position, then move the reopen off the UI thread); add ABR only after that
-   source/session switching boundary is robust.
+5. Make fixed HLS quality changes media-time-safe by seeking the replacement session to
+   the previous media position, then move the reopen off the UI thread; add ABR only
+   after that source/session switching boundary is robust.
 6. Consider eliminating the final GPU-local image copy in `vdpau-direct` only if wgpu
    can safely own/sample the externally-written image without weakening resource-state
    correctness.
