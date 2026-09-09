@@ -18,6 +18,7 @@ egui-winit.workspace = true
 egui-wgpu.workspace = true
 egui_extras.workspace = true
 pollster.workspace = true
+ringbuf.workspace = true
 oxideav.workspace = true
 oxideav-meta.workspace = true
 oxideav-pixfmt.workspace = true
@@ -34,3 +35,6 @@ ash = "0.38"
 glow = "0.17"
 x11-dl = "2.21"
 oxideav-vdpau.workspace = true
+
+[dev-dependencies]
+oxideav-sysaudio = { workspace = true, features = ["mock"] }

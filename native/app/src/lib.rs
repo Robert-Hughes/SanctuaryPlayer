@@ -5,6 +5,7 @@
 //! renderer so video rendering can later share the same GPU context.
 
 pub mod app;
+mod audio_output;
 mod graphics;
 mod icon;
 mod input;
