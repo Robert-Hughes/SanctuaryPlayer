@@ -243,15 +243,11 @@ fn open_variant_session(
     let duration = streams.iter().filter_map(stream_duration).max();
     let first_video_seconds = stream_start_seconds(&video_stream);
     let first_audio_seconds = audio_stream.as_ref().and_then(stream_start_seconds);
-    let timeline_origin_seconds = match (
+    let timeline_origin_seconds = timeline_origin_seconds(
         first_video_seconds,
         first_audio_seconds,
         audio_stream.is_some(),
-    ) {
-        (Some(video), Some(audio), true) => Some(video.min(audio)),
-        (Some(video), _, false) => Some(video),
-        _ => None,
-    };
+    );
 
     eprintln!(
         "SanctuaryPlayer: OxideAV video stream mode={} codec={} {}x{} time_base={}/{}",
@@ -543,22 +539,26 @@ impl OxidePlayback {
         match kind {
             MediaType::Video if self.first_video_seconds.is_none() => {
                 self.first_video_seconds = Some(seconds);
+                eprintln!("SanctuaryPlayer: first decoded video PTS={seconds:.3}s raw={pts}");
             }
             MediaType::Audio if self.first_audio_seconds.is_none() => {
                 self.first_audio_seconds = Some(seconds);
+                eprintln!("SanctuaryPlayer: first decoded audio PTS={seconds:.3}s raw={pts}");
             }
             _ => {}
         }
         if self.timeline_origin_seconds.is_none() {
-            self.timeline_origin_seconds = match (
+            self.timeline_origin_seconds = timeline_origin_seconds(
                 self.first_video_seconds,
                 self.first_audio_seconds,
                 self.audio_stream.is_some(),
-            ) {
-                (Some(video), Some(audio), true) => Some(video.min(audio)),
-                (Some(video), _, false) => Some(video),
-                _ => None,
-            };
+            );
+            if let Some(origin) = self.timeline_origin_seconds {
+                eprintln!(
+                    "SanctuaryPlayer: media timeline origin={origin:.3}s video_start={:?} audio_start={:?}",
+                    self.first_video_seconds, self.first_audio_seconds
+                );
+            }
         }
     }
 
@@ -1052,6 +1052,18 @@ fn stream_start_seconds(stream: &StreamInfo) -> Option<f64> {
     seconds.is_finite().then_some(seconds)
 }
 
+fn timeline_origin_seconds(
+    first_video_seconds: Option<f64>,
+    first_audio_seconds: Option<f64>,
+    has_audio: bool,
+) -> Option<f64> {
+    match (first_video_seconds, first_audio_seconds, has_audio) {
+        (Some(video), Some(audio), true) => Some(video.min(audio)),
+        (Some(video), _, false) => Some(video),
+        _ => None,
+    }
+}
+
 fn relative_stream_position(
     stream: &StreamInfo,
     pts: i64,
@@ -1345,6 +1357,26 @@ mod tests {
         assert_eq!(
             relative_stream_position(&stream, 60_000, 1.0),
             Some(Duration::from_millis(250))
+        );
+    }
+
+    #[test]
+    fn twitch_transport_pts_are_rebased_to_first_real_av_timestamp() {
+        let audio_start = 70.024_f64;
+        let video_start = 70.094_f64;
+        let origin = timeline_origin_seconds(Some(video_start), Some(audio_start), true).unwrap();
+        assert!((origin - audio_start).abs() < f64::EPSILON);
+
+        let video_stream = StreamInfo {
+            index: 0,
+            time_base: TimeBase::new(1, 90_000),
+            duration: None,
+            start_time: None,
+            params: CodecParameters::video(CodecId::new("h264")),
+        };
+        assert_eq!(
+            relative_stream_position(&video_stream, 6_308_460, origin),
+            Some(Duration::from_millis(70))
         );
     }
 
