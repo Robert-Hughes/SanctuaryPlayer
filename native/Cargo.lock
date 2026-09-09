@@ -2594,6 +2594,7 @@ dependencies = [
  "glow",
  "oxideav",
  "oxideav-audio-filter",
+ "oxideav-hls",
  "oxideav-meta",
  "oxideav-pixfmt",
  "oxideav-sysaudio",

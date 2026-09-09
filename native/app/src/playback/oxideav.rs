@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 
 use ::oxideav::core::{Error, Frame, FrameLease, MediaType, Packet, StreamInfo, TimeBase};
 use ::oxideav::pipeline::{CodecPreferences, Executor, ExecutorHandle, Job, JobSink};
+use oxideav_hls::{HlsPlaylistInfo, HlsVariant};
 use serde_json::json;
 use url::Url;
 
@@ -27,6 +28,9 @@ pub struct OxidePlayback {
     rate: f32,
     rates: Vec<f32>,
     qualities: Vec<Quality>,
+    quality_urls: Vec<Url>,
+    quality_index: usize,
+    active_quality_index: usize,
     rx: Receiver<SessionMsg>,
     executor: Option<ExecutorHandle>,
     video_stream: StreamInfo,
@@ -165,7 +169,13 @@ impl OxidePlayback {
         m3u8_url: Url,
         decode_mode: DecodeMode,
     ) -> Result<Self, String> {
-        let input = format!("hls+{}", m3u8_url.as_str());
+        let quality_set = inspect_hls_qualities(&m3u8_url)?;
+        let selected_url = quality_set.urls[quality_set.preferred_index].clone();
+        let input = hls_uri(&selected_url);
+        eprintln!(
+            "SanctuaryPlayer: HLS initial quality={} variant={}",
+            quality_set.qualities[quality_set.preferred_index].label, selected_url
+        );
         let job_json = serde_json::to_string(&json!({
             "@in": { "all": [{ "from": input }] },
             "@display": {
@@ -270,7 +280,10 @@ impl OxidePlayback {
             duration,
             rate: 1.0,
             rates,
-            qualities: vec![Quality::new("hls-auto", "HLS (up to 720p)")],
+            qualities: quality_set.qualities,
+            quality_urls: quality_set.urls,
+            quality_index: quality_set.preferred_index,
+            active_quality_index: quality_set.preferred_index,
             rx,
             executor: Some(executor),
             video_stream,
@@ -705,11 +718,27 @@ impl PlaybackBackend for OxidePlayback {
     }
 
     fn quality(&self) -> Option<&Quality> {
-        self.qualities.first()
+        self.qualities.get(self.quality_index)
     }
 
-    fn set_quality(&mut self, _quality_id: &str) {
-        // OxideAV's HLS source currently selects one rendition at open.
+    fn set_quality(&mut self, quality_id: &str) {
+        let Some(index) = self
+            .qualities
+            .iter()
+            .position(|quality| quality.id == quality_id)
+        else {
+            return;
+        };
+        if index == self.quality_index {
+            return;
+        }
+        self.quality_index = index;
+        let active = &self.qualities[self.active_quality_index];
+        let selected = &self.qualities[self.quality_index];
+        eprintln!(
+            "SanctuaryPlayer: quality selected={} variant={} (active={} until live HLS switching is implemented)",
+            selected.label, self.quality_urls[self.quality_index], active.label
+        );
     }
 
     fn update(&mut self, elapsed: Duration) {
@@ -740,6 +769,118 @@ impl Drop for OxidePlayback {
             drop(executor);
         }
     }
+}
+
+struct HlsQualitySet {
+    qualities: Vec<Quality>,
+    urls: Vec<Url>,
+    preferred_index: usize,
+}
+
+fn inspect_hls_qualities(master_url: &Url) -> Result<HlsQualitySet, String> {
+    let inspected = oxideav_hls::inspect_hls(&hls_uri(master_url))
+        .map_err(|error| format!("inspect HLS playlist qualities: {error}"))?;
+    match inspected {
+        HlsPlaylistInfo::Media { url } => Ok(HlsQualitySet {
+            qualities: vec![Quality::new("hls-media", "HLS")],
+            urls: vec![url],
+            preferred_index: 0,
+        }),
+        HlsPlaylistInfo::Master {
+            variants,
+            preferred_variant,
+        } => quality_set_from_variants(variants, preferred_variant),
+    }
+}
+
+fn quality_set_from_variants(
+    variants: Vec<HlsVariant>,
+    preferred_variant: usize,
+) -> Result<HlsQualitySet, String> {
+    let preferred_url = variants
+        .get(preferred_variant)
+        .map(|variant| variant.url.clone())
+        .ok_or_else(|| "HLS preferred variant index is out of range".to_owned())?;
+
+    let video_variants: Vec<HlsVariant> = variants
+        .into_iter()
+        .filter(|variant| {
+            variant.width.is_some_and(|width| width > 0)
+                && variant.height.is_some_and(|height| height > 0)
+        })
+        .collect();
+    if video_variants.is_empty() {
+        return Err("HLS master contains no video variants with a declared resolution".into());
+    }
+
+    let preferred_index = video_variants
+        .iter()
+        .position(|variant| variant.url == preferred_url)
+        .or_else(|| {
+            video_variants
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, variant)| variant.bandwidth)
+                .map(|(index, _)| index)
+        })
+        .unwrap_or(0);
+    let mut qualities = Vec::with_capacity(video_variants.len());
+    let mut urls = Vec::with_capacity(video_variants.len());
+    for variant in video_variants {
+        let base_label = variant_quality_name(&variant);
+        let label = if variant.video_group.as_deref() == Some("chunked") {
+            format!("{base_label} (Source)")
+        } else {
+            base_label.clone()
+        };
+        let mut id = base_label;
+        if qualities.iter().any(|quality: &Quality| quality.id == id) {
+            id = variant.url.as_str().to_owned();
+        }
+        eprintln!(
+            "SanctuaryPlayer: HLS quality id={} label={} resolution={}x{} fps={} bandwidth={} variant={}",
+            id,
+            label,
+            variant.width.unwrap_or(0),
+            variant.height.unwrap_or(0),
+            variant
+                .frame_rate
+                .map(|fps| format!("{fps:.3}"))
+                .unwrap_or_else(|| "unknown".into()),
+            variant.average_bandwidth.unwrap_or(variant.bandwidth),
+            variant.url
+        );
+        qualities.push(Quality::new(id, label));
+        urls.push(variant.url);
+    }
+
+    Ok(HlsQualitySet {
+        qualities,
+        urls,
+        preferred_index,
+    })
+}
+
+fn variant_quality_name(variant: &HlsVariant) -> String {
+    if let Some(name) = variant
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+    {
+        return name.to_owned();
+    }
+    match (variant.height, variant.frame_rate) {
+        (Some(height), Some(frame_rate)) if frame_rate.is_finite() && frame_rate > 0.0 => {
+            format!("{height}p{}", frame_rate.round() as u32)
+        }
+        (Some(height), _) => format!("{height}p"),
+        _ => format!("{} kbps", variant.bandwidth / 1000),
+    }
+}
+
+fn hls_uri(url: &Url) -> String {
+    format!("hls+{}", url.as_str())
 }
 
 fn codec_preferences(decode_mode: DecodeMode) -> CodecPreferences {
@@ -841,6 +982,9 @@ mod tests {
                 rate: 1.0,
                 rates: vec![1.0],
                 qualities: Vec::new(),
+                quality_urls: Vec::new(),
+                quality_index: 0,
+                active_quality_index: 0,
                 rx,
                 executor: None,
                 video_stream,
@@ -879,6 +1023,108 @@ mod tests {
         assert!(playback.take_due_frame().is_some());
         playback.update(Duration::from_millis(250));
         assert_eq!(playback.position(), Duration::from_millis(1_250));
+    }
+
+    fn hls_variant(
+        url: &str,
+        name: Option<&str>,
+        video_group: Option<&str>,
+        width: Option<u64>,
+        height: Option<u64>,
+        frame_rate: Option<f64>,
+        bandwidth: u64,
+    ) -> HlsVariant {
+        HlsVariant {
+            url: Url::parse(url).unwrap(),
+            bandwidth,
+            average_bandwidth: None,
+            width,
+            height,
+            frame_rate,
+            codecs: None,
+            video_group: video_group.map(str::to_owned),
+            audio_group: None,
+            name: name.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn hls_quality_list_exposes_video_variants_and_filters_audio_only() {
+        let set = quality_set_from_variants(
+            vec![
+                hls_variant(
+                    "https://example.test/source.m3u8",
+                    Some("1080p60"),
+                    Some("chunked"),
+                    Some(1920),
+                    Some(1080),
+                    Some(60.0),
+                    6_400_000,
+                ),
+                hls_variant(
+                    "https://example.test/720.m3u8",
+                    Some("720p60"),
+                    Some("720p60"),
+                    Some(1280),
+                    Some(720),
+                    Some(60.0),
+                    3_400_000,
+                ),
+                hls_variant(
+                    "https://example.test/audio.m3u8",
+                    Some("Audio Only"),
+                    Some("audio_only"),
+                    None,
+                    None,
+                    None,
+                    220_000,
+                ),
+            ],
+            1,
+        )
+        .unwrap();
+
+        assert_eq!(set.qualities.len(), 2);
+        assert_eq!(set.qualities[0].id, "1080p60");
+        assert_eq!(set.qualities[0].label, "1080p60 (Source)");
+        assert_eq!(set.qualities[1].id, "720p60");
+        assert_eq!(set.preferred_index, 1);
+        assert_eq!(set.urls[1].as_str(), "https://example.test/720.m3u8");
+    }
+
+    #[test]
+    fn hls_quality_label_falls_back_to_resolution_and_frame_rate() {
+        let variant = hls_variant(
+            "https://example.test/480.m3u8",
+            None,
+            None,
+            Some(852),
+            Some(480),
+            Some(30.001),
+            1_500_000,
+        );
+        assert_eq!(variant_quality_name(&variant), "480p30");
+    }
+
+    #[test]
+    fn quality_selection_tracks_choice_without_switching_active_variant_yet() {
+        let (mut playback, _tx) = clock_test_playback();
+        playback.qualities = vec![
+            Quality::new("1080p60", "1080p60 (Source)"),
+            Quality::new("720p60", "720p60"),
+        ];
+        playback.quality_urls = vec![
+            Url::parse("https://example.test/1080.m3u8").unwrap(),
+            Url::parse("https://example.test/720.m3u8").unwrap(),
+        ];
+        playback.quality_index = 1;
+        playback.active_quality_index = 1;
+
+        playback.set_quality("1080p60");
+
+        assert_eq!(playback.quality().unwrap().id, "1080p60");
+        assert_eq!(playback.quality_index, 0);
+        assert_eq!(playback.active_quality_index, 1);
     }
 
     #[test]
