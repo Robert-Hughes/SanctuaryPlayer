@@ -80,7 +80,13 @@ the renderer boundary. `d8ca4c2` also guarantees that PAFF/SCP assembly still em
 `ArenaVideo` without silently converting a ready frame to `Owned`. `94de8f2` makes
 software-decoder pool pressure block in the reusable arena allocator until a retained
 picture/assembly lease is released, so downstream back-pressure no longer surfaces as
-an H.264 slice-level `ResourceExhausted` failure. `native/app/src/video_renderer.rs`
+an H.264 slice-level `ResourceExhausted` failure. `4fe137c` adds cancellation-aware
+arena waits in `oxideav-core`, `e47b459` wires the staged executor's abort token into
+blocking decoders, and `3f2ce28` makes software H.264 distinguish legitimate
+downstream pressure from a full pool retained entirely by decoder-owned state. An
+executor stop now wakes an arena-blocked decoder even while application leases remain
+checked out; a would-be self-deadlock instead fails immediately with
+`ResourceExhausted` rather than sleeping forever. `native/app/src/video_renderer.rs`
 validates native YUV420P arena geometry/strides and passes the original borrowed
 Y/U/V plane slices and their real strides directly to `wgpu::Queue::write_texture()`.
 There is no `materialize()`, `VideoFrame` allocation, `plane_tight()` equivalent, or
