@@ -183,6 +183,16 @@ against the audio-derived position. Pause pauses the sysaudio stream, so the mas
 clock freezes naturally. For media with no audio track, the earlier video-only clock
 remains as the fallback and still stalls when no decoded video is buffered.
 
+`2fe9a28` in `oxideav-pipeline` is required for that fallback to be trustworthy. The
+pipeline previously synthesised sink-facing primary streams with `start_time: Some(0)`
+regardless of source metadata. Twitch MPEG-TS starts on a non-zero transport clock
+(the observed VOD first segment is around 70.024 s audio / 70.060 s video), so the
+fabricated zero made Sanctuary queue video around 70 s in the future while its audio
+master clock started at zero. The pipeline now preserves a known source start (rescaled
+when necessary) and leaves an unknown start as `None`; Sanctuary then anchors from the
+first actual decoded A/V PTS values. Runtime logs print those first PTS values and the
+chosen media-timeline origin explicitly.
+
 The audio and video frames arrive through one ordered, bounded session channel, so
 back-pressure must be decided for the A/V session as a whole. The first audio version
 incorrectly stopped draining that shared channel as soon as the four-frame video target
@@ -305,8 +315,9 @@ programme PCM.
    add explicit output-device / channel-layout / downmix policy.
 4. Add an Android backend to `oxideav-sysaudio` (or another Sanctuary Android audio
    implementation) before enabling real A/V playback there.
-5. Rebuild/switch the active HLS session when the selected fixed quality changes, then
-   add ABR once the source layer can switch safely during playback.
+5. Make fixed HLS quality changes media-time-safe (seek the replacement session to the
+   current position, then move the reopen off the UI thread); add ABR only after that
+   source/session switching boundary is robust.
 6. Consider eliminating the final GPU-local image copy in `vdpau-direct` only if wgpu
    can safely own/sample the externally-written image without weakening resource-state
    correctness.
