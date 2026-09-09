@@ -341,7 +341,7 @@ impl PlaybackBackend for OxidePlayback {
 
     fn update(&mut self, elapsed: Duration) {
         self.pump_frames();
-        if matches!(self.state, PlaybackState::Playing) {
+        if matches!(self.state, PlaybackState::Playing) && !self.video_queue.is_empty() {
             self.position = self.position.saturating_add(elapsed.mul_f32(self.rate));
             if self
                 .duration
@@ -384,7 +384,61 @@ fn duration_from_ticks(time_base: TimeBase, ticks: i64) -> Option<Duration> {
 
 #[cfg(test)]
 mod tests {
+    use ::oxideav::core::{CodecId, CodecParameters, VideoFrame};
+
     use super::*;
+
+    fn clock_test_playback() -> (OxidePlayback, SyncSender<SessionMsg>) {
+        let (tx, rx) = mpsc::sync_channel(FRAME_CHANNEL_CAP);
+        let video_stream = StreamInfo {
+            index: 0,
+            time_base: TimeBase::new(1, 90_000),
+            duration: None,
+            start_time: Some(0),
+            params: CodecParameters::video(CodecId::new("h264")),
+        };
+        (
+            OxidePlayback {
+                source: VideoSource::parse("2386400830").unwrap(),
+                state: PlaybackState::Playing,
+                position: Duration::from_secs(1),
+                duration: None,
+                rate: 1.0,
+                rates: vec![1.0],
+                qualities: Vec::new(),
+                rx,
+                executor: None,
+                video_stream,
+                video_queue: VecDeque::new(),
+                timeline_origin_pts: None,
+                first_frame_presented: true,
+                sink_finished: false,
+            },
+            tx,
+        )
+    }
+
+    #[test]
+    fn playback_clock_stalls_when_decoded_video_queue_is_empty() {
+        let (mut playback, tx) = clock_test_playback();
+
+        playback.update(Duration::from_millis(250));
+        assert_eq!(playback.position(), Duration::from_secs(1));
+
+        tx.send(SessionMsg::Frame(FrameLease::from_frame(Frame::Video(
+            VideoFrame {
+                pts: Some(90_000),
+                planes: Vec::new(),
+            },
+        ))))
+        .unwrap();
+        playback.update(Duration::from_millis(250));
+        assert_eq!(playback.position(), Duration::from_millis(1_250));
+
+        assert!(playback.take_due_frame().is_some());
+        playback.update(Duration::from_millis(250));
+        assert_eq!(playback.position(), Duration::from_millis(1_250));
+    }
 
     #[test]
     fn converts_stream_ticks_to_duration() {

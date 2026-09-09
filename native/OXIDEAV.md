@@ -151,8 +151,12 @@ software/hardware fallback hidden behind the command-line choice.
 The Sanctuary sink forwards each decoded `FrameLease` unchanged through a bounded
 two-frame channel into a four-frame presentation queue. Playback starts paused and
 keeps repainting until the first decoded frame is available, so the first picture can
-be shown while paused. Once playing, Sanctuary advances its wall-clock timeline and
-presents due video leases by PTS. The HLS source currently chooses one rendition at
+be shown while paused. Once playing, Sanctuary advances its temporary video-only
+wall-clock timeline only while at least one decoded video frame is buffered. If the
+decoded queue runs dry, media time stalls until another frame arrives; a decoder that
+cannot sustain real time therefore makes playback run slower instead of allowing the
+clock to race ahead of decoded video. Due leases are still selected by PTS. The HLS
+source currently chooses one rendition at
 open (the existing OxideAV default is at most 720p); dynamic ABR/quality switching
 is not yet implemented. The desktop launcher accepts `--video <URL-or-ID>` (or a
 positional video), `--play`/`--autoplay`, and
@@ -219,9 +223,9 @@ is explicitly authorised; use `--ao none`, null/hash sinks or equivalent.
 
 ## Current SanctuaryPlayer follow-ups
 
-1. Fix playback starvation/pacing so Sanctuary's wall clock cannot run ahead when a
-   selected decode path cannot supply frames in real time; software 720p60 is a known
-   case, while the tested Twitch 480p30 rendition is comfortably CPU-decodable.
+1. Replace the temporary video-only starvation clock with final media pacing once
+   audio is present: audio-device progress should become the master clock and video
+   should be scheduled/dropped against it.
 2. Add the real audio path, configuring/reconfiguring the sink from the decoder's
    authoritative AAC output parameters and establishing A/V sync.
 3. Wire media-relative HLS seeking (including `VideoSource::start_time`) rather than
