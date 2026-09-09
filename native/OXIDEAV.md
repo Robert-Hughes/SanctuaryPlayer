@@ -183,6 +183,28 @@ against the audio-derived position. Pause pauses the sysaudio stream, so the mas
 clock freezes naturally. For media with no audio track, the earlier video-only clock
 remains as the fallback and still stalls when no decoded video is buffered.
 
+The audio and video frames arrive through one ordered, bounded session channel, so
+back-pressure must be decided for the A/V session as a whole. The first audio version
+incorrectly stopped draining that shared channel as soon as the four-frame video target
+was full. If audio messages were waiting behind those video frames, the PCM ring could
+empty, the audio master clock would stop, and the four future video frames could never
+become due: a stable self-stall. The corrected policy keeps draining while **either**
+forward target still needs data and stops only when both the video queue (four frames)
+and audio queue (about 500 ms) are ready. A separate eight-frame video hard cap drops
+excess decoded video if unusual output ordering is needed to reach pending audio; the
+audio ring retains its own hard capacity/headroom guard.
+
+Runtime diagnostics are intentionally always available on stderr while native playback
+is active. Once per second Sanctuary prints playback state, master-clock position, the
+current pump/back-pressure reason, executor/sink completion, video queue depth/front/
+back PTS plus received/presented/dropped counts, and audio stream/preroll state, queued
+and free PCM duration, played-sample count, and underrun counters. The sink also emits
+a rate-limited line when the two-message session channel is full before it blocks. Play,
+pause, audio-clock anchoring, preroll completion, and audio device play/pause transitions
+are logged as discrete events. These diagnostics are intended to distinguish decoder,
+session-channel, video-queue, audio-ring, and device-clock stalls without requiring a
+profiler.
+
 Because audio is now authoritative, real A/V sessions currently expose only 1.0x
 playback. Pitch-preserving time stretch/tempo control is a separate milestone; the UI
 must not move the media clock faster or slower than the samples actually consumed by
