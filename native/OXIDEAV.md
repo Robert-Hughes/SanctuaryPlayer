@@ -99,12 +99,13 @@ The application now exposes three explicit decode/presentation contracts through
 - `cpu` (default) sets `CodecPreferences::no_hardware`, so software H.264 is selected
   even though VDPAU is compiled into the same runtime. Output must remain
   `FrameLease::ArenaVideo`; the renderer refuses a silent materialisation fallback.
-- `vdpau-readback` sets `CodecPreferences::require_hardware` and prefers
-  `h264_vdpau`. The renderer requires a VDPAU `HardwareVideo` lease, explicitly calls
-  its `materialize()` implementation (`VdpVideoSurfaceGetBitsYCbCr` -> CPU I420), and
+- `vdpau-readback` prefers `h264_vdpau` and explicitly excludes `h264_sw`. This keeps
+  video selection strict without imposing `require_hardware` on the AAC track in the
+  same job. The renderer requires a VDPAU `HardwareVideo` lease, explicitly calls its
+  `materialize()` implementation (`VdpVideoSurfaceGetBitsYCbCr` -> CPU I420), and
   uploads those planes through the existing wgpu YUV path. This deliberately measures
   hardware decode while retaining CPU readback before presentation.
-- `vdpau-direct` uses the same required-VDPAU selection but never materialises the
+- `vdpau-direct` uses the same strict H.264 selection but never materialises the
   hardware frame. Sanctuary owns a port of the proven reference bridge:
   `GL_NV_vdpau_interop2` exposes full-frame Y plus interleaved UV textures, a GL
   shader converts them to RGBA in Vulkan-exported external memory, and a raw Vulkan
@@ -113,11 +114,13 @@ The application now exposes three explicit decode/presentation contracts through
   copy complete. If every slot is busy, the video frame is dropped rather than
   stalling or falling back to CPU.
 
-The two VDPAU modes are deliberately strict: failure to obtain hardware decode or to
-execute the selected presentation path is an error, not a request to silently switch
-modes. `7b9a06d` supplies the generic `Executor::with_codec_preferences()` plumbing
-that makes the per-session selection possible while all implementations stay
-registered. The direct path remains zero-CPU-copy rather than literal zero-copy: it
+The two VDPAU modes are deliberately strict for H.264: failure to obtain VDPAU decode
+or to execute the selected presentation path is an error, not a request to silently
+switch the video track to software. The global `require_hardware` flag is deliberately
+not used now that one job also decodes AAC; excluding `h264_sw` leaves software audio
+codecs selectable. `7b9a06d` supplies the generic
+`Executor::with_codec_preferences()` plumbing that makes the per-session selection
+possible while all implementations stay registered. The direct path remains zero-CPU-copy rather than literal zero-copy: it
 still performs the GL YUV->RGBA render and one GPU-local Vulkan image copy. It also
 retains the `981e3ae` dedicated-memory requirement: because Vulkan allocates the
 shared image with `VkMemoryDedicatedAllocateInfo`, the GL memory object is marked
@@ -144,53 +147,62 @@ its signed HLS master-playlist URL without invoking yt-dlp:
 3. Advertise only H.264 in `supported_codecs`, matching the codecs currently
    requested by the native player.
 
-`AppCommand::OpenVideo` now keeps both URL resolution and OxideAV source opening off
-the winit event thread. After the Twitch resolver succeeds, the worker converts the
-ordinary `https://...m3u8` URL to `hls+https://...`, creates a video-only OxideAV
-job, and starts an `Executor` with a Sanctuary-owned `JobSink`. The job requests only
-the video track, so AAC is neither decoded nor sent to an audio device in this
-bring-up milestone.
+`AppCommand::OpenVideo` keeps both URL resolution and OxideAV source opening off the
+winit event thread. After the Twitch resolver succeeds, the worker converts the
+ordinary `https://...m3u8` URL to `hls+https://...`, creates one OxideAV A/V job, and
+starts an `Executor` with a Sanctuary-owned `JobSink`. `@display` now requests both
+the H.264 video track and the AAC audio track.
 
-The native workspace enables the `vdpau` feature alongside software H.264. Selection
-is per playback session rather than compile-time: `cpu` explicitly excludes hardware,
-while both VDPAU modes explicitly require it. There is therefore no priority-dependent
-software/hardware fallback hidden behind the command-line choice.
+The sink forwards audio and video through one bounded two-message session channel.
+Video leases remain zero-copy/retained exactly as before. Decoded `Frame::Audio`
+values are converted with `oxideav-audio-filter::sample_convert::decode_to_f32`,
+interleaved, and pushed into a bounded `ringbuf` SPSC queue owned by
+`native/app/src/audio_output.rs`. The platform callback is supplied by
+`oxideav-sysaudio`: FreeBSD/GhostBSD uses native OSS (`/dev/dsp`), Windows uses
+WASAPI, macOS uses CoreAudio, and Linux uses the first working configured backend.
+Sanctuary does not contain an OSS-specific device implementation.
 
-The Sanctuary sink forwards each decoded `FrameLease` unchanged through a bounded
-two-frame channel into a four-frame presentation queue. Playback starts paused and
-keeps repainting until the first decoded frame is available, so the first picture can
-be shown while paused. Once playing, Sanctuary advances its temporary video-only
-wall-clock timeline only while at least one decoded video frame is buffered. If the
-decoded queue runs dry, media time stalls until another frame arrives; a decoder that
-cannot sustain real time therefore makes playback run slower instead of allowing the
-clock to race ahead of decoded video. Due leases are still selected by PTS. The HLS
-source currently chooses one rendition at
-open (the existing OxideAV default is at most 720p); dynamic ABR/quality switching
-is not yet implemented. The desktop launcher accepts `--video <URL-or-ID>` (or a
-positional video), `--play`/`--autoplay`, and
+`AudioOutput` opens the device at the decoded stream rate/channel count, keeps the
+stream paused initially, and uses a 50 ms PCM preroll before it may start. If the
+device negotiates a different sample rate, Sanctuary runs the existing OxideAV
+polyphase `Resample` filter before f32 interleaving. A negotiated channel-count change
+is currently rejected explicitly rather than silently applying an incorrect remix.
+The ring is sized for roughly four seconds and the session stops draining the executor
+when audio headroom falls below roughly 250 ms; the existing bounded OxideAV channels
+then provide normal upstream back-pressure. During initial preroll Sanctuary permits
+up to eight video leases so interleaved video messages do not prevent the small audio
+preroll from filling.
+
+Audio-device consumption is now the master media clock for A/V playback. The callback
+increments `played_samples` only for real PCM popped from the ring; backend-requested
+silence on underrun does **not** advance media time. The application establishes one
+common media-time origin from both stream start times when available, otherwise from
+the first timestamp observed on each stream, and preserves any initial A/V offset.
+Video PTS values are converted onto that same timeline and due/stale frames are chosen
+against the audio-derived position. Pause pauses the sysaudio stream, so the master
+clock freezes naturally. For media with no audio track, the earlier video-only clock
+remains as the fallback and still stalls when no decoded video is buffered.
+
+Because audio is now authoritative, real A/V sessions currently expose only 1.0x
+playback. Pitch-preserving time stretch/tempo control is a separate milestone; the UI
+must not move the media clock faster or slower than the samples actually consumed by
+the output device.
+
+The HLS source still chooses one rendition at open (currently at most 720p); dynamic
+ABR/quality switching is not yet implemented. The desktop launcher accepts
+`--video <URL-or-ID>` (or a positional video), `--play`/`--autoplay`, and
 `--decode-mode cpu|vdpau-readback|vdpau-direct`, using the same `VideoSource::parse`
 rules as the in-app Change Video flow. The decode mode defaults to `cpu`.
 
-Bounded GhostBSD validations against Twitch VOD `2845804307` exercise all three
-modes from the same native binary. Each run resolved the signed HLS URL and selected
-the 1280x720/60, 4,275-segment VOD:
-
-```text
-sanctuary-player --video 2845804307 --play --decode-mode cpu
-sanctuary-player --video 2845804307 --play --decode-mode vdpau-readback
-sanctuary-player --video 2845804307 --play --decode-mode vdpau-direct
-```
-
-The CPU run showed no VDPAU initialisation. The readback run reported the NVIDIA
-580.173.02 VDPAU streaming decoder followed by Sanctuary's explicit 1280x720 CPU-I420
-readback path. The direct run reported the same VDPAU decoder followed by the
-four-slot `GLX interop2 -> Vulkan -> wgpu` bridge. Both hardware runs stayed alive
-for the full 20-second external timeout with no playback/bridge failure; the direct
-run reported no busy-slot drops. The jobs remain video-only, so no audio device was
-opened during these tests. The same two hardware modes were also run for 12 seconds
-against Twitch VOD `2386400830` (the stream that exposed the earlier software-path
-problem); both selected 1280x720 VDPAU output with no H.264 slice-skip or bridge
-errors. Its URL start-time remains unapplied until HLS seeking is wired.
+Muted/paused GhostBSD validation against Twitch VOD `2386400830` confirms the real
+integration without producing sound. Both CPU and `vdpau-direct` runs selected the
+1280x720/60 HLS rendition, discovered AAC as 44.1 kHz stereo S16, and opened
+`sysaudio/oss` at 44.1 kHz stereo. The VDPAU run additionally initialised the NVIDIA
+580.173.02 streaming decoder and the four-slot `GLX interop2 -> Vulkan -> wgpu`
+bridge. A hardware-free `oxideav-sysaudio` mock regression proves that the 50 ms
+preroll gates start, consumed PCM advances the master clock, and an empty ring causes
+the clock to remain fixed while the callback emits silence. The full Sanctuary app
+suite currently passes 52 tests.
 
 This Twitch web-player GraphQL/Usher protocol is not a stable public playback API,
 so all Twitch-specific request shape, client ID and token handling remain isolated
@@ -198,16 +210,20 @@ in `twitch.rs` for straightforward future replacement.
 
 ## Audio integration
 
-OxideAV AAC can discover the actual decoded sample rate/channel layout after the
-container has already supplied incomplete or stale compressed-stream parameters.
-`Decoder::output_params()` exposes the authoritative decoded shape and the pipeline
-prefers it.
+The native audio path is now implemented around the decoder's sink-facing
+`CodecParameters`. The real Twitch VOD validation reports authoritative AAC output as
+44.1 kHz, two channels, S16; those parameters are passed to `AudioOutput` before PCM
+conversion. The sysaudio stream's negotiated format is then checked. Sample-rate
+mismatch is handled by OxideAV's polyphase resampler; channel-count mismatch remains a
+hard error until Sanctuary has an explicit speaker-layout/remix policy.
 
-A current application integration gap is late sink configuration: the real Twitch
-AAC fixture is 48 kHz, while a player can instantiate an audio sink from an earlier
-44.1 kHz fallback before the first ADTS frame reveals the correct rate. Sanctuary's
-native audio path should configure/reconfigure from the decoder's first real output
-parameters rather than locking in the fallback.
+The current master clock counts PCM accepted by the device callback, not output
+latency. `oxideav-sysaudio::Stream::latency()` is available for future Bluetooth /
+network/output-pipeline compensation, but Sanctuary does not yet subtract that value
+from video scheduling. Output-device selection, volume controls, surround/downmix
+policy, and Android audio output are likewise future application work. In particular,
+`oxideav-sysaudio` has no Android backend today, so real A/V opening on Android will
+fail cleanly until an Android backend (for example AAudio) is added.
 
 ## Local validation fixtures
 
@@ -227,21 +243,24 @@ experiment material used during this integration:
   the wider source-extraction investigation.
 
 Assistant-driven playback/audio tests for this work must remain muted unless sound
-is explicitly authorised; use `--ao none`, null/hash sinks or equivalent.
+is explicitly authorised. Use the sysaudio mock backend for callback/clock tests, or
+open real Sanctuary playback paused so the OSS/WASAPI/CoreAudio stream cannot consume
+programme PCM.
 
 ## Current SanctuaryPlayer follow-ups
 
-1. Replace the temporary video-only starvation clock with final media pacing once
-   audio is present: audio-device progress should become the master clock and video
-   should be scheduled/dropped against it.
-2. Add the real audio path, configuring/reconfiguring the sink from the decoder's
-   authoritative AAC output parameters and establishing A/V sync.
-3. Wire media-relative HLS seeking (including `VideoSource::start_time`) rather than
+1. Wire media-relative HLS seeking (including `VideoSource::start_time`) rather than
    moving Sanctuary's presentation clock without moving the demuxer/decoder.
-4. Expose useful rendition/quality selection and later ABR once the source layer can
+2. Add pitch-preserving audio time-stretch before re-enabling 0.25x-2.0x rates for
+   real A/V sessions.
+3. Apply output-latency compensation from `oxideav-sysaudio::Stream::latency()` and
+   add explicit output-device / channel-layout / downmix policy.
+4. Add an Android backend to `oxideav-sysaudio` (or another Sanctuary Android audio
+   implementation) before enabling real A/V playback there.
+5. Expose useful rendition/quality selection and later ABR once the source layer can
    switch safely during playback.
-5. Consider eliminating the final GPU-local image copy in `vdpau-direct` only if wgpu
+6. Consider eliminating the final GPU-local image copy in `vdpau-direct` only if wgpu
    can safely own/sample the externally-written image without weakening resource-state
    correctness.
-6. Extend HLS support for discontinuities, byte ranges, fMP4/MAP, encryption, live
+7. Extend HLS support for discontinuities, byte ranges, fMP4/MAP, encryption, live
    reload and other source shapes only as real inputs require them.
