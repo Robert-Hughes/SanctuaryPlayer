@@ -31,6 +31,7 @@ pub struct OxidePlayback {
     quality_urls: Vec<Url>,
     quality_index: usize,
     active_quality_index: usize,
+    decode_mode: DecodeMode,
     rx: Receiver<SessionMsg>,
     executor: Option<ExecutorHandle>,
     video_stream: StreamInfo,
@@ -163,6 +164,136 @@ impl JobSink for SessionSink {
     }
 }
 
+struct PlaybackSession {
+    rx: Receiver<SessionMsg>,
+    executor: Option<ExecutorHandle>,
+    video_stream: StreamInfo,
+    audio_stream: Option<StreamInfo>,
+    audio_output: Option<AudioOutput>,
+    duration: Option<Duration>,
+    rates: Vec<f32>,
+    timeline_origin_seconds: Option<f64>,
+    first_video_seconds: Option<f64>,
+    first_audio_seconds: Option<f64>,
+}
+
+fn open_variant_session(
+    variant_url: &Url,
+    decode_mode: DecodeMode,
+) -> Result<PlaybackSession, String> {
+    let input = hls_uri(variant_url);
+    let job_json = serde_json::to_string(&json!({
+        "@in": { "all": [{ "from": input }] },
+        "@display": {
+            "audio": [{ "from": "@in" }],
+            "video": [{ "from": "@in" }]
+        },
+    }))
+    .map_err(|error| format!("build OxideAV playback job: {error}"))?;
+    let job = Job::from_json(&job_json).map_err(|error| error.to_string())?;
+    job.validate().map_err(|error| error.to_string())?;
+
+    let mut registries = ::oxideav::Registries::new();
+    oxideav_meta::register_all(&mut registries);
+
+    let codec_preferences = codec_preferences(decode_mode);
+    let (tx, rx) = mpsc::sync_channel(SESSION_CHANNEL_CAP);
+    let sink = Box::new(SessionSink::new(tx));
+    let executor = Executor::new(&job, &registries)
+        .with_sink_override("@display", sink)
+        .with_codec_preferences(codec_preferences)
+        .with_threads(0)
+        .spawn()
+        .map_err(|error| format!("start OxideAV playback: {error}"))?;
+
+    let streams = match rx.recv_timeout(OPEN_TIMEOUT) {
+        Ok(SessionMsg::Started(streams)) => streams,
+        Ok(_) => {
+            stop_executor(executor);
+            return Err("OxideAV emitted media before stream initialisation".into());
+        }
+        Err(error) => {
+            stop_executor(executor);
+            return Err(format!("waiting for OxideAV stream information: {error}"));
+        }
+    };
+    let Some(video_stream) = streams
+        .iter()
+        .find(|stream| stream.params.media_type == MediaType::Video)
+        .cloned()
+    else {
+        stop_executor(executor);
+        return Err("OxideAV source contains no video stream".into());
+    };
+    let audio_stream = streams
+        .iter()
+        .find(|stream| stream.params.media_type == MediaType::Audio)
+        .cloned();
+
+    let audio_output = match audio_stream.as_ref() {
+        Some(stream) => match AudioOutput::open(&stream.params) {
+            Ok(output) => Some(output),
+            Err(error) => {
+                stop_executor(executor);
+                return Err(format!("open audio output: {error}"));
+            }
+        },
+        None => None,
+    };
+    let duration = streams.iter().filter_map(stream_duration).max();
+    let first_video_seconds = stream_start_seconds(&video_stream);
+    let first_audio_seconds = audio_stream.as_ref().and_then(stream_start_seconds);
+    let timeline_origin_seconds = match (
+        first_video_seconds,
+        first_audio_seconds,
+        audio_stream.is_some(),
+    ) {
+        (Some(video), Some(audio), true) => Some(video.min(audio)),
+        (Some(video), _, false) => Some(video),
+        _ => None,
+    };
+
+    eprintln!(
+        "SanctuaryPlayer: OxideAV video stream mode={} codec={} {}x{} time_base={}/{}",
+        decode_mode,
+        video_stream.params.codec_id,
+        video_stream.params.width.unwrap_or(0),
+        video_stream.params.height.unwrap_or(0),
+        video_stream.time_base.num(),
+        video_stream.time_base.den(),
+    );
+    if let Some(stream) = audio_stream.as_ref() {
+        eprintln!(
+            "SanctuaryPlayer: OxideAV audio stream codec={} rate={}Hz channels={} format={:?} time_base={}/{}",
+            stream.params.codec_id,
+            stream.params.sample_rate.unwrap_or(0),
+            stream.params.resolved_channels().unwrap_or(0),
+            stream.params.sample_format,
+            stream.time_base.num(),
+            stream.time_base.den(),
+        );
+    }
+
+    let rates = if audio_output.is_some() {
+        vec![1.0]
+    } else {
+        vec![0.25, 0.5, 1.0, 1.5, 2.0]
+    };
+
+    Ok(PlaybackSession {
+        rx,
+        executor: Some(executor),
+        video_stream,
+        audio_stream,
+        audio_output,
+        duration,
+        rates,
+        timeline_origin_seconds,
+        first_video_seconds,
+        first_audio_seconds,
+    })
+}
+
 impl OxidePlayback {
     pub fn open(
         source: VideoSource,
@@ -171,132 +302,116 @@ impl OxidePlayback {
     ) -> Result<Self, String> {
         let quality_set = inspect_hls_qualities(&m3u8_url)?;
         let selected_url = quality_set.urls[quality_set.preferred_index].clone();
-        let input = hls_uri(&selected_url);
         eprintln!(
             "SanctuaryPlayer: HLS initial quality={} variant={}",
             quality_set.qualities[quality_set.preferred_index].label, selected_url
         );
-        let job_json = serde_json::to_string(&json!({
-            "@in": { "all": [{ "from": input }] },
-            "@display": {
-                "audio": [{ "from": "@in" }],
-                "video": [{ "from": "@in" }]
-            },
-        }))
-        .map_err(|error| format!("build OxideAV playback job: {error}"))?;
-        let job = Job::from_json(&job_json).map_err(|error| error.to_string())?;
-        job.validate().map_err(|error| error.to_string())?;
-
-        let mut registries = ::oxideav::Registries::new();
-        oxideav_meta::register_all(&mut registries);
-
-        let codec_preferences = codec_preferences(decode_mode);
-        let (tx, rx) = mpsc::sync_channel(SESSION_CHANNEL_CAP);
-        let sink = Box::new(SessionSink::new(tx));
-        let executor = Executor::new(&job, &registries)
-            .with_sink_override("@display", sink)
-            .with_codec_preferences(codec_preferences)
-            .with_threads(0)
-            .spawn()
-            .map_err(|error| format!("start OxideAV playback: {error}"))?;
-
-        let streams = match rx.recv_timeout(OPEN_TIMEOUT) {
-            Ok(SessionMsg::Started(streams)) => streams,
-            Ok(_) => {
-                stop_executor(executor);
-                return Err("OxideAV emitted media before stream initialisation".into());
-            }
-            Err(error) => {
-                stop_executor(executor);
-                return Err(format!("waiting for OxideAV stream information: {error}"));
-            }
-        };
-        let video_stream = streams
-            .iter()
-            .find(|stream| stream.params.media_type == MediaType::Video)
-            .cloned()
-            .ok_or_else(|| "OxideAV source contains no video stream".to_owned())?;
-        let audio_stream = streams
-            .iter()
-            .find(|stream| stream.params.media_type == MediaType::Audio)
-            .cloned();
-
-        let audio_output = match audio_stream.as_ref() {
-            Some(stream) => match AudioOutput::open(&stream.params) {
-                Ok(output) => Some(output),
-                Err(error) => {
-                    stop_executor(executor);
-                    return Err(format!("open audio output: {error}"));
-                }
-            },
-            None => None,
-        };
-        let duration = streams.iter().filter_map(stream_duration).max();
-        let first_video_seconds = stream_start_seconds(&video_stream);
-        let first_audio_seconds = audio_stream.as_ref().and_then(stream_start_seconds);
-        let timeline_origin_seconds = match (
-            first_video_seconds,
-            first_audio_seconds,
-            audio_stream.is_some(),
-        ) {
-            (Some(video), Some(audio), true) => Some(video.min(audio)),
-            (Some(video), _, false) => Some(video),
-            _ => None,
-        };
-
-        eprintln!(
-            "SanctuaryPlayer: OxideAV video stream mode={} codec={} {}x{} time_base={}/{}",
-            decode_mode,
-            video_stream.params.codec_id,
-            video_stream.params.width.unwrap_or(0),
-            video_stream.params.height.unwrap_or(0),
-            video_stream.time_base.num(),
-            video_stream.time_base.den(),
-        );
-        if let Some(stream) = audio_stream.as_ref() {
-            eprintln!(
-                "SanctuaryPlayer: OxideAV audio stream codec={} rate={}Hz channels={} format={:?} time_base={}/{}",
-                stream.params.codec_id,
-                stream.params.sample_rate.unwrap_or(0),
-                stream.params.resolved_channels().unwrap_or(0),
-                stream.params.sample_format,
-                stream.time_base.num(),
-                stream.time_base.den(),
-            );
-        }
-
-        let rates = if audio_output.is_some() {
-            // Audio is the master clock. Pitch-preserving time stretch is a
-            // separate milestone, so real A/V playback is intentionally 1x.
-            vec![1.0]
-        } else {
-            vec![0.25, 0.5, 1.0, 1.5, 2.0]
-        };
+        let session = open_variant_session(&selected_url, decode_mode)?;
 
         Ok(Self {
             source,
             state: PlaybackState::Paused,
             position: Duration::ZERO,
-            duration,
+            duration: session.duration,
             rate: 1.0,
-            rates,
+            rates: session.rates,
             qualities: quality_set.qualities,
             quality_urls: quality_set.urls,
             quality_index: quality_set.preferred_index,
             active_quality_index: quality_set.preferred_index,
-            rx,
-            executor: Some(executor),
-            video_stream,
-            audio_stream,
-            audio_output,
+            decode_mode,
+            rx: session.rx,
+            executor: session.executor,
+            video_stream: session.video_stream,
+            audio_stream: session.audio_stream,
+            audio_output: session.audio_output,
             video_queue: VecDeque::new(),
-            timeline_origin_seconds,
-            first_video_seconds,
-            first_audio_seconds,
+            timeline_origin_seconds: session.timeline_origin_seconds,
+            first_video_seconds: session.first_video_seconds,
+            first_audio_seconds: session.first_audio_seconds,
             first_frame_presented: false,
             sink_finished: false,
             diagnostics: PlaybackDiagnostics::new(),
         })
+    }
+
+    fn tear_down_session(&mut self) {
+        if let Some(audio) = self.audio_output.as_mut() {
+            let _ = audio.set_paused(true);
+        }
+
+        // A sink worker may be blocked in SyncSender::send(). Dropping its
+        // receiver first wakes that send with Disconnected so executor.stop()
+        // cannot deadlock waiting for a worker that the UI thread itself has
+        // stopped draining.
+        let (_placeholder_tx, placeholder_rx) = mpsc::sync_channel(1);
+        let old_rx = std::mem::replace(&mut self.rx, placeholder_rx);
+        drop(old_rx);
+
+        if let Some(executor) = self.executor.take() {
+            stop_executor(executor);
+        }
+        self.audio_output = None;
+        self.video_queue.clear();
+    }
+
+    fn install_session(&mut self, session: PlaybackSession) {
+        self.rx = session.rx;
+        self.executor = session.executor;
+        self.video_stream = session.video_stream;
+        self.audio_stream = session.audio_stream;
+        self.audio_output = session.audio_output;
+        self.duration = session.duration;
+        self.rates = session.rates;
+        self.position = Duration::ZERO;
+        self.timeline_origin_seconds = session.timeline_origin_seconds;
+        self.first_video_seconds = session.first_video_seconds;
+        self.first_audio_seconds = session.first_audio_seconds;
+        self.first_frame_presented = false;
+        self.sink_finished = false;
+        self.video_queue.clear();
+        self.diagnostics = PlaybackDiagnostics::new();
+    }
+
+    fn switch_quality_with<F>(&mut self, index: usize, opener: F) -> Result<(), String>
+    where
+        F: FnOnce(&Url, DecodeMode) -> Result<PlaybackSession, String>,
+    {
+        if index >= self.qualities.len() || index >= self.quality_urls.len() {
+            return Err(format!("quality index {index} is out of range"));
+        }
+        if index == self.active_quality_index {
+            self.quality_index = index;
+            return Ok(());
+        }
+
+        let resume_playing = matches!(self.state, PlaybackState::Playing);
+        let old_quality = self.qualities[self.active_quality_index].label.clone();
+        let new_quality = self.qualities[index].label.clone();
+        let new_url = self.quality_urls[index].clone();
+        eprintln!(
+            "SanctuaryPlayer: quality switch begin old={} new={} variant={} resume_playing={}",
+            old_quality, new_quality, new_url, resume_playing
+        );
+
+        self.tear_down_session();
+        self.state = PlaybackState::Paused;
+        self.position = Duration::ZERO;
+
+        let session = opener(&new_url, self.decode_mode)
+            .map_err(|error| format!("switch HLS quality to {new_quality}: {error}"))?;
+        self.install_session(session);
+        self.quality_index = index;
+        self.active_quality_index = index;
+
+        if resume_playing {
+            self.play();
+        }
+        eprintln!(
+            "SanctuaryPlayer: quality switch complete active={} variant={} position=0s",
+            new_quality, new_url
+        );
+        Ok(())
     }
 
     fn pump_block_reason(&self) -> Option<&'static str> {
@@ -729,16 +844,9 @@ impl PlaybackBackend for OxidePlayback {
         else {
             return;
         };
-        if index == self.quality_index {
-            return;
+        if let Err(error) = self.switch_quality_with(index, open_variant_session) {
+            self.fail(error);
         }
-        self.quality_index = index;
-        let active = &self.qualities[self.active_quality_index];
-        let selected = &self.qualities[self.quality_index];
-        eprintln!(
-            "SanctuaryPlayer: quality selected={} variant={} (active={} until live HLS switching is implemented)",
-            selected.label, self.quality_urls[self.quality_index], active.label
-        );
     }
 
     fn update(&mut self, elapsed: Duration) {
@@ -985,6 +1093,7 @@ mod tests {
                 quality_urls: Vec::new(),
                 quality_index: 0,
                 active_quality_index: 0,
+                decode_mode: DecodeMode::Cpu,
                 rx,
                 executor: None,
                 video_stream,
@@ -1106,9 +1215,97 @@ mod tests {
         assert_eq!(variant_quality_name(&variant), "480p30");
     }
 
+    fn replacement_test_session() -> PlaybackSession {
+        let (_tx, rx) = mpsc::sync_channel(SESSION_CHANNEL_CAP);
+        PlaybackSession {
+            rx,
+            executor: None,
+            video_stream: StreamInfo {
+                index: 0,
+                time_base: TimeBase::new(1, 90_000),
+                duration: None,
+                start_time: Some(0),
+                params: CodecParameters::video(CodecId::new("h264")),
+            },
+            audio_stream: None,
+            audio_output: None,
+            duration: Some(Duration::from_secs(30)),
+            rates: vec![0.5, 1.0, 2.0],
+            timeline_origin_seconds: Some(0.0),
+            first_video_seconds: Some(0.0),
+            first_audio_seconds: None,
+        }
+    }
+
     #[test]
-    fn quality_selection_tracks_choice_without_switching_active_variant_yet() {
-        let (mut playback, _tx) = clock_test_playback();
+    fn quality_switch_recreates_session_and_resumes_previous_play_state() {
+        let (mut playback, _old_tx) = clock_test_playback();
+        playback.qualities = vec![
+            Quality::new("1080p60", "1080p60 (Source)"),
+            Quality::new("720p60", "720p60"),
+        ];
+        playback.quality_urls = vec![
+            Url::parse("https://example.test/1080.m3u8").unwrap(),
+            Url::parse("https://example.test/720.m3u8").unwrap(),
+        ];
+        playback.quality_index = 1;
+        playback.active_quality_index = 1;
+        playback.decode_mode = DecodeMode::VdpauDirect;
+        playback.position = Duration::from_secs(12);
+        playback
+            .video_queue
+            .push_back(FrameLease::from_frame(Frame::Video(VideoFrame {
+                pts: Some(1_080_000),
+                planes: Vec::new(),
+            })));
+
+        playback
+            .switch_quality_with(0, |url, decode_mode| {
+                assert_eq!(url.as_str(), "https://example.test/1080.m3u8");
+                assert_eq!(decode_mode, DecodeMode::VdpauDirect);
+                Ok(replacement_test_session())
+            })
+            .unwrap();
+
+        assert_eq!(playback.quality().unwrap().id, "1080p60");
+        assert_eq!(playback.quality_index, 0);
+        assert_eq!(playback.active_quality_index, 0);
+        assert_eq!(playback.position, Duration::ZERO);
+        assert_eq!(playback.state, PlaybackState::Playing);
+        assert!(playback.video_queue.is_empty());
+        assert!(!playback.first_frame_presented);
+        assert_eq!(playback.duration, Some(Duration::from_secs(30)));
+        assert_eq!(playback.rates, vec![0.5, 1.0, 2.0]);
+    }
+
+    #[test]
+    fn session_teardown_unblocks_a_sink_waiting_on_the_full_channel() {
+        let (mut playback, _old_tx) = clock_test_playback();
+        let (tx, rx) = mpsc::sync_channel(1);
+        let mut sink = SessionSink::new(tx);
+        sink.send(SessionMsg::Started(Vec::new())).unwrap();
+        playback.rx = rx;
+
+        let (done_tx, done_rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let result = sink.send(SessionMsg::Finished);
+            let _ = done_tx.send(result.is_err());
+        });
+
+        std::thread::sleep(Duration::from_millis(10));
+        playback.tear_down_session();
+
+        assert!(
+            done_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            "dropping the receiver should disconnect a blocked sink send"
+        );
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn quality_switch_keeps_a_paused_session_paused() {
+        let (mut playback, _old_tx) = clock_test_playback();
+        playback.state = PlaybackState::Paused;
         playback.qualities = vec![
             Quality::new("1080p60", "1080p60 (Source)"),
             Quality::new("720p60", "720p60"),
@@ -1120,11 +1317,12 @@ mod tests {
         playback.quality_index = 1;
         playback.active_quality_index = 1;
 
-        playback.set_quality("1080p60");
+        playback
+            .switch_quality_with(0, |_url, _decode_mode| Ok(replacement_test_session()))
+            .unwrap();
 
-        assert_eq!(playback.quality().unwrap().id, "1080p60");
-        assert_eq!(playback.quality_index, 0);
-        assert_eq!(playback.active_quality_index, 1);
+        assert_eq!(playback.state, PlaybackState::Paused);
+        assert_eq!(playback.active_quality_index, 0);
     }
 
     #[test]
