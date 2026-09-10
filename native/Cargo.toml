@@ -20,6 +20,7 @@ egui-wgpu = { version = "0.34", default-features = false }
 egui_extras = { version = "0.34", default-features = false, features = ["svg"] }
 pollster = "0.4"
 ringbuf = "0.4"
+chrono = { version = "0.4", default-features = false, features = ["std"] }
 
 # OxideAV is consumed through its public facade plus the explicit registry
 # aggregator. Keep the enabled media surface narrow while native playback is

@@ -122,7 +122,9 @@ pub fn render(ui: &mut egui::Ui, state: &mut AppState, commands: &mut Vec<AppCom
                         egui::TextEdit::singleline(device_id)
                             .id(ui.make_persistent_id("sign-in-device-id-input")),
                     );
-                    ui.small("Dummy/local only for now; no network requests are made.");
+                    ui.small(
+                        "Saved positions sync through sanctuaryplayer.robdh.uk. The User ID is not authenticated; anyone who knows it can access the same synced positions.",
+                    );
                     ui.horizontal(|ui| {
                         let valid = !user_id.trim().is_empty() && !device_id.trim().is_empty();
                         if ui

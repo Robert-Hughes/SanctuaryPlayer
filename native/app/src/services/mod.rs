@@ -1,10 +1,12 @@
 mod dummy;
+mod remote;
 
 use std::time::Duration;
 
 use crate::video::VideoSource;
 
 pub use dummy::{DummyMetadataService, DummyPositionService};
+pub use remote::RemotePositionService;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VideoMetadata {
@@ -26,13 +28,13 @@ pub trait MetadataService {
     fn metadata_for(&self, source: &VideoSource) -> VideoMetadata;
 }
 
-pub trait PositionService {
-    fn positions(&self, user_id: &str) -> Vec<SavedPosition>;
+pub trait PositionService: Send + Sync {
+    fn positions(&self, user_id: &str) -> Result<Vec<SavedPosition>, String>;
     fn save_position(
-        &mut self,
+        &self,
         user_id: &str,
         device_id: &str,
         source: &VideoSource,
         position: Duration,
-    );
+    ) -> Result<(), String>;
 }

@@ -1,3 +1,4 @@
+use std::sync::Mutex;
 use std::time::Duration;
 
 use crate::video::VideoSource;
@@ -25,13 +26,13 @@ impl MetadataService for DummyMetadataService {
 }
 
 pub struct DummyPositionService {
-    positions: Vec<SavedPosition>,
+    positions: Mutex<Vec<SavedPosition>>,
 }
 
 impl Default for DummyPositionService {
     fn default() -> Self {
         Self {
-            positions: vec![
+            positions: Mutex::new(vec![
                 SavedPosition {
                     source: VideoSource::parse("2386400830").unwrap(),
                     device_id: "Phone".into(),
@@ -56,7 +57,7 @@ impl Default for DummyPositionService {
                     title: Some("GAM vs. DRX | Worlds Game 3".into()),
                     release_age: Some(Duration::from_secs(12 * 24 * 3600)),
                 },
-            ],
+            ]),
         }
     }
 }
@@ -68,27 +69,34 @@ impl DummyPositionService {
 }
 
 impl PositionService for DummyPositionService {
-    fn positions(&self, _user_id: &str) -> Vec<SavedPosition> {
-        self.positions.clone()
+    fn positions(&self, _user_id: &str) -> Result<Vec<SavedPosition>, String> {
+        Ok(self
+            .positions
+            .lock()
+            .expect("dummy positions mutex poisoned")
+            .clone())
     }
 
     fn save_position(
-        &mut self,
+        &self,
         _user_id: &str,
         device_id: &str,
         source: &VideoSource,
         position: Duration,
-    ) {
-        if let Some(existing) = self
+    ) -> Result<(), String> {
+        let mut positions = self
             .positions
+            .lock()
+            .expect("dummy positions mutex poisoned");
+        if let Some(existing) = positions
             .iter_mut()
             .find(|entry| entry.device_id == device_id && entry.source.id == source.id)
         {
             existing.position = position;
             existing.modified_age = Duration::ZERO;
-            return;
+            return Ok(());
         }
-        self.positions.insert(
+        positions.insert(
             0,
             SavedPosition {
                 source: source.clone(),
@@ -99,6 +107,7 @@ impl PositionService for DummyPositionService {
                 release_age: None,
             },
         );
+        Ok(())
     }
 }
 
@@ -116,11 +125,14 @@ mod tests {
 
     #[test]
     fn dummy_positions_can_be_updated_per_device_and_video() {
-        let mut service = DummyPositionService::new();
+        let service = DummyPositionService::new();
         let source = VideoSource::parse("2386400830").unwrap();
-        service.save_position("test-user", "Phone", &source, Duration::from_secs(7000));
+        service
+            .save_position("test-user", "Phone", &source, Duration::from_secs(7000))
+            .unwrap();
         let phone = service
             .positions("test-user")
+            .unwrap()
             .into_iter()
             .find(|entry| entry.device_id == "Phone" && entry.source.id == source.id)
             .unwrap();

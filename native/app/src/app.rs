@@ -1,6 +1,7 @@
+use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use url::Url;
 
@@ -8,13 +9,15 @@ use ::oxideav::core::FrameLease;
 
 use crate::model::{AppCommand, PlaybackState, Quality};
 use crate::playback::{DecodeMode, DummyPlayback, OxidePlayback, PlaybackBackend};
-use crate::services::{DummyPositionService, PositionService, SavedPosition, VideoMetadata};
+use crate::services::{PositionService, RemotePositionService, SavedPosition, VideoMetadata};
 use crate::spoilers::sanitise_title;
 use crate::twitch::{TwitchVodResolveError, resolve_vod_m3u8};
 use crate::video::{VideoPlatform, VideoSource};
 
 const CONTROLS_HIDE_AFTER: Duration = Duration::from_secs(2);
 const LOCK_SLIDE_BACK_DURATION: Duration = Duration::from_millis(500);
+const POSITION_UPLOAD_DELTA: Duration = Duration::from_secs(10);
+const POSITION_SAVE_RETRY_DELAY: Duration = Duration::from_secs(5);
 
 type TwitchResolver = fn(&str) -> Result<Url, TwitchVodResolveError>;
 type PlaybackFactory = fn(VideoSource, Url, DecodeMode) -> Result<Box<dyn PlaybackBackend>, String>;
@@ -32,9 +35,37 @@ struct PendingVideoOpen {
     receiver: Receiver<Result<Box<dyn PlaybackBackend>, String>>,
 }
 
+struct PendingPositionsFetch {
+    user_id: String,
+    receiver: Receiver<Result<Vec<SavedPosition>, String>>,
+}
+
+struct PendingPositionSave {
+    user_id: String,
+    device_id: String,
+    source: VideoSource,
+    position: Duration,
+    receiver: Receiver<Result<(), String>>,
+}
+
+#[derive(Debug, Clone)]
+struct LastUploadedPosition {
+    user_id: String,
+    device_id: String,
+    video_id: String,
+    position: Duration,
+}
+
 pub struct AppState {
     playback: Box<dyn PlaybackBackend>,
-    positions_service: DummyPositionService,
+    positions_service: Arc<dyn PositionService>,
+    saved_positions: Vec<SavedPosition>,
+    positions_error: Option<String>,
+    positions_refresh_requested: bool,
+    pending_positions_fetch: Option<PendingPositionsFetch>,
+    pending_position_save: Option<PendingPositionSave>,
+    last_uploaded_position: Option<LastUploadedPosition>,
+    next_position_save_allowed: Instant,
     metadata: Option<VideoMetadata>,
     account: AccountState,
     preferences: Preferences,
@@ -127,7 +158,14 @@ impl Default for AppState {
     fn default() -> Self {
         Self {
             playback: Box::new(DummyPlayback::new()),
-            positions_service: DummyPositionService::new(),
+            positions_service: Arc::new(RemotePositionService::new()),
+            saved_positions: Vec::new(),
+            positions_error: None,
+            positions_refresh_requested: false,
+            pending_positions_fetch: None,
+            pending_position_save: None,
+            last_uploaded_position: None,
+            next_position_save_allowed: Instant::now(),
             metadata: None,
             account: AccountState::default(),
             preferences: Preferences::default(),
@@ -164,6 +202,12 @@ impl AppState {
     pub fn update(&mut self, elapsed: Duration) {
         self.poll_video_open();
         self.playback.update(elapsed);
+        self.age_saved_positions(elapsed);
+        self.poll_positions_fetch();
+        self.poll_position_save();
+        self.start_positions_fetch_if_requested();
+        self.maybe_save_position();
+        self.resume_deferred_autoplay();
         self.update_lock_slider_return(elapsed);
 
         if !self.has_video() {
@@ -209,7 +253,14 @@ impl AppState {
                 self.metadata = None;
                 self.preferences.manually_selected_quality = false;
                 self.apply_favourite_quality();
-                if self.play_when_opened {
+                let start_time = self
+                    .playback
+                    .source()
+                    .and_then(|source| source.start_time)
+                    .filter(|position| !position.is_zero());
+                if let Some(position) = start_time {
+                    self.playback.seek(position);
+                } else if self.play_when_opened {
                     self.playback.play();
                     self.play_when_opened = false;
                 }
@@ -256,6 +307,221 @@ impl AppState {
             message: message.into(),
         });
         self.note_interaction();
+    }
+
+    fn age_saved_positions(&mut self, elapsed: Duration) {
+        for position in &mut self.saved_positions {
+            position.modified_age = position.modified_age.saturating_add(elapsed);
+            if let Some(age) = position.release_age.as_mut() {
+                *age = age.saturating_add(elapsed);
+            }
+        }
+    }
+
+    fn resume_deferred_autoplay(&mut self) {
+        if !self.play_when_opened || self.pending_video_open.is_some() || !self.has_video() {
+            return;
+        }
+        match self.playback.state() {
+            PlaybackState::Paused => {
+                self.playback.play();
+                self.play_when_opened = false;
+            }
+            PlaybackState::Ended | PlaybackState::Error(_) => {
+                self.play_when_opened = false;
+            }
+            _ => {}
+        }
+    }
+
+    fn start_positions_fetch_if_requested(&mut self) {
+        if !self.positions_refresh_requested || self.pending_positions_fetch.is_some() {
+            return;
+        }
+        let Some(user_id) = self.account.user_id.clone() else {
+            self.positions_refresh_requested = false;
+            return;
+        };
+        let service = Arc::clone(&self.positions_service);
+        let worker_user_id = user_id.clone();
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || {
+            let result = service.positions(&worker_user_id);
+            let _ = sender.send(result);
+        });
+        self.positions_refresh_requested = false;
+        self.positions_error = None;
+        self.pending_positions_fetch = Some(PendingPositionsFetch { user_id, receiver });
+    }
+
+    fn poll_positions_fetch(&mut self) {
+        let Some(pending) = self.pending_positions_fetch.as_ref() else {
+            return;
+        };
+        let result = match pending.receiver.try_recv() {
+            Ok(result) => Some(result),
+            Err(TryRecvError::Empty) => None,
+            Err(TryRecvError::Disconnected) => Some(Err(
+                "saved-position fetch worker stopped unexpectedly".into(),
+            )),
+        };
+        let Some(result) = result else {
+            return;
+        };
+        let user_id = pending.user_id.clone();
+        self.pending_positions_fetch = None;
+        if self.account.user_id.as_deref() != Some(user_id.as_str()) {
+            return;
+        }
+        match result {
+            Ok(positions) => {
+                eprintln!(
+                    "SanctuaryPlayer: loaded {} saved positions",
+                    positions.len()
+                );
+                self.saved_positions = positions;
+                self.positions_error = None;
+            }
+            Err(error) => {
+                eprintln!("SanctuaryPlayer: saved-position fetch failed: {error}");
+                self.positions_error = Some(error);
+            }
+        }
+    }
+
+    fn maybe_save_position(&mut self) {
+        if self.pending_position_save.is_some() || Instant::now() < self.next_position_save_allowed
+        {
+            return;
+        }
+        if !matches!(
+            self.playback.state(),
+            PlaybackState::Playing | PlaybackState::Paused | PlaybackState::Ended
+        ) {
+            return;
+        }
+        let (Some(user_id), Some(device_id), Some(source)) = (
+            self.account.user_id.clone(),
+            self.account.device_id.clone(),
+            self.playback.source().cloned(),
+        ) else {
+            return;
+        };
+        let position = self.playback.position();
+        if position.is_zero() {
+            return;
+        }
+        let rounded_seconds = position.as_secs_f64().round().clamp(0.0, u64::MAX as f64) as u64;
+        let rounded_position = Duration::from_secs(rounded_seconds);
+        if rounded_position.is_zero() {
+            return;
+        }
+        let should_upload = self.last_uploaded_position.as_ref().is_none_or(|last| {
+            last.user_id != user_id
+                || last.device_id != device_id
+                || last.video_id != source.id
+                || position.abs_diff(last.position) > POSITION_UPLOAD_DELTA
+        });
+        if !should_upload {
+            return;
+        }
+
+        let service = Arc::clone(&self.positions_service);
+        let worker_user_id = user_id.clone();
+        let worker_device_id = device_id.clone();
+        let worker_source = source.clone();
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || {
+            let result = service.save_position(
+                &worker_user_id,
+                &worker_device_id,
+                &worker_source,
+                rounded_position,
+            );
+            let _ = sender.send(result);
+        });
+        self.pending_position_save = Some(PendingPositionSave {
+            user_id,
+            device_id,
+            source,
+            position: rounded_position,
+            receiver,
+        });
+    }
+
+    fn poll_position_save(&mut self) {
+        let Some(pending) = self.pending_position_save.as_ref() else {
+            return;
+        };
+        let result = match pending.receiver.try_recv() {
+            Ok(result) => Some(result),
+            Err(TryRecvError::Empty) => None,
+            Err(TryRecvError::Disconnected) => Some(Err(
+                "saved-position upload worker stopped unexpectedly".into(),
+            )),
+        };
+        let Some(result) = result else {
+            return;
+        };
+        let user_id = pending.user_id.clone();
+        let device_id = pending.device_id.clone();
+        let source = pending.source.clone();
+        let position = pending.position;
+        self.pending_position_save = None;
+        match result {
+            Ok(()) => {
+                eprintln!(
+                    "SanctuaryPlayer: saved position video={} position={}s",
+                    source.id,
+                    position.as_secs()
+                );
+                self.last_uploaded_position = Some(LastUploadedPosition {
+                    user_id: user_id.clone(),
+                    device_id: device_id.clone(),
+                    video_id: source.id.clone(),
+                    position,
+                });
+                if self.account.user_id.as_deref() == Some(user_id.as_str())
+                    && self.account.device_id.as_deref() == Some(device_id.as_str())
+                {
+                    self.update_cached_saved_position(source, device_id, position);
+                }
+            }
+            Err(error) => {
+                eprintln!("SanctuaryPlayer: saved-position upload failed: {error}");
+                self.next_position_save_allowed = Instant::now() + POSITION_SAVE_RETRY_DELAY;
+            }
+        }
+    }
+
+    fn update_cached_saved_position(
+        &mut self,
+        source: VideoSource,
+        device_id: String,
+        position: Duration,
+    ) {
+        let existing_index = self
+            .saved_positions
+            .iter()
+            .position(|entry| entry.source.id == source.id && entry.device_id == device_id);
+        let (title, release_age) = existing_index
+            .map(|index| {
+                let existing = self.saved_positions.remove(index);
+                (existing.title, existing.release_age)
+            })
+            .unwrap_or((None, None));
+        self.saved_positions.insert(
+            0,
+            SavedPosition {
+                source,
+                device_id,
+                position,
+                modified_age: Duration::ZERO,
+                title,
+                release_age,
+            },
+        );
+        self.saved_positions.truncate(10);
     }
 
     fn update_lock_slider_return(&mut self, elapsed: Duration) {
@@ -349,8 +615,19 @@ impl AppState {
             AppCommand::SignIn { user_id, device_id } => {
                 self.account.user_id = Some(user_id);
                 self.account.device_id = Some(device_id);
+                self.saved_positions.clear();
+                self.positions_error = None;
+                self.positions_refresh_requested = true;
+                self.last_uploaded_position = None;
+                self.next_position_save_allowed = Instant::now();
             }
-            AppCommand::SignOut => self.account = AccountState::default(),
+            AppCommand::SignOut => {
+                self.account = AccountState::default();
+                self.saved_positions.clear();
+                self.positions_error = None;
+                self.positions_refresh_requested = false;
+                self.last_uploaded_position = None;
+            }
             AppCommand::ToggleFullscreen => {
                 if self.has_video() {
                     self.note_interaction();
@@ -414,8 +691,13 @@ impl AppState {
             return;
         }
         self.ui.menu_open = !self.ui.menu_open;
-        if self.ui.menu_open && self.has_video() {
-            self.playback.pause();
+        if self.ui.menu_open {
+            if self.signed_in() {
+                self.positions_refresh_requested = true;
+            }
+            if self.has_video() {
+                self.playback.pause();
+            }
         }
         self.note_interaction();
     }
@@ -544,11 +826,20 @@ impl AppState {
     }
 
     pub fn saved_positions(&self) -> Vec<SavedPosition> {
-        self.account
-            .user_id
-            .as_deref()
-            .map(|user| self.positions_service.positions(user))
-            .unwrap_or_default()
+        if self.signed_in() {
+            self.saved_positions.clone()
+        } else {
+            Vec::new()
+        }
+    }
+
+    pub fn saved_positions_loading(&self) -> bool {
+        self.signed_in()
+            && (self.positions_refresh_requested || self.pending_positions_fetch.is_some())
+    }
+
+    pub fn saved_positions_error(&self) -> Option<&str> {
+        self.positions_error.as_deref()
     }
 
     pub fn adjacent_playback_rate(&self, direction: i32) -> Option<f32> {
@@ -568,6 +859,9 @@ impl AppState {
         self.playback.needs_animation()
             || self.ui.lock_return_from.is_some()
             || self.pending_video_open.is_some()
+            || self.positions_refresh_requested
+            || self.pending_positions_fetch.is_some()
+            || self.pending_position_save.is_some()
     }
 }
 
@@ -597,6 +891,44 @@ mod tests {
         let mut playback = DummyPlayback::new();
         playback.open(&source)?;
         Ok(Box::new(playback))
+    }
+
+    fn test_playback_factory_requires_app_start_seek(
+        source: VideoSource,
+        _url: Url,
+        _decode_mode: DecodeMode,
+    ) -> Result<Box<dyn PlaybackBackend>, String> {
+        let mut playback = DummyPlayback::new();
+        playback.open(&source)?;
+        // Preserve the source/start_time metadata but force the backend itself
+        // back to zero. This models OxidePlayback, which needs AppState to
+        // dispatch the actual HLS seek after opening.
+        playback.seek(Duration::ZERO);
+        playback.update(Duration::from_secs(1));
+        Ok(Box::new(playback))
+    }
+
+    #[test]
+    fn video_start_time_is_applied_after_async_backend_open() {
+        let mut state = AppState::new();
+        state.twitch_resolver = test_twitch_resolver;
+        state.playback_factory = test_playback_factory_requires_app_start_seek;
+        state.apply(AppCommand::OpenVideo(
+            VideoSource::parse("https://www.twitch.tv/videos/2386400830?t=5m").unwrap(),
+        ));
+
+        for _ in 0..100 {
+            state.update(Duration::from_millis(200));
+            if state.pending_video_open.is_none()
+                && !matches!(state.playback_state(), PlaybackState::Seeking)
+            {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(state.pending_video_open.is_none());
+        assert_eq!(state.playback_state(), &PlaybackState::Paused);
+        assert_eq!(state.position(), Duration::from_secs(300));
     }
 
     #[test]
@@ -763,14 +1095,74 @@ mod tests {
     }
 
     #[test]
-    fn sign_in_exposes_dummy_saved_positions() {
+    fn sign_in_fetches_saved_positions_without_blocking() {
+        let service = Arc::new(crate::services::DummyPositionService::new());
         let mut state = loaded_state();
+        state.positions_service = service;
         assert!(state.saved_positions().is_empty());
         state.apply(AppCommand::SignIn {
             user_id: "test-user".into(),
             device_id: "Desktop".into(),
         });
-        assert!(!state.saved_positions().is_empty());
+        assert!(state.saved_positions_loading());
+
+        for _ in 0..100 {
+            state.update(Duration::ZERO);
+            if !state.saved_positions_loading() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(!state.saved_positions_loading());
+        assert_eq!(state.saved_positions().len(), 3);
+    }
+
+    #[test]
+    fn progress_uploads_after_more_than_ten_seconds_from_last_success() {
+        let service = Arc::new(crate::services::DummyPositionService::new());
+        let mut state = loaded_state();
+        state.positions_service = service.clone();
+        state.apply(AppCommand::SignIn {
+            user_id: "test-user".into(),
+            device_id: "Native".into(),
+        });
+
+        fn settle(state: &mut AppState) {
+            for _ in 0..200 {
+                state.update(Duration::from_millis(200));
+                if state.pending_position_save.is_none()
+                    && !matches!(state.playback_state(), PlaybackState::Seeking)
+                {
+                    // Give a just-spawned upload one extra poll opportunity.
+                    state.update(Duration::ZERO);
+                    if state.pending_position_save.is_none() {
+                        return;
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            panic!("position worker did not settle");
+        }
+
+        state.apply(AppCommand::SeekAbsolute(Duration::from_secs(100)));
+        settle(&mut state);
+        let current = || {
+            service
+                .positions("test-user")
+                .unwrap()
+                .into_iter()
+                .find(|entry| entry.device_id == "Native" && entry.source.id == "2386400830")
+                .map(|entry| entry.position)
+        };
+        assert_eq!(current(), Some(Duration::from_secs(100)));
+
+        state.apply(AppCommand::SeekAbsolute(Duration::from_secs(105)));
+        settle(&mut state);
+        assert_eq!(current(), Some(Duration::from_secs(100)));
+
+        state.apply(AppCommand::SeekAbsolute(Duration::from_secs(112)));
+        settle(&mut state);
+        assert_eq!(current(), Some(Duration::from_secs(112)));
     }
 
     #[test]

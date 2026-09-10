@@ -188,13 +188,31 @@ fn render_saved_positions(
             .color(theme::PURPLE),
     );
     if !state.signed_in() {
-        ui.label("Sign in to show synced positions (dummy data for now).");
+        ui.label("Sign in to show synced positions.");
         return;
     }
 
     let positions = state.saved_positions();
+    if state.saved_positions_loading() {
+        ui.horizontal(|ui| {
+            ui.spinner();
+            ui.label(if positions.is_empty() {
+                "Loading saved positions…"
+            } else {
+                "Refreshing saved positions…"
+            });
+        });
+    }
+    if let Some(error) = state.saved_positions_error() {
+        ui.label(
+            egui::RichText::new(format!("Unable to refresh saved positions: {error}"))
+                .color(egui::Color32::DARK_RED),
+        );
+    }
     if positions.is_empty() {
-        ui.label("No saved positions");
+        if !state.saved_positions_loading() {
+            ui.label("No saved positions");
+        }
         return;
     }
     let current_id = state.source().map(|source| source.id.clone());
