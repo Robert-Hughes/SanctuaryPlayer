@@ -46,8 +46,23 @@ uploaded. Network requests run off the UI thread.
 Selecting a saved row for the current video seeks in place. Selecting one for another
 video carries its position as `VideoSource::start_time`; once the native Twitch/HLS
 backend has opened, that start time is applied through the real HLS seek path before
-playback begins. Native User ID / Device ID persistence across application restarts is
-not implemented yet; that is separate from server-side position sync.
+playback begins.
+
+Native account/preferences persistence is implemented by `5f995f9`. SanctuaryPlayer
+stores a small JSON settings file containing the User ID, Device ID and favourite-quality
+list. The platform launchers choose the normal per-user configuration location:
+
+- FreeBSD/Linux: `$XDG_CONFIG_HOME/sanctuary-player/settings.json`, or
+  `~/.config/sanctuary-player/settings.json` when `XDG_CONFIG_HOME` is unset;
+- Windows: `%APPDATA%\sanctuary-player\settings.json`;
+- Android: `settings.json` in the application's private internal-data directory.
+
+The file is loaded before initial video/open work, so a persisted account immediately
+schedules a saved-position refresh and persisted favourite qualities are available when
+the first playback session opens. Sign-in, sign-out and favourite-quality changes write
+the file synchronously; sign-out clears the stored account IDs while retaining unrelated
+preferences. A missing file means default settings. A malformed/unreadable file is
+reported to stderr and defaults are used rather than preventing application startup.
 
 Known Issues
 ============
