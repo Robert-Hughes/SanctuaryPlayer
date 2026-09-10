@@ -402,6 +402,21 @@ impl OxidePlayback {
     where
         F: FnOnce(&Url, DecodeMode) -> Result<PlaybackSession, String>,
     {
+        self.switch_quality_with_seek(index, opener, |playback, target, resume_playing| {
+            playback.dispatch_seek(target, Duration::ZERO, resume_playing)
+        })
+    }
+
+    fn switch_quality_with_seek<F, S>(
+        &mut self,
+        index: usize,
+        opener: F,
+        seek_after_open: S,
+    ) -> Result<(), String>
+    where
+        F: FnOnce(&Url, DecodeMode) -> Result<PlaybackSession, String>,
+        S: FnOnce(&mut Self, Duration, bool) -> Result<(), String>,
+    {
         if index >= self.qualities.len() || index >= self.quality_urls.len() {
             return Err(format!("quality index {index} is out of range"));
         }
@@ -410,13 +425,23 @@ impl OxidePlayback {
             return Ok(());
         }
 
-        let resume_playing = matches!(self.state, PlaybackState::Playing);
+        let preserved_position = self.position;
+        let resume_playing = matches!(self.state, PlaybackState::Playing)
+            || matches!(self.state, PlaybackState::Seeking)
+                && self
+                    .seek_pending
+                    .as_ref()
+                    .is_some_and(|pending| pending.resume_playing);
         let old_quality = self.qualities[self.active_quality_index].label.clone();
         let new_quality = self.qualities[index].label.clone();
         let new_url = self.quality_urls[index].clone();
         eprintln!(
-            "SanctuaryPlayer: quality switch begin old={} new={} variant={} resume_playing={}",
-            old_quality, new_quality, new_url, resume_playing
+            "SanctuaryPlayer: quality switch begin old={} new={} variant={} preserve={:.3}s resume_playing={}",
+            old_quality,
+            new_quality,
+            new_url,
+            preserved_position.as_secs_f64(),
+            resume_playing
         );
 
         self.tear_down_session();
@@ -429,12 +454,33 @@ impl OxidePlayback {
         self.quality_index = index;
         self.active_quality_index = index;
 
-        if resume_playing {
-            self.play();
+        let target = self.duration.map_or(preserved_position, |duration| {
+            preserved_position.min(duration)
+        });
+        if target.is_zero() {
+            if resume_playing {
+                self.play();
+            }
+            eprintln!(
+                "SanctuaryPlayer: quality switch complete active={} variant={} position=0s",
+                new_quality, new_url
+            );
+            return Ok(());
         }
+
+        // The replacement AudioOutput starts paused. Dispatch the media-time
+        // seek before allowing playback to resume so no frame/PCM from the
+        // beginning of the replacement rendition can be presented. A rejected
+        // seek restores the replacement session's honest 0:00 position.
+        seek_after_open(self, target, resume_playing).map_err(|error| {
+            format!("seek replacement HLS quality to preserved position: {error}")
+        })?;
         eprintln!(
-            "SanctuaryPlayer: quality switch complete active={} variant={} position=0s",
-            new_quality, new_url
+            "SanctuaryPlayer: quality switch active={} variant={} seeking={:.3}s resume_playing={}",
+            new_quality,
+            new_url,
+            target.as_secs_f64(),
+            resume_playing
         );
         Ok(())
     }
@@ -1526,6 +1572,26 @@ mod tests {
         }
     }
 
+    fn fake_quality_seek(
+        playback: &mut OxidePlayback,
+        target: Duration,
+        resume_playing: bool,
+    ) -> Result<(), String> {
+        playback.video_queue.clear();
+        playback.position = target;
+        playback.state = PlaybackState::Seeking;
+        playback.seek_pending = Some(PendingSeek {
+            generation: 77,
+            requested: target,
+            prior_position: Duration::ZERO,
+            resume_playing,
+            barriers_remaining: 1,
+            landing: None,
+            rejected: false,
+        });
+        Ok(())
+    }
+
     #[test]
     fn quality_switch_recreates_session_and_resumes_previous_play_state() {
         let (mut playback, _old_tx) = clock_test_playback();
@@ -1549,22 +1615,36 @@ mod tests {
             })));
 
         playback
-            .switch_quality_with(0, |url, decode_mode| {
-                assert_eq!(url.as_str(), "https://example.test/1080.m3u8");
-                assert_eq!(decode_mode, DecodeMode::VdpauDirect);
-                Ok(replacement_test_session())
-            })
+            .switch_quality_with_seek(
+                0,
+                |url, decode_mode| {
+                    assert_eq!(url.as_str(), "https://example.test/1080.m3u8");
+                    assert_eq!(decode_mode, DecodeMode::VdpauDirect);
+                    Ok(replacement_test_session())
+                },
+                fake_quality_seek,
+            )
             .unwrap();
 
         assert_eq!(playback.quality().unwrap().id, "1080p60");
         assert_eq!(playback.quality_index, 0);
         assert_eq!(playback.active_quality_index, 0);
-        assert_eq!(playback.position, Duration::ZERO);
-        assert_eq!(playback.state, PlaybackState::Playing);
+        assert_eq!(playback.position, Duration::from_secs(12));
+        assert_eq!(playback.state, PlaybackState::Seeking);
         assert!(playback.video_queue.is_empty());
         assert!(!playback.first_frame_presented);
         assert_eq!(playback.duration, Some(Duration::from_secs(30)));
         assert_eq!(playback.rates, vec![0.5, 1.0, 2.0]);
+
+        playback
+            .handle_seek_barrier(BarrierKind::SeekFlush {
+                generation: 77,
+                landed_pts: 12 * 90_000,
+                time_base: TimeBase::new(1, 90_000),
+            })
+            .unwrap();
+        assert_eq!(playback.position, Duration::from_secs(12));
+        assert_eq!(playback.state, PlaybackState::Playing);
     }
 
     #[test]
@@ -1595,6 +1675,7 @@ mod tests {
     fn quality_switch_keeps_a_paused_session_paused() {
         let (mut playback, _old_tx) = clock_test_playback();
         playback.state = PlaybackState::Paused;
+        playback.position = Duration::from_secs(7);
         playback.qualities = vec![
             Quality::new("1080p60", "1080p60 (Source)"),
             Quality::new("720p60", "720p60"),
@@ -1607,11 +1688,26 @@ mod tests {
         playback.active_quality_index = 1;
 
         playback
-            .switch_quality_with(0, |_url, _decode_mode| Ok(replacement_test_session()))
+            .switch_quality_with_seek(
+                0,
+                |_url, _decode_mode| Ok(replacement_test_session()),
+                fake_quality_seek,
+            )
             .unwrap();
 
-        assert_eq!(playback.state, PlaybackState::Paused);
+        assert_eq!(playback.state, PlaybackState::Seeking);
+        assert_eq!(playback.position, Duration::from_secs(7));
         assert_eq!(playback.active_quality_index, 0);
+
+        playback
+            .handle_seek_barrier(BarrierKind::SeekFlush {
+                generation: 77,
+                landed_pts: 7 * 90_000,
+                time_base: TimeBase::new(1, 90_000),
+            })
+            .unwrap();
+        assert_eq!(playback.state, PlaybackState::Paused);
+        assert_eq!(playback.position, Duration::from_secs(7));
     }
 
     #[test]
