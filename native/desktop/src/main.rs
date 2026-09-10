@@ -46,6 +46,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         None => SanctuaryPlayerApp::with_decode_mode(decode_mode),
     };
+    if let Some(config_dir) = dirs::config_dir() {
+        app.set_settings_path(config_dir.join("sanctuary-player").join("settings.json"));
+    } else {
+        eprintln!(
+            "SanctuaryPlayer: platform configuration directory is unavailable; settings will not persist"
+        );
+    }
     event_loop.run_app(&mut app)?;
     Ok(())
 }

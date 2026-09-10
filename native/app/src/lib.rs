@@ -12,6 +12,7 @@ mod input;
 pub mod model;
 pub mod playback;
 pub mod services;
+mod settings;
 pub mod spoilers;
 pub mod time_format;
 pub mod twitch;
@@ -21,6 +22,7 @@ mod vdpau_vulkan_bridge;
 pub mod video;
 mod video_renderer;
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -59,6 +61,10 @@ impl SanctuaryPlayerApp {
             next_animation_frame: Instant::now(),
             next_egui_repaint: None,
         }
+    }
+
+    pub fn set_settings_path(&mut self, path: PathBuf) {
+        self.state.set_settings_path(path);
     }
 
     pub fn with_initial_video(source: video::VideoSource) -> Self {

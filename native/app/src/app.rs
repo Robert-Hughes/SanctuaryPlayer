@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
@@ -10,6 +11,7 @@ use ::oxideav::core::FrameLease;
 use crate::model::{AppCommand, PlaybackState, Quality};
 use crate::playback::{DecodeMode, DummyPlayback, OxidePlayback, PlaybackBackend};
 use crate::services::{PositionService, RemotePositionService, SavedPosition, VideoMetadata};
+use crate::settings::{Settings, SettingsStore};
 use crate::spoilers::sanitise_title;
 use crate::twitch::{TwitchVodResolveError, resolve_vod_m3u8};
 use crate::video::{VideoPlatform, VideoSource};
@@ -66,6 +68,7 @@ pub struct AppState {
     pending_position_save: Option<PendingPositionSave>,
     last_uploaded_position: Option<LastUploadedPosition>,
     next_position_save_allowed: Instant,
+    settings_store: Option<SettingsStore>,
     metadata: Option<VideoMetadata>,
     account: AccountState,
     preferences: Preferences,
@@ -166,6 +169,7 @@ impl Default for AppState {
             pending_position_save: None,
             last_uploaded_position: None,
             next_position_save_allowed: Instant::now(),
+            settings_store: None,
             metadata: None,
             account: AccountState::default(),
             preferences: Preferences::default(),
@@ -188,6 +192,37 @@ impl AppState {
         Self {
             decode_mode,
             ..Self::default()
+        }
+    }
+
+    pub fn set_settings_path(&mut self, path: PathBuf) {
+        let store = SettingsStore::new(path);
+        eprintln!("SanctuaryPlayer: settings path={}", store.path().display());
+        match store.load() {
+            Ok(settings) => {
+                self.account.user_id = settings.user_id;
+                self.account.device_id = settings.device_id;
+                self.preferences.favourite_qualities = settings.favourite_qualities;
+                self.positions_refresh_requested = self.signed_in();
+            }
+            Err(error) => {
+                eprintln!("SanctuaryPlayer: unable to load settings: {error}");
+            }
+        }
+        self.settings_store = Some(store);
+    }
+
+    fn persist_settings(&self) {
+        let Some(store) = self.settings_store.as_ref() else {
+            return;
+        };
+        let settings = Settings {
+            user_id: self.account.user_id.clone(),
+            device_id: self.account.device_id.clone(),
+            favourite_qualities: self.preferences.favourite_qualities.clone(),
+        };
+        if let Err(error) = store.save(&settings) {
+            eprintln!("SanctuaryPlayer: unable to save settings: {error}");
         }
     }
 
@@ -608,6 +643,7 @@ impl AppState {
             }
             AppCommand::SetFavouriteQualities(qualities) => {
                 self.preferences.favourite_qualities = qualities;
+                self.persist_settings();
                 if !self.preferences.manually_selected_quality {
                     self.apply_favourite_quality();
                 }
@@ -615,6 +651,7 @@ impl AppState {
             AppCommand::SignIn { user_id, device_id } => {
                 self.account.user_id = Some(user_id);
                 self.account.device_id = Some(device_id);
+                self.persist_settings();
                 self.saved_positions.clear();
                 self.positions_error = None;
                 self.positions_refresh_requested = true;
@@ -623,6 +660,7 @@ impl AppState {
             }
             AppCommand::SignOut => {
                 self.account = AccountState::default();
+                self.persist_settings();
                 self.saved_positions.clear();
                 self.positions_error = None;
                 self.positions_refresh_requested = false;
@@ -871,6 +909,17 @@ mod tests {
 
     use super::*;
 
+    fn temporary_settings_path(name: &str) -> PathBuf {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "sanctuary-player-app-settings-test-{}-{unique}-{name}.json",
+            std::process::id()
+        ))
+    }
+
     fn loaded_state() -> AppState {
         let mut state = AppState::new();
         let source = VideoSource::parse("2386400830").unwrap();
@@ -1092,6 +1141,51 @@ mod tests {
         state.apply(AppCommand::SetQuality("480p".into()));
         state.apply(AppCommand::SetFavouriteQualities("source".into()));
         assert_eq!(state.quality().unwrap().id, "480p");
+    }
+
+    #[test]
+    fn persisted_account_and_favourites_are_restored_on_restart() {
+        let path = temporary_settings_path("restore");
+        let mut first = AppState::new();
+        first.set_settings_path(path.clone());
+        first.apply(AppCommand::SignIn {
+            user_id: "test-user".into(),
+            device_id: "test-device".into(),
+        });
+        first.apply(AppCommand::SetFavouriteQualities("1080p60,720p60".into()));
+
+        let mut second = AppState::new();
+        second.set_settings_path(path.clone());
+        assert!(second.signed_in());
+        assert_eq!(second.user_id(), Some("test-user"));
+        assert_eq!(second.device_id(), Some("test-device"));
+        assert_eq!(second.favourite_qualities(), "1080p60,720p60");
+        assert!(second.positions_refresh_requested);
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn sign_out_clears_persisted_account_but_keeps_preferences() {
+        let path = temporary_settings_path("signout");
+        let mut first = AppState::new();
+        first.set_settings_path(path.clone());
+        first.apply(AppCommand::SignIn {
+            user_id: "test-user".into(),
+            device_id: "test-device".into(),
+        });
+        first.apply(AppCommand::SetFavouriteQualities("720p60".into()));
+        first.apply(AppCommand::SignOut);
+
+        let mut second = AppState::new();
+        second.set_settings_path(path.clone());
+        assert!(!second.signed_in());
+        assert_eq!(second.user_id(), None);
+        assert_eq!(second.device_id(), None);
+        assert_eq!(second.favourite_qualities(), "720p60");
+        assert!(!second.positions_refresh_requested);
+
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]
