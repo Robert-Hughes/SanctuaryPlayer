@@ -1,7 +1,6 @@
 # Native TODO
 
 - Update the native window title from the spoiler-sanitised current-video title.
-- Preserve the current media position when manually switching HLS quality instead of restarting at 0:00.
 - Move HLS quality/session reconstruction off the UI thread so a quality change cannot block egui while playlists, segments, decoders and audio output are reopened.
 - Add adaptive bitrate (ABR) quality selection based on sustained network/playback conditions, while retaining manual/favourite-quality overrides.
 - Represent buffering/rebuffering explicitly in playback state and UI rather than leaving a starved session looking like ordinary `Playing` playback.
