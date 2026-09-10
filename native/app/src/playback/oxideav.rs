@@ -32,6 +32,7 @@ pub struct OxidePlayback {
     quality_index: usize,
     active_quality_index: usize,
     decode_mode: DecodeMode,
+    muted: bool,
     rx: Receiver<SessionMsg>,
     executor: Option<ExecutorHandle>,
     video_stream: StreamInfo,
@@ -201,6 +202,7 @@ struct PlaybackSession {
 fn open_variant_session(
     variant_url: &Url,
     decode_mode: DecodeMode,
+    muted: bool,
 ) -> Result<PlaybackSession, String> {
     let input = hls_uri(variant_url);
     let job_json = serde_json::to_string(&json!({
@@ -252,7 +254,7 @@ fn open_variant_session(
         .cloned();
 
     let audio_output = match audio_stream.as_ref() {
-        Some(stream) => match AudioOutput::open(&stream.params) {
+        Some(stream) => match AudioOutput::open(&stream.params, muted) {
             Ok(output) => Some(output),
             Err(error) => {
                 stop_executor(executor);
@@ -316,6 +318,7 @@ impl OxidePlayback {
         source: VideoSource,
         m3u8_url: Url,
         decode_mode: DecodeMode,
+        muted: bool,
     ) -> Result<Self, String> {
         let quality_set = inspect_hls_qualities(&m3u8_url)?;
         let selected_url = quality_set.urls[quality_set.preferred_index].clone();
@@ -323,7 +326,7 @@ impl OxidePlayback {
             "SanctuaryPlayer: HLS initial quality={} variant={}",
             quality_set.qualities[quality_set.preferred_index].label, selected_url
         );
-        let session = open_variant_session(&selected_url, decode_mode)?;
+        let session = open_variant_session(&selected_url, decode_mode, muted)?;
 
         Ok(Self {
             source,
@@ -337,6 +340,7 @@ impl OxidePlayback {
             quality_index: quality_set.preferred_index,
             active_quality_index: quality_set.preferred_index,
             decode_mode,
+            muted,
             rx: session.rx,
             executor: session.executor,
             video_stream: session.video_stream,
@@ -696,7 +700,7 @@ impl OxidePlayback {
         }
         if let Some(stream) = self.audio_stream.as_ref() {
             self.audio_output = Some(
-                AudioOutput::open(&stream.params)
+                AudioOutput::open(&stream.params, self.muted)
                     .map_err(|error| format!("reopen audio output after seek: {error}"))?,
             );
             // The first post-barrier decoded audio PTS establishes the new
@@ -1148,7 +1152,10 @@ impl PlaybackBackend for OxidePlayback {
         else {
             return;
         };
-        if let Err(error) = self.switch_quality_with(index, open_variant_session) {
+        let muted = self.muted;
+        if let Err(error) = self.switch_quality_with(index, |url, decode_mode| {
+            open_variant_session(url, decode_mode, muted)
+        }) {
             self.fail(error);
         }
     }
@@ -1425,6 +1432,7 @@ mod tests {
                 quality_index: 0,
                 active_quality_index: 0,
                 decode_mode: DecodeMode::Cpu,
+                muted: false,
                 rx,
                 executor: None,
                 video_stream,

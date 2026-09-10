@@ -37,13 +37,17 @@ pub(crate) struct AudioOutput {
 }
 
 impl AudioOutput {
-    pub(crate) fn open(params: &CodecParameters) -> Result<Self, String> {
+    pub(crate) fn open(params: &CodecParameters, muted: bool) -> Result<Self, String> {
         let driver = sysaudio::default_driver()
             .ok_or_else(|| "oxideav-sysaudio: no usable audio output backend".to_owned())?;
-        Self::open_with_driver(driver, params)
+        Self::open_with_driver(driver, params, muted)
     }
 
-    fn open_with_driver(driver: Driver, params: &CodecParameters) -> Result<Self, String> {
+    fn open_with_driver(
+        driver: Driver,
+        params: &CodecParameters,
+        muted: bool,
+    ) -> Result<Self, String> {
         let source_rate = params
             .sample_rate
             .filter(|rate| *rate > 0)
@@ -101,6 +105,10 @@ impl AudioOutput {
             .pause()
             .map_err(|error| format!("oxideav-sysaudio {} pause failed: {error}", driver.name()))?;
 
+        if muted {
+            stream.set_volume(0.0);
+        }
+
         let device = stream.format();
         if device.channels != source_channels {
             return Err(format!(
@@ -122,7 +130,7 @@ impl AudioOutput {
         let preroll_target_samples = ((device.sample_rate as u64) * PREROLL_MILLIS / 1000).max(1);
 
         eprintln!(
-            "SanctuaryPlayer: audio output sysaudio/{} source={}Hz {}ch {:?} device={}Hz {}ch {:?} preroll={}ms",
+            "SanctuaryPlayer: audio output sysaudio/{} source={}Hz {}ch {:?} device={}Hz {}ch {:?} preroll={}ms muted={muted}",
             driver.name(),
             source_rate,
             source_channels,
@@ -398,9 +406,17 @@ mod tests {
     }
 
     #[test]
+    fn muted_output_sets_software_gain_to_zero() {
+        let driver = sysaudio::driver_by_name("mock").expect("mock sysaudio driver");
+        let output = AudioOutput::open_with_driver(driver, &mock_audio_params(), true).unwrap();
+        assert_eq!(output.stream.volume(), 0.0);
+    }
+
+    #[test]
     fn mock_output_uses_real_pcm_consumption_as_master_clock() {
         let driver = sysaudio::driver_by_name("mock").expect("mock sysaudio driver");
-        let mut output = AudioOutput::open_with_driver(driver, &mock_audio_params()).unwrap();
+        let mut output =
+            AudioOutput::open_with_driver(driver, &mock_audio_params(), false).unwrap();
         output.set_media_origin(Duration::from_secs(2)).unwrap();
 
         output.queue(&f32_stereo_frame(2_400)).unwrap();

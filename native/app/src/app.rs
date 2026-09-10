@@ -22,14 +22,16 @@ const POSITION_UPLOAD_DELTA: Duration = Duration::from_secs(10);
 const POSITION_SAVE_RETRY_DELAY: Duration = Duration::from_secs(5);
 
 type TwitchResolver = fn(&str) -> Result<ResolvedTwitchVod, TwitchVodResolveError>;
-type PlaybackFactory = fn(VideoSource, Url, DecodeMode) -> Result<Box<dyn PlaybackBackend>, String>;
+type PlaybackFactory =
+    fn(VideoSource, Url, DecodeMode, bool) -> Result<Box<dyn PlaybackBackend>, String>;
 
 fn open_oxide_playback(
     source: VideoSource,
     url: Url,
     decode_mode: DecodeMode,
+    muted: bool,
 ) -> Result<Box<dyn PlaybackBackend>, String> {
-    OxidePlayback::open(source, url, decode_mode)
+    OxidePlayback::open(source, url, decode_mode, muted)
         .map(|playback| Box::new(playback) as Box<dyn PlaybackBackend>)
 }
 
@@ -95,6 +97,7 @@ pub struct AppState {
     decode_mode: DecodeMode,
     pending_video_open: Option<PendingVideoOpen>,
     play_when_opened: bool,
+    muted: bool,
     pub(crate) ui: UiState,
 }
 
@@ -196,6 +199,7 @@ impl Default for AppState {
             decode_mode: DecodeMode::Cpu,
             pending_video_open: None,
             play_when_opened: false,
+            muted: false,
             ui: UiState::default(),
         }
     }
@@ -211,6 +215,10 @@ impl AppState {
             decode_mode,
             ..Self::default()
         }
+    }
+
+    pub fn set_muted(&mut self, muted: bool) {
+        self.muted = muted;
     }
 
     pub fn set_settings_path(&mut self, path: PathBuf) {
@@ -337,6 +345,7 @@ impl AppState {
         let resolver = self.twitch_resolver;
         let playback_factory = self.playback_factory;
         let decode_mode = self.decode_mode;
+        let muted = self.muted;
         let video_id = source.id.clone();
         let worker_video_id = video_id.clone();
         let (sender, receiver) = mpsc::channel();
@@ -345,7 +354,7 @@ impl AppState {
                 .map_err(|error| error.to_string())
                 .and_then(|resolved| {
                     let metadata = resolved.metadata.map(video_metadata_from_twitch);
-                    playback_factory(source, resolved.hls_url, decode_mode)
+                    playback_factory(source, resolved.hls_url, decode_mode, muted)
                         .map(|playback| OpenedVideo { playback, metadata })
                 });
             let _ = sender.send(result);
@@ -976,6 +985,7 @@ mod tests {
         source: VideoSource,
         _url: Url,
         _decode_mode: DecodeMode,
+        _muted: bool,
     ) -> Result<Box<dyn PlaybackBackend>, String> {
         let mut playback = DummyPlayback::new();
         playback.open(&source)?;
@@ -986,6 +996,7 @@ mod tests {
         source: VideoSource,
         _url: Url,
         _decode_mode: DecodeMode,
+        _muted: bool,
     ) -> Result<Box<dyn PlaybackBackend>, String> {
         let mut playback = DummyPlayback::new();
         playback.open(&source)?;
@@ -994,6 +1005,20 @@ mod tests {
         // dispatch the actual HLS seek after opening.
         playback.seek(Duration::ZERO);
         playback.update(Duration::from_secs(1));
+        Ok(Box::new(playback))
+    }
+
+    fn test_playback_factory_requires_muted(
+        source: VideoSource,
+        _url: Url,
+        _decode_mode: DecodeMode,
+        muted: bool,
+    ) -> Result<Box<dyn PlaybackBackend>, String> {
+        if !muted {
+            return Err("expected muted playback factory invocation".into());
+        }
+        let mut playback = DummyPlayback::new();
+        playback.open(&source)?;
         Ok(Box::new(playback))
     }
 
@@ -1071,6 +1096,27 @@ mod tests {
         );
     }
 
+    #[test]
+    fn mute_option_is_forwarded_to_playback_factory() {
+        let mut state = AppState::new();
+        state.twitch_resolver = test_twitch_resolver_without_metadata;
+        state.playback_factory = test_playback_factory_requires_muted;
+        state.set_muted(true);
+        state.apply(AppCommand::OpenVideo(
+            VideoSource::parse("2386400830").unwrap(),
+        ));
+
+        for _ in 0..100 {
+            state.update(Duration::ZERO);
+            if state.pending_video_open.is_none() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+
+        assert!(state.pending_video_open.is_none());
+        assert!(state.has_video());
+    }
     #[test]
     fn missing_twitch_metadata_does_not_block_video_open() {
         let mut state = AppState::new();

@@ -286,9 +286,11 @@ segment, decoder and audio output are opened; moving that reconstruction off the
 thread remains separate work. Decoder overlap/cross-fade and ABR also remain later work.
 
 The desktop launcher accepts
-`--video <URL-or-ID>` (or a positional video), `--play`/`--autoplay`, and
-`--decode-mode cpu|vdpau-readback|vdpau-direct`, using the same `VideoSource::parse`
-rules as the in-app Change Video flow. The decode mode defaults to `cpu`.
+`--video <URL-or-ID>` (or a positional video), `--play`/`--autoplay`,
+`--mute`, and `--decode-mode cpu|vdpau-readback|vdpau-direct`, using the same
+`VideoSource::parse` rules as the in-app Change Video flow. The decode mode defaults
+to `cpu`. `--mute` sets sysaudio's per-stream software gain to zero while leaving
+the audio callback and audio-master playback clock active.
 
 Muted/paused GhostBSD validation against Twitch VOD `2386400830` confirms the real
 integration without producing sound. Both CPU and `vdpau-direct` runs selected the
@@ -303,7 +305,7 @@ Twitch 160p requested media 300.000 s, selected segment 29 (`#EXTINF` start 290.
 landed on a video access point at media 298.334 s / raw 368.358 s, then received the
 first post-seek AAC epoch at media 298.368 s. The OSS stream never entered Playing.
 The temporary network-dependent test was removed afterwards. The full Sanctuary app
-suite currently passes 63 tests.
+suite currently passes 78 tests.
 
 This Twitch web-player GraphQL/Usher protocol is not a stable public playback API,
 so all Twitch-specific request shape, client ID and token handling remain isolated
@@ -344,9 +346,10 @@ experiment material used during this integration:
   the wider source-extraction investigation.
 
 Assistant-driven playback/audio tests for this work must remain muted unless sound
-is explicitly authorised. Use the sysaudio mock backend for callback/clock tests, or
-open real Sanctuary playback paused so the OSS/WASAPI/CoreAudio stream cannot consume
-programme PCM.
+is explicitly authorised. Use the sysaudio mock backend for callback/clock unit tests,
+or pass `--mute` for real playing-state Sanctuary regressions so the audio callback and
+master clock still run without audible programme PCM. Paused playback remains suitable
+when a playing audio clock is not required.
 
 ## Current SanctuaryPlayer follow-ups
 

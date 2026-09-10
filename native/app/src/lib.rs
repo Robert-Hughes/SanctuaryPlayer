@@ -156,6 +156,10 @@ impl SanctuaryPlayerApp {
         self.state.set_settings_path(path);
     }
 
+    pub fn set_muted(&mut self, muted: bool) {
+        self.state.set_muted(muted);
+    }
+
     pub fn with_initial_video(source: video::VideoSource) -> Self {
         Self::with_initial_video_options(source, false)
     }

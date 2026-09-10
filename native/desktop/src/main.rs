@@ -4,12 +4,13 @@ use sanctuary_player_app::video::VideoSource;
 
 const USAGE: &str = "Usage: sanctuary-player [OPTIONS] [VIDEO]\n\n\
 VIDEO may be a YouTube/Twitch video ID or URL accepted by SanctuaryPlayer.\n\n\
-Options:\n  -v, --video <VIDEO>       Auto-load a video on startup\n      --play, --autoplay    Start playback after the video opens\n      --decode-mode <MODE>  cpu | vdpau-readback | vdpau-direct\n  -h, --help                Show this help";
+Options:\n  -v, --video <VIDEO>       Auto-load a video on startup\n      --play, --autoplay    Start playback after the video opens\n      --mute                Mute audio while keeping the audio playback clock active\n      --decode-mode <MODE>  cpu | vdpau-readback | vdpau-direct\n  -h, --help                Show this help";
 
 enum CliAction {
     Run {
         initial_video: Option<VideoSource>,
         autoplay: bool,
+        muted: bool,
         decode_mode: DecodeMode,
     },
     Help,
@@ -27,6 +28,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let CliAction::Run {
         initial_video,
         autoplay,
+        muted,
         decode_mode,
     } = action
     else {
@@ -46,6 +48,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         None => SanctuaryPlayerApp::with_decode_mode(decode_mode),
     };
+    app.set_muted(muted);
     if let Some(config_dir) = dirs::config_dir() {
         app.set_settings_path(config_dir.join("sanctuary-player").join("settings.json"));
     } else {
@@ -62,11 +65,13 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliAction, Strin
     let mut video_input = None;
     let mut autoplay = false;
     let mut decode_mode = DecodeMode::Cpu;
+    let mut muted = false;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "-h" | "--help" => return Ok(CliAction::Help),
             "--play" | "--autoplay" => autoplay = true,
+            "--mute" => muted = true,
             "--decode-mode" => {
                 let value = args
                     .next()
@@ -113,6 +118,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliAction, Strin
     Ok(CliAction::Run {
         initial_video,
         autoplay,
+        muted,
         decode_mode,
     })
 }
@@ -141,6 +147,7 @@ mod tests {
         let CliAction::Run {
             initial_video: Some(source),
             autoplay,
+            muted,
             decode_mode,
         } = parse(&[
             "--video",
@@ -152,6 +159,7 @@ mod tests {
         };
 
         assert!(!autoplay);
+        assert!(!muted);
         assert_eq!(decode_mode, DecodeMode::Cpu);
         assert_eq!(source.platform, VideoPlatform::Twitch);
         assert_eq!(source.id, "2386400830");
@@ -163,12 +171,14 @@ mod tests {
         let CliAction::Run {
             initial_video: Some(source),
             autoplay,
+            muted,
             decode_mode,
         } = parse(&["2395077199"]).unwrap()
         else {
             panic!("expected initial video");
         };
         assert!(!autoplay);
+        assert!(!muted);
         assert_eq!(decode_mode, DecodeMode::Cpu);
         assert_eq!(source.platform, VideoPlatform::Twitch);
         assert_eq!(source.id, "2395077199");
@@ -179,16 +189,29 @@ mod tests {
         let CliAction::Run {
             initial_video: Some(source),
             autoplay,
+            muted,
             decode_mode,
         } = parse(&["--play", "2395077199"]).unwrap()
         else {
             panic!("expected initial video");
         };
         assert!(autoplay);
+        assert!(!muted);
         assert_eq!(decode_mode, DecodeMode::Cpu);
         assert_eq!(source.platform, VideoPlatform::Twitch);
     }
 
+    #[test]
+    fn accepts_mute_without_autoplay() {
+        let CliAction::Run {
+            autoplay, muted, ..
+        } = parse(&["--mute", "2395077199"]).unwrap()
+        else {
+            panic!("expected run action");
+        };
+        assert!(!autoplay);
+        assert!(muted);
+    }
     #[test]
     fn accepts_explicit_decode_modes() {
         for (name, expected) in [
