@@ -208,6 +208,18 @@ PTS establish the new audio-master epoch before normal preroll can resume. A rej
 seek restores the previous position/play state and disables further seeks for that
 session. Rapid later seeks supersede older generations, whose stale barriers are ignored.
 
+`242ae29` tightens that behaviour at the Sanctuary boundary for expensive HLS/MPEG-TS
+seeks. Sanctuary now permits only one physical source seek to be in flight. Further
+keyboard/scrubber requests update the visible target immediately but replace a single
+coalesced destination instead of enqueueing more executor generations. When the active
+generation's A/V barriers arrive, Sanctuary either finishes there (if the desired target
+returned to the same position) or dispatches exactly one new seek to the latest target,
+while keeping audio paused and intermediate decoded state discarded. This preserves the
+executor's per-generation barrier contract without forcing HLS to perform obsolete HTTP
+segment opens/access-point searches. A real paused Twitch regression requested 600,
+1200, 1800 and 2400 s back-to-back: only generations 1 and 2 were physically dispatched,
+and the final seek landed at 2398.911 s. The OSS stream remained paused throughout.
+
 The HLS source no longer models a VOD as one giant concatenated byte stream. It retains
 resolved segment URLs and cumulative `#EXTINF` timing, owns one MPEG-TS demuxer for the
 active segment, and on seek jumps directly to the target segment before asking the inner
