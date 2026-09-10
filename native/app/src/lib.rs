@@ -37,6 +37,93 @@ use winit::keyboard::PhysicalKey;
 use winit::window::{Fullscreen, Window, WindowAttributes, WindowId};
 
 const ANIMATION_FRAME_INTERVAL: Duration = Duration::from_millis(16);
+const RENDER_DIAGNOSTIC_INTERVAL: Duration = Duration::from_secs(1);
+
+struct RenderDiagnostics {
+    last_redraw: Option<Instant>,
+    last_report: Instant,
+    redraws: u64,
+    gaps_over_20ms: u64,
+    gaps_over_33ms: u64,
+    max_gap: Duration,
+    redraw_work_total: Duration,
+    max_redraw_work: Duration,
+}
+
+impl RenderDiagnostics {
+    fn new() -> Self {
+        Self {
+            last_redraw: None,
+            last_report: Instant::now(),
+            redraws: 0,
+            gaps_over_20ms: 0,
+            gaps_over_33ms: 0,
+            max_gap: Duration::ZERO,
+            redraw_work_total: Duration::ZERO,
+            max_redraw_work: Duration::ZERO,
+        }
+    }
+
+    fn begin_redraw(&mut self, now: Instant) {
+        if let Some(last_redraw) = self.last_redraw {
+            let gap = now.saturating_duration_since(last_redraw);
+            if gap > Duration::from_millis(20) {
+                self.gaps_over_20ms = self.gaps_over_20ms.saturating_add(1);
+            }
+            if gap > Duration::from_millis(33) {
+                self.gaps_over_33ms = self.gaps_over_33ms.saturating_add(1);
+            }
+            self.max_gap = self.max_gap.max(gap);
+        }
+        self.last_redraw = Some(now);
+        self.redraws = self.redraws.saturating_add(1);
+    }
+
+    fn finish_redraw(&mut self, started: Instant, finished: Instant) {
+        let redraw_work = finished.saturating_duration_since(started);
+        self.redraw_work_total += redraw_work;
+        self.max_redraw_work = self.max_redraw_work.max(redraw_work);
+
+        let interval = finished.saturating_duration_since(self.last_report);
+        if interval < RENDER_DIAGNOSTIC_INTERVAL {
+            return;
+        }
+
+        let rate = self.redraws as f64 / interval.as_secs_f64();
+        let average_work_ms = if self.redraws == 0 {
+            0.0
+        } else {
+            self.redraw_work_total.as_secs_f64() * 1000.0 / self.redraws as f64
+        };
+        eprintln!(
+            "SanctuaryPlayer: render cadence redraws={} rate={rate:.1}/s gap_gt20ms={} gap_gt33ms={} max_gap={:.2}ms redraw_work_avg={average_work_ms:.2}ms redraw_work_max={:.2}ms",
+            self.redraws,
+            self.gaps_over_20ms,
+            self.gaps_over_33ms,
+            self.max_gap.as_secs_f64() * 1000.0,
+            self.max_redraw_work.as_secs_f64() * 1000.0,
+        );
+
+        self.last_report = finished;
+        self.redraws = 0;
+        self.gaps_over_20ms = 0;
+        self.gaps_over_33ms = 0;
+        self.max_gap = Duration::ZERO;
+        self.redraw_work_total = Duration::ZERO;
+        self.max_redraw_work = Duration::ZERO;
+    }
+
+    fn reset(&mut self, now: Instant) {
+        self.last_redraw = None;
+        self.last_report = now;
+        self.redraws = 0;
+        self.gaps_over_20ms = 0;
+        self.gaps_over_33ms = 0;
+        self.max_gap = Duration::ZERO;
+        self.redraw_work_total = Duration::ZERO;
+        self.max_redraw_work = Duration::ZERO;
+    }
+}
 
 pub struct SanctuaryPlayerApp {
     window: Option<Arc<Window>>,
@@ -47,6 +134,7 @@ pub struct SanctuaryPlayerApp {
     last_update: Instant,
     next_animation_frame: Instant,
     next_egui_repaint: Option<Instant>,
+    render_diagnostics: RenderDiagnostics,
 }
 
 impl SanctuaryPlayerApp {
@@ -60,6 +148,7 @@ impl SanctuaryPlayerApp {
             last_update: Instant::now(),
             next_animation_frame: Instant::now(),
             next_egui_repaint: None,
+            render_diagnostics: RenderDiagnostics::new(),
         }
     }
 
@@ -242,6 +331,13 @@ impl ApplicationHandler for SanctuaryPlayerApp {
             }
             WindowEvent::RedrawRequested => {
                 let now = Instant::now();
+                let diagnose_render = self.state.needs_animation();
+                if diagnose_render {
+                    self.render_diagnostics.begin_redraw(now);
+                } else {
+                    self.render_diagnostics.reset(now);
+                }
+
                 self.state
                     .update(now.saturating_duration_since(self.last_update));
                 self.last_update = now;
@@ -271,6 +367,10 @@ impl ApplicationHandler for SanctuaryPlayerApp {
                             event_loop.exit();
                         }
                     }
+                }
+
+                if diagnose_render {
+                    self.render_diagnostics.finish_redraw(now, Instant::now());
                 }
             }
             WindowEvent::KeyboardInput { event, .. }
