@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use url::Url;
 
@@ -13,7 +13,7 @@ use crate::playback::{DecodeMode, DummyPlayback, OxidePlayback, PlaybackBackend}
 use crate::services::{PositionService, RemotePositionService, SavedPosition, VideoMetadata};
 use crate::settings::{Settings, SettingsStore};
 use crate::spoilers::sanitise_title;
-use crate::twitch::{TwitchVodResolveError, resolve_vod_m3u8};
+use crate::twitch::{ResolvedTwitchVod, TwitchVodMetadata, TwitchVodResolveError, resolve_vod};
 use crate::video::{VideoPlatform, VideoSource};
 
 const CONTROLS_HIDE_AFTER: Duration = Duration::from_secs(2);
@@ -21,7 +21,7 @@ const LOCK_SLIDE_BACK_DURATION: Duration = Duration::from_millis(500);
 const POSITION_UPLOAD_DELTA: Duration = Duration::from_secs(10);
 const POSITION_SAVE_RETRY_DELAY: Duration = Duration::from_secs(5);
 
-type TwitchResolver = fn(&str) -> Result<Url, TwitchVodResolveError>;
+type TwitchResolver = fn(&str) -> Result<ResolvedTwitchVod, TwitchVodResolveError>;
 type PlaybackFactory = fn(VideoSource, Url, DecodeMode) -> Result<Box<dyn PlaybackBackend>, String>;
 
 fn open_oxide_playback(
@@ -33,8 +33,26 @@ fn open_oxide_playback(
         .map(|playback| Box::new(playback) as Box<dyn PlaybackBackend>)
 }
 
+fn video_metadata_from_twitch(metadata: TwitchVodMetadata) -> VideoMetadata {
+    let published_millis = i128::from(metadata.published_at.timestamp_millis());
+    let now_millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as i128)
+        .unwrap_or(published_millis);
+    let age_millis = now_millis.saturating_sub(published_millis).max(0);
+    VideoMetadata {
+        title: metadata.title,
+        release_age: Duration::from_millis(age_millis.min(i128::from(u64::MAX)) as u64),
+    }
+}
+
+struct OpenedVideo {
+    playback: Box<dyn PlaybackBackend>,
+    metadata: Option<VideoMetadata>,
+}
+
 struct PendingVideoOpen {
-    receiver: Receiver<Result<Box<dyn PlaybackBackend>, String>>,
+    receiver: Receiver<Result<OpenedVideo, String>>,
 }
 
 struct PendingPositionsFetch {
@@ -173,7 +191,7 @@ impl Default for AppState {
             metadata: None,
             account: AccountState::default(),
             preferences: Preferences::default(),
-            twitch_resolver: resolve_vod_m3u8,
+            twitch_resolver: resolve_vod,
             playback_factory: open_oxide_playback,
             decode_mode: DecodeMode::Cpu,
             pending_video_open: None,
@@ -238,6 +256,9 @@ impl AppState {
         self.poll_video_open();
         self.playback.update(elapsed);
         self.age_saved_positions(elapsed);
+        if let Some(metadata) = self.metadata.as_mut() {
+            metadata.release_age = metadata.release_age.saturating_add(elapsed);
+        }
         self.poll_positions_fetch();
         self.poll_position_save();
         self.start_positions_fetch_if_requested();
@@ -283,9 +304,9 @@ impl AppState {
 
         self.pending_video_open = None;
         match result {
-            Ok(playback) => {
-                self.playback = playback;
-                self.metadata = None;
+            Ok(opened) => {
+                self.playback = opened.playback;
+                self.metadata = opened.metadata;
                 self.preferences.manually_selected_quality = false;
                 self.apply_favourite_quality();
                 let start_time = self
@@ -322,7 +343,11 @@ impl AppState {
         thread::spawn(move || {
             let result = resolver(&worker_video_id)
                 .map_err(|error| error.to_string())
-                .and_then(|url| playback_factory(source, url, decode_mode));
+                .and_then(|resolved| {
+                    let metadata = resolved.metadata.map(video_metadata_from_twitch);
+                    playback_factory(source, resolved.hls_url, decode_mode)
+                        .map(|playback| OpenedVideo { playback, metadata })
+                });
             let _ = sender.send(result);
         });
 
@@ -928,8 +953,23 @@ mod tests {
         state
     }
 
-    fn test_twitch_resolver(_video_id: &str) -> Result<Url, TwitchVodResolveError> {
-        Ok(Url::parse("https://usher.ttvnw.net/vod/2386400830.m3u8?sig=test").unwrap())
+    fn test_twitch_resolver(_video_id: &str) -> Result<ResolvedTwitchVod, TwitchVodResolveError> {
+        Ok(ResolvedTwitchVod {
+            hls_url: Url::parse("https://usher.ttvnw.net/vod/2386400830.m3u8?sig=test").unwrap(),
+            metadata: Some(TwitchVodMetadata {
+                title: "HLE vs CFO - Game 5".into(),
+                published_at: chrono::DateTime::parse_from_rfc3339("2026-09-08T12:34:56Z").unwrap(),
+            }),
+        })
+    }
+
+    fn test_twitch_resolver_without_metadata(
+        _video_id: &str,
+    ) -> Result<ResolvedTwitchVod, TwitchVodResolveError> {
+        Ok(ResolvedTwitchVod {
+            hls_url: Url::parse("https://usher.ttvnw.net/vod/2386400830.m3u8?sig=test").unwrap(),
+            metadata: None,
+        })
     }
 
     fn test_playback_factory(
@@ -1023,6 +1063,34 @@ mod tests {
         assert!(state.pending_video_open.is_none());
         assert!(state.ui.dialog.is_none());
         assert!(state.has_video());
+        assert_eq!(state.safe_title().as_deref(), Some("_ vs _ - Game _"));
+        assert!(
+            state
+                .release_age()
+                .is_some_and(|age| age > Duration::from_secs(24 * 3600))
+        );
+    }
+
+    #[test]
+    fn missing_twitch_metadata_does_not_block_video_open() {
+        let mut state = AppState::new();
+        state.twitch_resolver = test_twitch_resolver_without_metadata;
+        state.playback_factory = test_playback_factory;
+        state.apply(AppCommand::OpenVideo(
+            VideoSource::parse("2386400830").unwrap(),
+        ));
+
+        for _ in 0..100 {
+            state.update(Duration::ZERO);
+            if state.pending_video_open.is_none() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+
+        assert!(state.has_video());
+        assert_eq!(state.safe_title(), None);
+        assert_eq!(state.release_age(), None);
     }
 
     #[test]

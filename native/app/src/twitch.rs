@@ -9,6 +9,7 @@
 use std::fmt;
 use std::time::Duration;
 
+use chrono::{DateTime, FixedOffset};
 use serde_json::Value;
 use url::Url;
 
@@ -28,14 +29,42 @@ struct PlaybackAccessToken {
     signature: String,
 }
 
-/// Resolve a Twitch VOD ID to its signed HLS master-playlist URL.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TwitchVodMetadata {
+    pub title: String,
+    pub published_at: DateTime<FixedOffset>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedTwitchVod {
+    pub hls_url: Url,
+    pub metadata: Option<TwitchVodMetadata>,
+}
+
+/// Resolve a Twitch VOD to its signed HLS master-playlist URL and metadata.
 ///
-/// This performs one blocking GraphQL request. Call it from a media/background
-/// worker rather than the winit event thread.
-pub fn resolve_vod_m3u8(video_id: &str) -> Result<Url, TwitchVodResolveError> {
+/// Playback access and metadata deliberately share one GraphQL POST. The access
+/// token is required; metadata is best-effort so an optional Twitch field-shape
+/// change cannot make an otherwise playable VOD fail to open. Call this from a
+/// media/background worker rather than the winit event thread.
+pub fn resolve_vod(video_id: &str) -> Result<ResolvedTwitchVod, TwitchVodResolveError> {
     validate_video_id(video_id)?;
-    let access = fetch_playback_access_token(video_id)?;
-    Ok(build_vod_m3u8_url(video_id, &access))
+    let response = fetch_vod_graphql(video_id)?;
+    Ok(ResolvedTwitchVod {
+        hls_url: build_vod_m3u8_url(video_id, &response.access),
+        metadata: response.metadata,
+    })
+}
+
+/// Compatibility helper for callers that only need the signed HLS URL.
+pub fn resolve_vod_m3u8(video_id: &str) -> Result<Url, TwitchVodResolveError> {
+    resolve_vod(video_id).map(|resolved| resolved.hls_url)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TwitchVodGraphQl {
+    access: PlaybackAccessToken,
+    metadata: Option<TwitchVodMetadata>,
 }
 
 fn validate_video_id(video_id: &str) -> Result<(), TwitchVodResolveError> {
@@ -45,11 +74,9 @@ fn validate_video_id(video_id: &str) -> Result<(), TwitchVodResolveError> {
     Ok(())
 }
 
-fn fetch_playback_access_token(
-    video_id: &str,
-) -> Result<PlaybackAccessToken, TwitchVodResolveError> {
+fn fetch_vod_graphql(video_id: &str) -> Result<TwitchVodGraphQl, TwitchVodResolveError> {
     let query = format!(
-        r#"{{ videoPlaybackAccessToken(id: "{video_id}", params: {{ platform: "web", playerBackend: "mediaplayer", playerType: "site" }}) {{ value signature }} }}"#
+        r#"{{ videoPlaybackAccessToken(id: "{video_id}", params: {{ platform: "web", playerBackend: "mediaplayer", playerType: "site" }}) {{ value signature }} video(id: "{video_id}") {{ title publishedAt }} }}"#
     );
     let body = serde_json::json!({ "query": query }).to_string();
 
@@ -72,12 +99,10 @@ fn fetch_playback_access_token(
         .read_to_string()
         .map_err(|error| TwitchVodResolveError::ResponseRead(error.to_string()))?;
 
-    parse_playback_access_token(&response_body)
+    parse_vod_graphql(&response_body)
 }
 
-fn parse_playback_access_token(
-    response_body: &str,
-) -> Result<PlaybackAccessToken, TwitchVodResolveError> {
+fn parse_vod_graphql(response_body: &str) -> Result<TwitchVodGraphQl, TwitchVodResolveError> {
     let response: Value = serde_json::from_str(response_body)
         .map_err(|error| TwitchVodResolveError::InvalidResponse(error.to_string()))?;
 
@@ -112,9 +137,30 @@ fn parse_playback_access_token(
             )
         })?;
 
-    Ok(PlaybackAccessToken {
-        value: value.to_owned(),
-        signature: signature.to_owned(),
+    let metadata = parse_optional_metadata(&response);
+
+    Ok(TwitchVodGraphQl {
+        access: PlaybackAccessToken {
+            value: value.to_owned(),
+            signature: signature.to_owned(),
+        },
+        metadata,
+    })
+}
+
+fn parse_optional_metadata(response: &Value) -> Option<TwitchVodMetadata> {
+    let video = response.pointer("/data/video")?.as_object()?;
+    let title = video.get("title")?.as_str()?.trim();
+    if title.is_empty() {
+        return None;
+    }
+    let published_at = video
+        .get("publishedAt")?
+        .as_str()
+        .and_then(|value| DateTime::parse_from_rfc3339(value).ok())?;
+    Some(TwitchVodMetadata {
+        title: title.to_owned(),
+        published_at,
     })
 }
 
@@ -171,7 +217,7 @@ mod tests {
     #[test]
     fn rejects_non_numeric_vod_ids_without_network_access() {
         assert!(matches!(
-            resolve_vod_m3u8("not-a-vod"),
+            resolve_vod("not-a-vod"),
             Err(TwitchVodResolveError::InvalidVideoId(_))
         ));
     }
@@ -188,10 +234,13 @@ mod tests {
         }"#;
 
         assert_eq!(
-            parse_playback_access_token(response).unwrap(),
-            PlaybackAccessToken {
-                value: "{\"expires\":123}".into(),
-                signature: "0123456789abcdef".into(),
+            parse_vod_graphql(response).unwrap(),
+            TwitchVodGraphQl {
+                access: PlaybackAccessToken {
+                    value: "{\"expires\":123}".into(),
+                    signature: "0123456789abcdef".into(),
+                },
+                metadata: None,
             }
         );
     }
@@ -204,9 +253,54 @@ mod tests {
         }"#;
 
         assert_eq!(
-            parse_playback_access_token(response),
+            parse_vod_graphql(response),
             Err(TwitchVodResolveError::GraphQl("video unavailable".into()))
         );
+    }
+
+    #[test]
+    fn parses_metadata_from_same_graphql_response() {
+        let response = r#"{
+            "data": {
+                "videoPlaybackAccessToken": {
+                    "value": "token",
+                    "signature": "sig"
+                },
+                "video": {
+                    "title": "HLE vs CFO - Game 5",
+                    "publishedAt": "2026-09-08T12:34:56Z"
+                }
+            }
+        }"#;
+
+        let parsed = parse_vod_graphql(response).unwrap();
+        let metadata = parsed.metadata.unwrap();
+        assert_eq!(metadata.title, "HLE vs CFO - Game 5");
+        assert_eq!(
+            metadata.published_at,
+            DateTime::parse_from_rfc3339("2026-09-08T12:34:56Z").unwrap()
+        );
+    }
+
+    #[test]
+    fn malformed_optional_metadata_does_not_reject_playback_token() {
+        let response = r#"{
+            "data": {
+                "videoPlaybackAccessToken": {
+                    "value": "token",
+                    "signature": "sig"
+                },
+                "video": {
+                    "title": "A playable VOD",
+                    "publishedAt": "not-a-date"
+                }
+            }
+        }"#;
+
+        let parsed = parse_vod_graphql(response).unwrap();
+        assert_eq!(parsed.access.value, "token");
+        assert_eq!(parsed.access.signature, "sig");
+        assert_eq!(parsed.metadata, None);
     }
 
     #[test]

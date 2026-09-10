@@ -1,6 +1,5 @@
 # Native TODO
 
-- Fetch current-video metadata from the existing `/get-video-metadata` server endpoint during real playback, and populate the spoiler-sanitised title and release date/age shown by the native UI.
 - Update the native window title from the spoiler-sanitised current-video title.
 - Preserve the current media position when manually switching HLS quality instead of restarting at 0:00.
 - Move HLS quality/session reconstruction off the UI thread so a quality change cannot block egui while playlists, segments, decoders and audio output are reopened.
