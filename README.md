@@ -27,6 +27,28 @@ This is also configured to run automatically when committing to the main branch 
 
 Note we are using europe-west1 (Belgium) as it supports simpler custom domains, and is lower CO2 than the London region.
 
+Native saved-position sync
+==========================
+
+The native Rust player reuses the same Cloud Run saved-position service as the web
+player. Its Sign in dialog accepts the same free-form User ID and Device ID; these are
+not authenticated credentials, so anybody who knows a User ID can access that ID's
+synced positions.
+
+The native client performs `GET /get-saved-positions?user_id=...` asynchronously on
+sign-in and whenever the menu is opened, retaining the server's ten most recent rows
+for the Saved Positions table. It performs the same whole-second
+`POST /save-position?user_id=...&device_id=...&video_id=...&position=...` update used
+by the web client when playback has moved by more than ten seconds from the last
+successful upload. Zero, loading, error and in-progress-seek positions are not
+uploaded. Network requests run off the UI thread.
+
+Selecting a saved row for the current video seeks in place. Selecting one for another
+video carries its position as `VideoSource::start_time`; once the native Twitch/HLS
+backend has opened, that start time is applied through the real HLS seek path before
+playback begins. Native User ID / Device ID persistence across application restarts is
+not implemented yet; that is separate from server-side position sync.
+
 Known Issues
 ============
 
