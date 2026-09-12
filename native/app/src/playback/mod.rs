@@ -1,7 +1,9 @@
 mod dummy;
 mod oxideav;
 
-use std::time::Duration;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, Ordering};
+use std::time::{Duration, Instant};
 
 use ::oxideav::core::FrameLease;
 
@@ -50,6 +52,76 @@ impl std::str::FromStr for DecodeMode {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlaybackWakeKind {
+    Audio,
+    Video,
+    Control,
+}
+
+impl PlaybackWakeKind {
+    const fn bit(self) -> u8 {
+        match self {
+            Self::Audio => 1 << 0,
+            Self::Video => 1 << 1,
+            Self::Control => 1 << 2,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PendingPlaybackWakes {
+    bits: u8,
+}
+
+impl PendingPlaybackWakes {
+    pub fn contains(self, kind: PlaybackWakeKind) -> bool {
+        self.bits & kind.bit() != 0
+    }
+
+    pub fn is_empty(self) -> bool {
+        self.bits == 0
+    }
+}
+
+#[derive(Clone)]
+pub struct PlaybackWake {
+    pending: Arc<AtomicU8>,
+    notify: Arc<dyn Fn() + Send + Sync>,
+}
+
+impl PlaybackWake {
+    pub fn new(notify: impl Fn() + Send + Sync + 'static) -> Self {
+        Self {
+            pending: Arc::new(AtomicU8::new(0)),
+            notify: Arc::new(notify),
+        }
+    }
+
+    pub fn noop() -> Self {
+        Self::new(|| {})
+    }
+
+    pub fn wake(&self, kind: PlaybackWakeKind) {
+        let previous = self.pending.fetch_or(kind.bit(), Ordering::AcqRel);
+        if previous == 0 {
+            (self.notify)();
+        }
+    }
+
+    pub fn take_pending(&self) -> PendingPlaybackWakes {
+        PendingPlaybackWakes {
+            bits: self.pending.swap(0, Ordering::AcqRel),
+        }
+    }
+}
+
+impl Default for PlaybackWake {
+    fn default() -> Self {
+        Self::noop()
+    }
+}
+
 /// Application-facing playback API. The concrete implementation owns media
 /// scheduling while the renderer consumes retained decoded-frame leases.
 pub trait PlaybackBackend: Send {
@@ -69,14 +141,41 @@ pub trait PlaybackBackend: Send {
     fn set_quality(&mut self, quality_id: &str);
     fn update(&mut self, elapsed: Duration);
 
-    fn needs_animation(&self) -> bool {
-        matches!(
-            self.state(),
-            PlaybackState::Playing | PlaybackState::Seeking
-        )
+    fn next_wake_deadline(&self, _now: Instant) -> Option<Instant> {
+        None
     }
 
     fn take_video_frame_lease(&mut self) -> Option<FrameLease> {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+
+    use super::*;
+
+    #[test]
+    fn playback_wakes_coalesce_until_pending_kinds_are_consumed() {
+        let notifications = Arc::new(AtomicUsize::new(0));
+        let notifications_cb = Arc::clone(&notifications);
+        let wake = PlaybackWake::new(move || {
+            notifications_cb.fetch_add(1, AtomicOrdering::SeqCst);
+        });
+
+        wake.wake(PlaybackWakeKind::Audio);
+        wake.wake(PlaybackWakeKind::Video);
+        wake.wake(PlaybackWakeKind::Video);
+        assert_eq!(notifications.load(AtomicOrdering::SeqCst), 1);
+
+        let pending = wake.take_pending();
+        assert!(pending.contains(PlaybackWakeKind::Audio));
+        assert!(pending.contains(PlaybackWakeKind::Video));
+        assert!(!pending.contains(PlaybackWakeKind::Control));
+
+        wake.wake(PlaybackWakeKind::Control);
+        assert_eq!(notifications.load(AtomicOrdering::SeqCst), 2);
+        assert!(wake.take_pending().contains(PlaybackWakeKind::Control));
     }
 }

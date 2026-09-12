@@ -2,7 +2,9 @@ use std::collections::VecDeque;
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError};
 use std::time::{Duration, Instant};
 
-use ::oxideav::core::{Error, Frame, FrameLease, MediaType, Packet, StreamInfo, TimeBase};
+use ::oxideav::core::{
+    Error, Frame, FrameLease, MediaType, Packet, Rounding, StreamInfo, TimeBase,
+};
 use ::oxideav::pipeline::{BarrierKind, CodecPreferences, Executor, ExecutorHandle, Job, JobSink};
 use oxideav_hls::{HlsPlaylistInfo, HlsVariant};
 use serde_json::json;
@@ -13,11 +15,10 @@ use crate::audio_timeline::QueueResult;
 use crate::model::{PlaybackState, Quality};
 use crate::video::VideoSource;
 
-use super::{DecodeMode, PlaybackBackend};
+use super::{DecodeMode, PlaybackBackend, PlaybackWake, PlaybackWakeKind};
 
 const SESSION_CHANNEL_CAP: usize = 2;
-const VIDEO_QUEUE_TARGET: usize = 4;
-const VIDEO_QUEUE_MAX: usize = 8;
+const VIDEO_QUEUE_CAP: usize = 2;
 const OPEN_TIMEOUT: Duration = Duration::from_secs(30);
 const DIAGNOSTIC_INTERVAL: Duration = Duration::from_secs(1);
 
@@ -34,13 +35,16 @@ pub struct OxidePlayback {
     active_quality_index: usize,
     decode_mode: DecodeMode,
     muted: bool,
+    wake: PlaybackWake,
     rx: Receiver<SessionMsg>,
     executor: Option<ExecutorHandle>,
     video_stream: StreamInfo,
     audio_stream: Option<StreamInfo>,
     audio_output: Option<AudioOutput>,
     pending_audio_frame: Option<FrameLease>,
+    pending_video_frame: Option<FrameLease>,
     video_queue: VecDeque<FrameLease>,
+    video_clock: VideoClock,
     timeline_origin_seconds: Option<f64>,
     first_video_seconds: Option<f64>,
     first_audio_seconds: Option<f64>,
@@ -51,6 +55,66 @@ pub struct OxidePlayback {
     queued_seek: Option<Duration>,
     seek_supported: bool,
     diagnostics: PlaybackDiagnostics,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct VideoClock {
+    origin: Option<(i64, Instant)>,
+    frozen_pts: Option<i64>,
+}
+
+impl VideoClock {
+    fn reset(&mut self) {
+        self.origin = None;
+        self.frozen_pts = None;
+    }
+
+    fn establish(&mut self, pts: i64, now: Instant, playing: bool) {
+        if playing {
+            self.origin = Some((pts, now));
+            self.frozen_pts = None;
+        } else {
+            self.origin = None;
+            self.frozen_pts = Some(pts);
+        }
+    }
+
+    fn play(&mut self, now: Instant) {
+        if self.origin.is_none()
+            && let Some(pts) = self.frozen_pts.take()
+        {
+            self.origin = Some((pts, now));
+        }
+    }
+
+    fn pause(&mut self, now: Instant, time_base: TimeBase) {
+        if let Some(pts) = self.pts_at(now, time_base) {
+            self.origin = None;
+            self.frozen_pts = Some(pts);
+        }
+    }
+
+    fn pts_at(&self, now: Instant, time_base: TimeBase) -> Option<i64> {
+        if let Some((origin_pts, origin_time)) = self.origin {
+            let elapsed = now.saturating_duration_since(origin_time);
+            let nanos = i64::try_from(elapsed.as_nanos()).unwrap_or(i64::MAX);
+            let delta = TimeBase::NANOS.rescale_rnd(nanos, time_base, Rounding::Floor);
+            origin_pts.checked_add(delta)
+        } else {
+            self.frozen_pts
+        }
+    }
+
+    fn deadline_for(&self, pts: i64, time_base: TimeBase) -> Option<Instant> {
+        let (origin_pts, origin_time) = self.origin?;
+        let delta = pts.checked_sub(origin_pts)?;
+        if delta <= 0 {
+            return Some(origin_time);
+        }
+        let nanos = time_base.rescale_rnd(delta, TimeBase::NANOS, Rounding::Ceil);
+        let nanos = u64::try_from(nanos).ok()?;
+        origin_time.checked_add(Duration::from_nanos(nanos))
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -110,18 +174,34 @@ impl SessionMsg {
             Self::Finished => "finish",
         }
     }
+
+    fn wake_kind(&self) -> PlaybackWakeKind {
+        match self {
+            Self::Frame {
+                kind: MediaType::Audio,
+                ..
+            } => PlaybackWakeKind::Audio,
+            Self::Frame {
+                kind: MediaType::Video,
+                ..
+            } => PlaybackWakeKind::Video,
+            _ => PlaybackWakeKind::Control,
+        }
+    }
 }
 
 struct SessionSink {
     tx: SyncSender<SessionMsg>,
+    wake: PlaybackWake,
     blocked_sends: u64,
     last_backpressure_log: Option<Instant>,
 }
 
 impl SessionSink {
-    fn new(tx: SyncSender<SessionMsg>) -> Self {
+    fn new(tx: SyncSender<SessionMsg>, wake: PlaybackWake) -> Self {
         Self {
             tx,
+            wake,
             blocked_sends: 0,
             last_backpressure_log: None,
         }
@@ -129,8 +209,12 @@ impl SessionSink {
 
     fn send(&mut self, message: SessionMsg) -> ::oxideav::core::Result<()> {
         let label = message.label();
+        let wake_kind = message.wake_kind();
         match self.tx.try_send(message) {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                self.wake.wake(wake_kind);
+                Ok(())
+            }
             Err(TrySendError::Full(message)) => {
                 self.blocked_sends = self.blocked_sends.saturating_add(1);
                 let now = Instant::now();
@@ -144,9 +228,15 @@ impl SessionSink {
                     );
                     self.last_backpressure_log = Some(now);
                 }
+                // Wake before the blocking send so the receiver can make room,
+                // then wake again after enqueue so no message can arrive after
+                // the event loop has already gone back to sleep.
+                self.wake.wake(wake_kind);
                 self.tx
                     .send(message)
-                    .map_err(|_| Error::other("SanctuaryPlayer: playback receiver dropped"))
+                    .map_err(|_| Error::other("SanctuaryPlayer: playback receiver dropped"))?;
+                self.wake.wake(wake_kind);
+                Ok(())
             }
             Err(TrySendError::Disconnected(_)) => {
                 Err(Error::other("SanctuaryPlayer: playback receiver dropped"))
@@ -210,6 +300,7 @@ struct PlaybackSession {
 fn open_variant_session(
     variant_url: &Url,
     decode_mode: DecodeMode,
+    wake: PlaybackWake,
 ) -> Result<PlaybackSession, String> {
     let input = hls_uri(variant_url);
     let job_json = serde_json::to_string(&json!({
@@ -228,7 +319,7 @@ fn open_variant_session(
 
     let codec_preferences = codec_preferences(decode_mode);
     let (tx, rx) = mpsc::sync_channel(SESSION_CHANNEL_CAP);
-    let sink = Box::new(SessionSink::new(tx));
+    let sink = Box::new(SessionSink::new(tx, wake));
     let executor = Executor::new(&job, &registries)
         .with_sink_override("@display", sink)
         .with_codec_preferences(codec_preferences)
@@ -295,11 +386,7 @@ fn open_variant_session(
         );
     }
 
-    let rates = if audio_stream.is_some() {
-        vec![1.0]
-    } else {
-        vec![0.25, 0.5, 1.0, 1.5, 2.0]
-    };
+    let rates = vec![1.0];
 
     Ok(PlaybackSession {
         rx,
@@ -321,6 +408,7 @@ impl OxidePlayback {
         m3u8_url: Url,
         decode_mode: DecodeMode,
         muted: bool,
+        wake: PlaybackWake,
     ) -> Result<Self, String> {
         let quality_set = inspect_hls_qualities(&m3u8_url)?;
         let selected_url = quality_set.urls[quality_set.preferred_index].clone();
@@ -328,7 +416,7 @@ impl OxidePlayback {
             "SanctuaryPlayer: HLS initial quality={} variant={}",
             quality_set.qualities[quality_set.preferred_index].label, selected_url
         );
-        let session = open_variant_session(&selected_url, decode_mode)?;
+        let session = open_variant_session(&selected_url, decode_mode, wake.clone())?;
 
         Ok(Self {
             source,
@@ -343,13 +431,16 @@ impl OxidePlayback {
             active_quality_index: quality_set.preferred_index,
             decode_mode,
             muted,
+            wake,
             rx: session.rx,
             executor: session.executor,
             video_stream: session.video_stream,
             audio_stream: session.audio_stream,
             audio_output: session.audio_output,
             pending_audio_frame: None,
+            pending_video_frame: None,
             video_queue: VecDeque::new(),
+            video_clock: VideoClock::default(),
             timeline_origin_seconds: session.timeline_origin_seconds,
             first_video_seconds: session.first_video_seconds,
             first_audio_seconds: session.first_audio_seconds,
@@ -381,7 +472,9 @@ impl OxidePlayback {
         }
         self.audio_output = None;
         self.pending_audio_frame = None;
+        self.pending_video_frame = None;
         self.video_queue.clear();
+        self.video_clock.reset();
     }
 
     fn install_session(&mut self, session: PlaybackSession) {
@@ -391,6 +484,7 @@ impl OxidePlayback {
         self.audio_stream = session.audio_stream;
         self.audio_output = session.audio_output;
         self.pending_audio_frame = None;
+        self.pending_video_frame = None;
         self.duration = session.duration;
         self.rates = session.rates;
         self.position = Duration::ZERO;
@@ -404,6 +498,7 @@ impl OxidePlayback {
         self.queued_seek = None;
         self.seek_supported = true;
         self.video_queue.clear();
+        self.video_clock.reset();
         self.diagnostics = PlaybackDiagnostics::new();
     }
 
@@ -511,6 +606,9 @@ impl OxidePlayback {
         if self.pending_audio_frame.is_some() {
             return Some("audio-frame-pending");
         }
+        if self.pending_video_frame.is_some() {
+            return Some("video-frame-pending");
+        }
 
         if self.audio_stream.is_some() && self.audio_output.is_none() {
             // Keep draining until the decoder publishes authoritative PCM
@@ -535,7 +633,7 @@ impl OxidePlayback {
         let target = if matches!(self.state, PlaybackState::Paused) {
             usize::from(self.video_queue.is_empty())
         } else {
-            VIDEO_QUEUE_TARGET
+            VIDEO_QUEUE_CAP
         };
         (self.video_queue.len() >= target).then_some("video-buffer-ready")
     }
@@ -545,6 +643,15 @@ impl OxidePlayback {
     }
 
     fn pump_session(&mut self) {
+        if let Some(frame) = self.pending_video_frame.take()
+            && let Some(frame) = self.queue_video_frame(frame)
+        {
+            self.pending_video_frame = Some(frame);
+            self.collect_executor_result();
+            self.update_end_state();
+            return;
+        }
+
         if let Some(frame) = self.pending_audio_frame.take() {
             match self.queue_audio_frame(frame) {
                 Ok(Some(frame)) => {
@@ -599,21 +706,20 @@ impl OxidePlayback {
                     MediaType::Video => {
                         self.diagnostics.received_video_frames =
                             self.diagnostics.received_video_frames.saturating_add(1);
-                        if self.video_queue.len() >= VIDEO_QUEUE_MAX {
+                        if frame.pts().is_none() {
                             self.diagnostics.dropped_video_frames =
                                 self.diagnostics.dropped_video_frames.saturating_add(1);
                             if self.diagnostics.dropped_video_frames <= 3
                                 || self.diagnostics.dropped_video_frames.is_multiple_of(60)
                             {
                                 eprintln!(
-                                    "SanctuaryPlayer: video queue hard cap reached; dropping decoded frame queue={} dropped={}",
-                                    self.video_queue.len(),
+                                    "SanctuaryPlayer: dropping decoded video frame with no PTS dropped={}",
                                     self.diagnostics.dropped_video_frames
                                 );
                             }
                             return Ok(());
                         }
-                        self.video_queue.push_back(frame);
+                        self.pending_video_frame = self.queue_video_frame(frame);
                         Ok(())
                     }
                     MediaType::Audio => {
@@ -704,6 +810,35 @@ impl OxidePlayback {
             }
             _ => Ok(()),
         }
+    }
+
+    fn queue_video_frame_at(&mut self, frame: FrameLease, now: Instant) -> Option<FrameLease> {
+        if self.video_queue.len() >= VIDEO_QUEUE_CAP
+            && let Some(desired_pts) = self.video_clock.pts_at(now, self.video_stream.time_base)
+        {
+            while self.video_queue.len() >= VIDEO_QUEUE_CAP
+                && self
+                    .video_queue
+                    .get(1)
+                    .and_then(FrameLease::pts)
+                    .is_some_and(|pts| pts <= desired_pts)
+            {
+                self.video_queue.pop_front();
+                self.diagnostics.dropped_video_frames =
+                    self.diagnostics.dropped_video_frames.saturating_add(1);
+            }
+        }
+
+        if self.video_queue.len() >= VIDEO_QUEUE_CAP {
+            Some(frame)
+        } else {
+            self.video_queue.push_back(frame);
+            None
+        }
+    }
+
+    fn queue_video_frame(&mut self, frame: FrameLease) -> Option<FrameLease> {
+        self.queue_video_frame_at(frame, Instant::now())
     }
 
     fn queue_audio_frame(&mut self, frame: FrameLease) -> Result<Option<FrameLease>, String> {
@@ -815,7 +950,9 @@ impl OxidePlayback {
             self.audio_anchor_seconds = None;
         }
 
+        self.pending_video_frame = None;
         self.video_queue.clear();
+        self.video_clock.reset();
         self.first_frame_presented = false;
         self.position = landed;
         self.state = PlaybackState::Paused;
@@ -928,7 +1065,10 @@ impl OxidePlayback {
     }
 
     fn update_end_state(&mut self) {
-        if !self.sink_finished || !self.video_queue.is_empty() || self.pending_audio_frame.is_some()
+        if !self.sink_finished
+            || !self.video_queue.is_empty()
+            || self.pending_video_frame.is_some()
+            || self.pending_audio_frame.is_some()
         {
             return;
         }
@@ -955,59 +1095,97 @@ impl OxidePlayback {
         self.frame_position_for_kind(MediaType::Video, frame.pts())
     }
 
-    fn take_due_frame(&mut self) -> Option<FrameLease> {
-        self.pump_session();
-
-        if !self.first_frame_presented {
-            let frame = self.video_queue.pop_front()?;
-            self.first_frame_presented = true;
-            self.diagnostics.presented_video_frames =
-                self.diagnostics.presented_video_frames.saturating_add(1);
-            return Some(frame);
-        }
-        if !matches!(self.state, PlaybackState::Playing) {
-            return None;
-        }
-
-        let mut due = None;
-        let mut due_count = 0_u64;
-        while let Some(next) = self.video_queue.front() {
-            let is_due = self
-                .frame_position(next)
-                .is_none_or(|frame_position| frame_position <= self.position);
-            if !is_due {
-                break;
-            }
-            due = self.video_queue.pop_front();
-            due_count = due_count.saturating_add(1);
-        }
-        if due.is_some() {
-            self.diagnostics.presented_video_frames =
-                self.diagnostics.presented_video_frames.saturating_add(1);
-            self.diagnostics.dropped_video_frames = self
-                .diagnostics
-                .dropped_video_frames
-                .saturating_add(due_count.saturating_sub(1));
-        }
-        due
+    fn video_position_at(&self, now: Instant) -> Option<Duration> {
+        let pts = self.video_clock.pts_at(now, self.video_stream.time_base)?;
+        self.frame_position_for_kind(MediaType::Video, Some(pts))
     }
 
-    fn update_position(&mut self, elapsed: Duration) {
+    fn update_position_at(&mut self, now: Instant) {
         if matches!(self.state, PlaybackState::Seeking) {
             return;
         }
-        if let Some(audio) = self.audio_output.as_ref() {
-            if let Some(position) = audio.media_position() {
-                self.position = position;
-            }
-        } else if matches!(self.state, PlaybackState::Playing) && !self.video_queue.is_empty() {
-            self.position = self.position.saturating_add(elapsed.mul_f32(self.rate));
+        if let Some(pts) = self.video_clock.pts_at(now, self.video_stream.time_base)
+            && let Some(position) = self.frame_position_for_kind(MediaType::Video, Some(pts))
+        {
+            self.position = position;
         }
 
         if let Some(duration) = self.duration
             && self.position >= duration
         {
             self.position = duration;
+        }
+    }
+
+    fn take_due_frame_at(&mut self, now: Instant) -> Option<FrameLease> {
+        self.pump_session();
+
+        if self
+            .video_clock
+            .pts_at(now, self.video_stream.time_base)
+            .is_none()
+        {
+            let pts = self.video_queue.front()?.pts()?;
+            self.video_clock
+                .establish(pts, now, matches!(self.state, PlaybackState::Playing));
+            self.update_position_at(now);
+        }
+
+        if self.first_frame_presented && !matches!(self.state, PlaybackState::Playing) {
+            return None;
+        }
+
+        let desired_pts = self.video_clock.pts_at(now, self.video_stream.time_base)?;
+        loop {
+            let newer_due = self
+                .video_queue
+                .get(1)
+                .and_then(FrameLease::pts)
+                .is_some_and(|pts| pts <= desired_pts);
+            if !newer_due {
+                break;
+            }
+            self.video_queue.pop_front();
+            self.diagnostics.dropped_video_frames =
+                self.diagnostics.dropped_video_frames.saturating_add(1);
+            self.pump_session();
+        }
+
+        let frame_pts = self.video_queue.front()?.pts()?;
+        if frame_pts > desired_pts {
+            return None;
+        }
+
+        let frame = self.video_queue.pop_front()?;
+        self.first_frame_presented = true;
+        self.diagnostics.presented_video_frames =
+            self.diagnostics.presented_video_frames.saturating_add(1);
+        if !matches!(self.state, PlaybackState::Playing)
+            && let Some(position) = self.frame_position(&frame)
+        {
+            self.position = position;
+        }
+        self.pump_session();
+        Some(frame)
+    }
+
+    fn take_due_frame(&mut self) -> Option<FrameLease> {
+        self.take_due_frame_at(Instant::now())
+    }
+
+    fn next_video_wake_deadline_at(&self, now: Instant) -> Option<Instant> {
+        if !matches!(self.state, PlaybackState::Playing) {
+            return None;
+        }
+        let frame_pts = self.video_queue.front()?.pts()?;
+        let Some(desired_pts) = self.video_clock.pts_at(now, self.video_stream.time_base) else {
+            return Some(now);
+        };
+        if frame_pts <= desired_pts {
+            Some(now)
+        } else {
+            self.video_clock
+                .deadline_for(frame_pts, self.video_stream.time_base)
         }
     }
 
@@ -1099,7 +1277,10 @@ impl OxidePlayback {
             .map_err(|error| format!("dispatch OxideAV seek: {error}"))?;
 
         self.pending_audio_frame = None;
+        self.pending_video_frame = None;
         self.video_queue.clear();
+        self.video_clock.reset();
+        self.first_frame_presented = false;
         self.position = target;
         self.state = PlaybackState::Seeking;
         self.seek_pending = Some(PendingSeek {
@@ -1146,6 +1327,7 @@ impl PlaybackBackend for OxidePlayback {
             self.fail(error);
             return;
         }
+        self.video_clock.play(Instant::now());
         self.state = PlaybackState::Playing;
     }
 
@@ -1160,10 +1342,20 @@ impl PlaybackBackend for OxidePlayback {
             self.fail(error);
             return;
         }
+        let now = Instant::now();
+        self.video_clock.pause(now, self.video_stream.time_base);
+        self.update_position_at(now);
         self.state = PlaybackState::Paused;
     }
 
     fn position(&self) -> Duration {
+        if !matches!(self.state, PlaybackState::Seeking)
+            && let Some(position) = self.video_position_at(Instant::now())
+        {
+            return self
+                .duration
+                .map_or(position, |duration| position.min(duration));
+        }
         self.position
     }
 
@@ -1262,24 +1454,23 @@ impl PlaybackBackend for OxidePlayback {
         else {
             return;
         };
+        let wake = self.wake.clone();
         if let Err(error) = self.switch_quality_with(index, |url, decode_mode| {
-            open_variant_session(url, decode_mode)
+            open_variant_session(url, decode_mode, wake.clone())
         }) {
             self.fail(error);
         }
     }
 
-    fn update(&mut self, elapsed: Duration) {
+    fn update(&mut self, _elapsed: Duration) {
         self.pump_session();
-        self.update_position(elapsed);
+        self.update_position_at(Instant::now());
         self.update_end_state();
         self.maybe_log_status();
     }
 
-    fn needs_animation(&self) -> bool {
-        !matches!(self.state, PlaybackState::Error(_) | PlaybackState::Ended)
-            && (matches!(self.state, PlaybackState::Playing | PlaybackState::Seeking)
-                || !self.first_frame_presented)
+    fn next_wake_deadline(&self, now: Instant) -> Option<Instant> {
+        self.next_video_wake_deadline_at(now)
     }
 
     fn take_video_frame_lease(&mut self) -> Option<FrameLease> {
@@ -1451,7 +1642,7 @@ fn av_pump_block_reason(input: AvPumpState<'_>) -> Option<&'static str> {
             .then_some("paused-buffered");
     }
 
-    let video_ready = input.video_queue_len >= VIDEO_QUEUE_TARGET;
+    let video_ready = input.video_queue_len >= VIDEO_QUEUE_CAP;
     let audio_ready = input.audio_queued_samples >= input.audio_target_samples;
     (video_ready && audio_ready).then_some("av-buffers-ready")
 }
@@ -1542,13 +1733,19 @@ mod tests {
                 active_quality_index: 0,
                 decode_mode: DecodeMode::Cpu,
                 muted: false,
+                wake: PlaybackWake::noop(),
                 rx,
                 executor: None,
                 video_stream,
                 audio_stream: None,
                 audio_output: None,
                 pending_audio_frame: None,
+                pending_video_frame: None,
                 video_queue: VecDeque::new(),
+                video_clock: VideoClock {
+                    origin: Some((90_000, Instant::now())),
+                    frozen_pts: None,
+                },
                 timeline_origin_seconds: Some(0.0),
                 first_video_seconds: Some(0.0),
                 first_audio_seconds: None,
@@ -1574,6 +1771,13 @@ mod tests {
             samples: samples as u32,
             pts: Some(pts),
             data: vec![bytes],
+        }))
+    }
+
+    fn video_frame_lease(pts: Option<i64>) -> FrameLease {
+        FrameLease::from_frame(Frame::Video(VideoFrame {
+            pts,
+            planes: Vec::new(),
         }))
     }
 
@@ -1680,26 +1884,113 @@ mod tests {
     }
 
     #[test]
-    fn playback_clock_stalls_when_decoded_video_queue_is_empty() {
-        let (mut playback, tx) = clock_test_playback();
+    fn video_clock_advances_without_decoded_frames() {
+        let start = Instant::now();
+        let mut clock = VideoClock::default();
+        clock.establish(90_000, start, true);
 
-        playback.update(Duration::from_millis(250));
-        assert_eq!(playback.position(), Duration::from_secs(1));
+        assert_eq!(
+            clock.pts_at(start + Duration::from_millis(250), TimeBase::MPEG_TS),
+            Some(112_500)
+        );
+    }
 
-        tx.send(SessionMsg::Frame {
-            kind: MediaType::Video,
-            frame: FrameLease::from_frame(Frame::Video(VideoFrame {
-                pts: Some(90_000),
-                planes: Vec::new(),
-            })),
-        })
-        .unwrap();
-        playback.update(Duration::from_millis(250));
-        assert_eq!(playback.position(), Duration::from_millis(1_250));
+    #[test]
+    fn video_clock_pause_resume_excludes_paused_wall_time() {
+        let start = Instant::now();
+        let mut clock = VideoClock::default();
+        clock.establish(90_000, start, true);
+        clock.pause(start + Duration::from_millis(250), TimeBase::MPEG_TS);
+        assert_eq!(clock.frozen_pts, Some(112_500));
 
-        assert!(playback.take_due_frame().is_some());
-        playback.update(Duration::from_millis(250));
-        assert_eq!(playback.position(), Duration::from_millis(1_250));
+        let resume = start + Duration::from_secs(10);
+        clock.play(resume);
+        assert_eq!(
+            clock.pts_at(resume + Duration::from_millis(250), TimeBase::MPEG_TS),
+            Some(135_000)
+        );
+    }
+
+    #[test]
+    fn video_clock_computes_exact_future_frame_deadline() {
+        let start = Instant::now();
+        let mut clock = VideoClock::default();
+        clock.establish(0, start, true);
+
+        assert_eq!(
+            clock.deadline_for(1_920, TimeBase::MPEG_TS),
+            Some(start + Duration::from_nanos(21_333_334))
+        );
+    }
+
+    #[test]
+    fn playback_deadline_for_due_frame_uses_callers_instant_exactly() {
+        let (mut playback, _tx) = clock_test_playback();
+        let start = Instant::now();
+        let now = start + Duration::from_secs(1);
+        playback.video_clock.establish(0, start, true);
+        playback.video_queue.clear();
+        playback.video_queue.push_back(video_frame_lease(Some(0)));
+
+        assert_eq!(playback.next_wake_deadline(now), Some(now));
+    }
+
+    #[test]
+    fn video_scheduler_drops_all_older_due_frames_before_presenting_latest_due() {
+        let (mut playback, _tx) = clock_test_playback();
+        let start = Instant::now();
+        playback.video_clock.establish(0, start, true);
+        playback.video_queue.clear();
+        playback.video_queue.push_back(video_frame_lease(Some(900)));
+        playback
+            .video_queue
+            .push_back(video_frame_lease(Some(1_800)));
+        playback.pending_video_frame = Some(video_frame_lease(Some(2_700)));
+
+        let frame = playback
+            .take_due_frame_at(start + Duration::from_millis(30))
+            .expect("latest due frame");
+        assert_eq!(frame.pts(), Some(2_700));
+        assert_eq!(playback.diagnostics.dropped_video_frames, 2);
+        assert!(playback.video_queue.is_empty());
+        assert!(playback.pending_video_frame.is_none());
+    }
+
+    #[test]
+    fn video_scheduler_waits_for_future_frame_deadline() {
+        let (mut playback, _tx) = clock_test_playback();
+        let start = Instant::now();
+        playback.video_clock.establish(0, start, true);
+        playback.video_queue.clear();
+        playback
+            .video_queue
+            .push_back(video_frame_lease(Some(1_920)));
+
+        assert!(playback.take_due_frame_at(start).is_none());
+        assert_eq!(
+            playback.next_video_wake_deadline_at(start),
+            Some(start + Duration::from_nanos(21_333_334))
+        );
+        assert!(
+            playback
+                .take_due_frame_at(start + Duration::from_nanos(21_333_334))
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn video_frame_without_pts_is_dropped_and_logged_path_remains_bounded() {
+        let (mut playback, _tx) = clock_test_playback();
+        playback
+            .handle_session_message(SessionMsg::Frame {
+                kind: MediaType::Video,
+                frame: video_frame_lease(None),
+            })
+            .unwrap();
+
+        assert!(playback.video_queue.is_empty());
+        assert!(playback.pending_video_frame.is_none());
+        assert_eq!(playback.diagnostics.dropped_video_frames, 1);
     }
 
     fn hls_variant(
@@ -1881,10 +2172,132 @@ mod tests {
     }
 
     #[test]
+    fn session_sink_wakes_after_video_message_is_enqueued() {
+        let (tx, rx) = mpsc::sync_channel(1);
+        let (wake_tx, wake_rx) = mpsc::channel();
+        let wake = PlaybackWake::new(move || {
+            wake_tx.send(()).unwrap();
+        });
+        let wake_probe = wake.clone();
+        let mut sink = SessionSink::new(tx, wake);
+
+        sink.send(SessionMsg::Frame {
+            kind: MediaType::Video,
+            frame: video_frame_lease(Some(90_000)),
+        })
+        .unwrap();
+
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(SessionMsg::Frame {
+                kind: MediaType::Video,
+                ..
+            })
+        ));
+        assert_eq!(wake_rx.try_recv(), Ok(()));
+        assert!(wake_probe.take_pending().contains(PlaybackWakeKind::Video));
+    }
+
+    #[test]
+    fn full_video_lookahead_discards_provably_stale_frames_while_ingesting() {
+        let (mut playback, _tx) = clock_test_playback();
+        let now = Instant::now();
+        playback.video_queue.clear();
+        playback.video_clock = VideoClock {
+            origin: None,
+            frozen_pts: Some(2_700),
+        };
+        playback.diagnostics.dropped_video_frames = 0;
+
+        assert!(
+            playback
+                .queue_video_frame_at(video_frame_lease(Some(900)), now)
+                .is_none()
+        );
+        assert!(
+            playback
+                .queue_video_frame_at(video_frame_lease(Some(1_800)), now)
+                .is_none()
+        );
+        assert!(
+            playback
+                .queue_video_frame_at(video_frame_lease(Some(2_700)), now)
+                .is_none()
+        );
+        assert_eq!(
+            playback
+                .video_queue
+                .iter()
+                .filter_map(FrameLease::pts)
+                .collect::<Vec<_>>(),
+            vec![1_800, 2_700]
+        );
+        assert_eq!(playback.diagnostics.dropped_video_frames, 1);
+
+        assert!(
+            playback
+                .queue_video_frame_at(video_frame_lease(Some(3_600)), now)
+                .is_none()
+        );
+        assert_eq!(
+            playback
+                .video_queue
+                .iter()
+                .filter_map(FrameLease::pts)
+                .collect::<Vec<_>>(),
+            vec![2_700, 3_600]
+        );
+        assert_eq!(playback.diagnostics.dropped_video_frames, 2);
+
+        let deferred = playback
+            .queue_video_frame_at(video_frame_lease(Some(4_500)), now)
+            .expect("future third frame must remain backpressured");
+        assert_eq!(deferred.pts(), Some(4_500));
+        assert_eq!(
+            playback
+                .video_queue
+                .iter()
+                .filter_map(FrameLease::pts)
+                .collect::<Vec<_>>(),
+            vec![2_700, 3_600]
+        );
+    }
+
+    #[test]
+    fn third_video_frame_is_backpressured_instead_of_dropped() {
+        let (mut playback, _tx) = clock_test_playback();
+        playback.video_queue.clear();
+        playback.video_clock = VideoClock {
+            origin: None,
+            frozen_pts: Some(0),
+        };
+        playback.diagnostics.dropped_video_frames = 0;
+
+        for pts in [9_000, 18_000, 27_000] {
+            playback
+                .handle_session_message(SessionMsg::Frame {
+                    kind: MediaType::Video,
+                    frame: video_frame_lease(Some(pts)),
+                })
+                .unwrap();
+        }
+
+        assert_eq!(playback.video_queue.len(), VIDEO_QUEUE_CAP);
+        assert_eq!(
+            playback
+                .pending_video_frame
+                .as_ref()
+                .and_then(FrameLease::pts),
+            Some(27_000)
+        );
+        assert_eq!(playback.diagnostics.dropped_video_frames, 0);
+    }
+
+    #[test]
     fn session_teardown_unblocks_a_sink_waiting_on_the_full_channel() {
         let (mut playback, _old_tx) = clock_test_playback();
         let (tx, rx) = mpsc::sync_channel(1);
-        let mut sink = SessionSink::new(tx);
+        let mut sink = SessionSink::new(tx, PlaybackWake::noop());
         sink.send(SessionMsg::Started(Vec::new())).unwrap();
         playback.rx = rx;
 
@@ -2095,7 +2508,7 @@ mod tests {
             av_pump_block_reason(AvPumpState {
                 state: &PlaybackState::Playing,
                 first_frame_presented: true,
-                video_queue_len: VIDEO_QUEUE_TARGET,
+                video_queue_len: VIDEO_QUEUE_CAP,
                 audio_preroll_ready: true,
                 audio_queued_samples: 2_400,
                 audio_target_samples: 24_000,
@@ -2113,7 +2526,7 @@ mod tests {
             av_pump_block_reason(AvPumpState {
                 state: &PlaybackState::Playing,
                 first_frame_presented: true,
-                video_queue_len: VIDEO_QUEUE_TARGET,
+                video_queue_len: VIDEO_QUEUE_CAP,
                 audio_preroll_ready: true,
                 audio_queued_samples: 24_000,
                 audio_target_samples: 24_000,

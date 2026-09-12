@@ -284,6 +284,7 @@ impl AudioOutput {
         self.stream.is_playing()
     }
 
+    #[cfg(test)]
     pub(crate) fn media_position(&self) -> Option<Duration> {
         let media_origin = self.media_origin?;
         let timeline_origin = self.producer.origin_pts()?;

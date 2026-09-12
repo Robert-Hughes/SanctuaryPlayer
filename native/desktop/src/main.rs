@@ -1,6 +1,6 @@
-use sanctuary_player_app::SanctuaryPlayerApp;
 use sanctuary_player_app::playback::DecodeMode;
 use sanctuary_player_app::video::VideoSource;
+use sanctuary_player_app::{AppEvent, SanctuaryPlayerApp};
 
 const USAGE: &str = "Usage: sanctuary-player [OPTIONS] [VIDEO]\n\n\
 VIDEO may be a YouTube/Twitch video ID or URL accepted by SanctuaryPlayer.\n\n\
@@ -41,7 +41,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(2);
     }
 
-    let event_loop = winit::event_loop::EventLoop::new()?;
+    let event_loop = winit::event_loop::EventLoop::<AppEvent>::with_user_event().build()?;
     let mut app = match initial_video {
         Some(source) => {
             SanctuaryPlayerApp::with_initial_video_decode_options(source, autoplay, decode_mode)
@@ -49,6 +49,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         None => SanctuaryPlayerApp::with_decode_mode(decode_mode),
     };
     app.set_muted(muted);
+    app.set_event_proxy(event_loop.create_proxy());
     if let Some(config_dir) = dirs::config_dir() {
         app.set_settings_path(config_dir.join("sanctuary-player").join("settings.json"));
     } else {

@@ -9,7 +9,9 @@ use url::Url;
 use ::oxideav::core::FrameLease;
 
 use crate::model::{AppCommand, PlaybackState, Quality};
-use crate::playback::{DecodeMode, DummyPlayback, OxidePlayback, PlaybackBackend};
+use crate::playback::{
+    DecodeMode, DummyPlayback, OxidePlayback, PendingPlaybackWakes, PlaybackBackend, PlaybackWake,
+};
 use crate::services::{PositionService, RemotePositionService, SavedPosition, VideoMetadata};
 use crate::settings::{Settings, SettingsStore};
 use crate::spoilers::sanitise_title;
@@ -22,16 +24,22 @@ const POSITION_UPLOAD_DELTA: Duration = Duration::from_secs(10);
 const POSITION_SAVE_RETRY_DELAY: Duration = Duration::from_secs(5);
 
 type TwitchResolver = fn(&str) -> Result<ResolvedTwitchVod, TwitchVodResolveError>;
-type PlaybackFactory =
-    fn(VideoSource, Url, DecodeMode, bool) -> Result<Box<dyn PlaybackBackend>, String>;
+type PlaybackFactory = fn(
+    VideoSource,
+    Url,
+    DecodeMode,
+    bool,
+    PlaybackWake,
+) -> Result<Box<dyn PlaybackBackend>, String>;
 
 fn open_oxide_playback(
     source: VideoSource,
     url: Url,
     decode_mode: DecodeMode,
     muted: bool,
+    wake: PlaybackWake,
 ) -> Result<Box<dyn PlaybackBackend>, String> {
-    OxidePlayback::open(source, url, decode_mode, muted)
+    OxidePlayback::open(source, url, decode_mode, muted, wake)
         .map(|playback| Box::new(playback) as Box<dyn PlaybackBackend>)
 }
 
@@ -94,6 +102,7 @@ pub struct AppState {
     preferences: Preferences,
     twitch_resolver: TwitchResolver,
     playback_factory: PlaybackFactory,
+    playback_wake: PlaybackWake,
     decode_mode: DecodeMode,
     pending_video_open: Option<PendingVideoOpen>,
     play_when_opened: bool,
@@ -196,6 +205,7 @@ impl Default for AppState {
             preferences: Preferences::default(),
             twitch_resolver: resolve_vod,
             playback_factory: open_oxide_playback,
+            playback_wake: PlaybackWake::default(),
             decode_mode: DecodeMode::Cpu,
             pending_video_open: None,
             play_when_opened: false,
@@ -219,6 +229,14 @@ impl AppState {
 
     pub fn set_muted(&mut self, muted: bool) {
         self.muted = muted;
+    }
+
+    pub fn set_playback_wake(&mut self, wake: PlaybackWake) {
+        self.playback_wake = wake;
+    }
+
+    pub fn take_playback_wakes(&self) -> PendingPlaybackWakes {
+        self.playback_wake.take_pending()
     }
 
     pub fn set_settings_path(&mut self, path: PathBuf) {
@@ -344,6 +362,7 @@ impl AppState {
     fn begin_twitch_resolution(&mut self, source: VideoSource) {
         let resolver = self.twitch_resolver;
         let playback_factory = self.playback_factory;
+        let playback_wake = self.playback_wake.clone();
         let decode_mode = self.decode_mode;
         let muted = self.muted;
         let video_id = source.id.clone();
@@ -354,7 +373,7 @@ impl AppState {
                 .map_err(|error| error.to_string())
                 .and_then(|resolved| {
                     let metadata = resolved.metadata.map(video_metadata_from_twitch);
-                    playback_factory(source, resolved.hls_url, decode_mode, muted)
+                    playback_factory(source, resolved.hls_url, decode_mode, muted, playback_wake)
                         .map(|playback| OpenedVideo { playback, metadata })
                 });
             let _ = sender.send(result);
@@ -928,12 +947,15 @@ impl AppState {
     }
 
     pub fn needs_animation(&self) -> bool {
-        self.playback.needs_animation()
-            || self.ui.lock_return_from.is_some()
+        self.ui.lock_return_from.is_some()
             || self.pending_video_open.is_some()
             || self.positions_refresh_requested
             || self.pending_positions_fetch.is_some()
             || self.pending_position_save.is_some()
+    }
+
+    pub fn playback_wake_deadline(&self, now: Instant) -> Option<Instant> {
+        self.playback.next_wake_deadline(now)
     }
 }
 
@@ -986,6 +1008,7 @@ mod tests {
         _url: Url,
         _decode_mode: DecodeMode,
         _muted: bool,
+        _wake: PlaybackWake,
     ) -> Result<Box<dyn PlaybackBackend>, String> {
         let mut playback = DummyPlayback::new();
         playback.open(&source)?;
@@ -997,6 +1020,7 @@ mod tests {
         _url: Url,
         _decode_mode: DecodeMode,
         _muted: bool,
+        _wake: PlaybackWake,
     ) -> Result<Box<dyn PlaybackBackend>, String> {
         let mut playback = DummyPlayback::new();
         playback.open(&source)?;
@@ -1013,6 +1037,7 @@ mod tests {
         _url: Url,
         _decode_mode: DecodeMode,
         muted: bool,
+        _wake: PlaybackWake,
     ) -> Result<Box<dyn PlaybackBackend>, String> {
         if !muted {
             return Err("expected muted playback factory invocation".into());
@@ -1193,6 +1218,14 @@ mod tests {
         state.update(Duration::from_secs(10));
         assert!(state.ui.controls_visible);
         state.end_lock_drag();
+    }
+
+    #[test]
+    fn playback_does_not_enable_polling_animation() {
+        let mut state = loaded_state();
+        state.apply(AppCommand::Play);
+        assert!(matches!(state.playback_state(), PlaybackState::Playing));
+        assert!(!state.needs_animation());
     }
 
     #[test]

@@ -30,12 +30,17 @@ use std::time::{Duration, Instant};
 use app::{AppEffect, AppState};
 use graphics::{Graphics, RenderStatus};
 use input::command_for_key;
-use playback::DecodeMode;
+use playback::{DecodeMode, PlaybackWake, PlaybackWakeKind};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, ControlFlow};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy};
 use winit::keyboard::PhysicalKey;
 use winit::window::{Fullscreen, Window, WindowAttributes, WindowId};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppEvent {
+    PlaybackWake,
+}
 
 const ANIMATION_FRAME_INTERVAL: Duration = Duration::from_millis(16);
 const RENDER_DIAGNOSTIC_INTERVAL: Duration = Duration::from_secs(1);
@@ -161,6 +166,12 @@ impl SanctuaryPlayerApp {
         self.state.set_muted(muted);
     }
 
+    pub fn set_event_proxy(&mut self, proxy: EventLoopProxy<AppEvent>) {
+        self.state.set_playback_wake(PlaybackWake::new(move || {
+            let _ = proxy.send_event(AppEvent::PlaybackWake);
+        }));
+    }
+
     pub fn with_initial_video(source: video::VideoSource) -> Self {
         Self::with_initial_video_options(source, false)
     }
@@ -206,6 +217,12 @@ impl SanctuaryPlayerApp {
         window.request_redraw();
     }
 
+    fn update_state_at(&mut self, now: Instant) {
+        self.state
+            .update(now.saturating_duration_since(self.last_update));
+        self.last_update = now;
+    }
+
     fn shutdown(&mut self, event_loop: &ActiveEventLoop) {
         self.next_egui_repaint = None;
         if let Some(graphics) = self.graphics.take() {
@@ -222,7 +239,7 @@ impl Default for SanctuaryPlayerApp {
     }
 }
 
-impl ApplicationHandler for SanctuaryPlayerApp {
+impl ApplicationHandler<AppEvent> for SanctuaryPlayerApp {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
             return;
@@ -267,13 +284,47 @@ impl ApplicationHandler for SanctuaryPlayerApp {
         self.window = None;
     }
 
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: AppEvent) {
+        match event {
+            AppEvent::PlaybackWake => {
+                let pending = self.state.take_playback_wakes();
+                if pending.is_empty() {
+                    return;
+                }
+                let Some(window) = self.window.as_ref().cloned() else {
+                    return;
+                };
+                let now = Instant::now();
+                self.update_state_at(now);
+                let control = pending.contains(PlaybackWakeKind::Control);
+                let video_due = pending.contains(PlaybackWakeKind::Video)
+                    && self
+                        .state
+                        .playback_wake_deadline(now)
+                        .is_some_and(|deadline| deadline <= now);
+                if control || video_due {
+                    window.request_redraw();
+                }
+            }
+        }
+    }
+
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         let now = Instant::now();
         let mut requested_redraw = false;
 
-        if self.state.needs_animation() && now >= self.next_animation_frame {
+        let animation_deadline = self
+            .state
+            .needs_animation()
+            .then_some(self.next_animation_frame);
+        if animation_deadline.is_some_and(|when| now >= when) {
             requested_redraw = true;
             self.next_animation_frame = now + ANIMATION_FRAME_INTERVAL;
+        }
+
+        let playback_deadline = self.state.playback_wake_deadline(now);
+        if playback_deadline.is_some_and(|when| now >= when) {
+            requested_redraw = true;
         }
 
         if self.next_egui_repaint.is_some_and(|when| now >= when) {
@@ -283,18 +334,24 @@ impl ApplicationHandler for SanctuaryPlayerApp {
 
         if requested_redraw && let Some(window) = self.window.as_ref() {
             window.request_redraw();
+            event_loop.set_control_flow(ControlFlow::Poll);
+            return;
         }
 
-        let playback_deadline = self
+        let animation_deadline = self
             .state
             .needs_animation()
-            .then_some(self.next_animation_frame);
-        let next_deadline = match (playback_deadline, self.next_egui_repaint) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (Some(a), None) => Some(a),
-            (None, Some(b)) => Some(b),
-            (None, None) => None,
-        };
+            .then_some(self.next_animation_frame)
+            .filter(|deadline| *deadline > now);
+        let playback_deadline = playback_deadline.filter(|deadline| *deadline > now);
+        let next_deadline = [
+            animation_deadline,
+            playback_deadline,
+            self.next_egui_repaint,
+        ]
+        .into_iter()
+        .flatten()
+        .min();
         if let Some(deadline) = next_deadline {
             event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
         } else {
@@ -336,16 +393,14 @@ impl ApplicationHandler for SanctuaryPlayerApp {
             }
             WindowEvent::RedrawRequested => {
                 let now = Instant::now();
-                let diagnose_render = self.state.needs_animation();
+                let diagnose_render = self.state.has_video();
                 if diagnose_render {
                     self.render_diagnostics.begin_redraw(now);
                 } else {
                     self.render_diagnostics.reset(now);
                 }
 
-                self.state
-                    .update(now.saturating_duration_since(self.last_update));
-                self.last_update = now;
+                self.update_state_at(now);
 
                 if let Some(graphics) = self.graphics.as_mut() {
                     match graphics.render(window, &mut self.state) {
