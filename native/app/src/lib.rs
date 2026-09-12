@@ -6,6 +6,7 @@
 
 pub mod app;
 mod audio_output;
+mod audio_timeline;
 mod graphics;
 mod icon;
 mod input;

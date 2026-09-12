@@ -9,6 +9,7 @@ use serde_json::json;
 use url::Url;
 
 use crate::audio_output::AudioOutput;
+use crate::audio_timeline::QueueResult;
 use crate::model::{PlaybackState, Quality};
 use crate::video::VideoSource;
 
@@ -38,6 +39,7 @@ pub struct OxidePlayback {
     video_stream: StreamInfo,
     audio_stream: Option<StreamInfo>,
     audio_output: Option<AudioOutput>,
+    pending_audio_frame: Option<FrameLease>,
     video_queue: VecDeque<FrameLease>,
     timeline_origin_seconds: Option<f64>,
     first_video_seconds: Option<f64>,
@@ -254,7 +256,7 @@ fn open_variant_session(
         .cloned();
 
     let audio_output = match audio_stream.as_ref() {
-        Some(stream) => match AudioOutput::open(&stream.params, muted) {
+        Some(stream) => match AudioOutput::open(&stream.params, stream.time_base, muted) {
             Ok(output) => Some(output),
             Err(error) => {
                 stop_executor(executor);
@@ -346,6 +348,7 @@ impl OxidePlayback {
             video_stream: session.video_stream,
             audio_stream: session.audio_stream,
             audio_output: session.audio_output,
+            pending_audio_frame: None,
             video_queue: VecDeque::new(),
             timeline_origin_seconds: session.timeline_origin_seconds,
             first_video_seconds: session.first_video_seconds,
@@ -377,6 +380,7 @@ impl OxidePlayback {
             stop_executor(executor);
         }
         self.audio_output = None;
+        self.pending_audio_frame = None;
         self.video_queue.clear();
     }
 
@@ -386,6 +390,7 @@ impl OxidePlayback {
         self.video_stream = session.video_stream;
         self.audio_stream = session.audio_stream;
         self.audio_output = session.audio_output;
+        self.pending_audio_frame = None;
         self.duration = session.duration;
         self.rates = session.rates;
         self.position = Duration::ZERO;
@@ -503,6 +508,9 @@ impl OxidePlayback {
             // otherwise be able to hide the barrier behind stale frames.
             return None;
         }
+        if self.pending_audio_frame.is_some() {
+            return Some("audio-frame-pending");
+        }
 
         if let Some(audio) = self.audio_output.as_ref() {
             return av_pump_block_reason(AvPumpState {
@@ -530,6 +538,22 @@ impl OxidePlayback {
     }
 
     fn pump_session(&mut self) {
+        if let Some(frame) = self.pending_audio_frame.take() {
+            match self.queue_audio_frame(frame) {
+                Ok(Some(frame)) => {
+                    self.pending_audio_frame = Some(frame);
+                    self.collect_executor_result();
+                    self.update_end_state();
+                    return;
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    self.fail(error);
+                    return;
+                }
+            }
+        }
+
         while self.should_pump() {
             match self.rx.try_recv() {
                 Ok(message) => {
@@ -587,18 +611,8 @@ impl OxidePlayback {
                     MediaType::Audio => {
                         self.diagnostics.received_audio_frames =
                             self.diagnostics.received_audio_frames.saturating_add(1);
-                        let audio = self.audio_output.as_mut().ok_or_else(|| {
-                            "OxideAV produced audio without an audio output".to_owned()
-                        })?;
-                        let audio_frame = match frame.as_frame() {
-                            Some(Frame::Audio(audio_frame)) => audio_frame,
-                            _ => {
-                                return Err(
-                                    "OxideAV audio output was not an owned AudioFrame".to_owned()
-                                );
-                            }
-                        };
-                        audio.queue(audio_frame)
+                        self.pending_audio_frame = self.queue_audio_frame(frame)?;
+                        Ok(())
                     }
                     _ => Ok(()),
                 }
@@ -611,6 +625,21 @@ impl OxidePlayback {
                 self.sink_finished = true;
                 Ok(())
             }
+        }
+    }
+
+    fn queue_audio_frame(&mut self, frame: FrameLease) -> Result<Option<FrameLease>, String> {
+        let audio = self
+            .audio_output
+            .as_mut()
+            .ok_or_else(|| "OxideAV produced audio without an audio output".to_owned())?;
+        let audio_frame = match frame.as_frame() {
+            Some(Frame::Audio(audio_frame)) => audio_frame,
+            _ => return Err("OxideAV audio output was not an owned AudioFrame".to_owned()),
+        };
+        match audio.queue(audio_frame)? {
+            QueueResult::Queued | QueueResult::Dropped => Ok(None),
+            QueueResult::Deferred => Ok(Some(frame)),
         }
     }
 
@@ -700,7 +729,7 @@ impl OxidePlayback {
         }
         if let Some(stream) = self.audio_stream.as_ref() {
             self.audio_output = Some(
-                AudioOutput::open(&stream.params, self.muted)
+                AudioOutput::open(&stream.params, stream.time_base, self.muted)
                     .map_err(|error| format!("reopen audio output after seek: {error}"))?,
             );
             // The first post-barrier decoded audio PTS establishes the new
@@ -821,7 +850,8 @@ impl OxidePlayback {
     }
 
     fn update_end_state(&mut self) {
-        if !self.sink_finished || !self.video_queue.is_empty() {
+        if !self.sink_finished || !self.video_queue.is_empty() || self.pending_audio_frame.is_some()
+        {
             return;
         }
         if self
@@ -930,7 +960,7 @@ impl OxidePlayback {
 
         if let Some(audio) = self.audio_output.as_ref() {
             eprintln!(
-                "SanctuaryPlayer: A/V status state={:?} clock={:.3}s pump={} executor_finished={} sink_finished={} video[q={} front={}s back={}s recv={} present={} drop={}] audio[playing={} preroll={} queued={:.1}ms headroom={:.1}ms played_samples={} underrun_callbacks={} underrun_samples={}]",
+                "SanctuaryPlayer: A/V status state={:?} clock={:.3}s pump={} executor_finished={} sink_finished={} video[q={} front={}s back={}s recv={} present={} drop={}] audio[playing={} preroll={} queued={:.1}ms headroom={:.1}ms submitted_samples={} next_output_pts={:?} underrun_callbacks={} underrun_samples={}]",
                 self.state,
                 self.position.as_secs_f64(),
                 pump,
@@ -946,7 +976,8 @@ impl OxidePlayback {
                 audio.preroll_ready(),
                 audio.queued_duration().as_secs_f64() * 1000.0,
                 audio.headroom_duration().as_secs_f64() * 1000.0,
-                audio.played_samples(),
+                audio.submitted_samples(),
+                audio.next_output_pts(),
                 audio.underrun_callbacks(),
                 audio.underrun_samples(),
             );
@@ -989,6 +1020,7 @@ impl OxidePlayback {
             .seek_with_generation(stream.index, pts, stream.time_base)
             .map_err(|error| format!("dispatch OxideAV seek: {error}"))?;
 
+        self.pending_audio_frame = None;
         self.video_queue.clear();
         self.position = target;
         self.state = PlaybackState::Seeking;
@@ -1406,7 +1438,7 @@ fn duration_from_ticks(time_base: TimeBase, ticks: i64) -> Option<Duration> {
 
 #[cfg(test)]
 mod tests {
-    use ::oxideav::core::{CodecId, CodecParameters, VideoFrame};
+    use ::oxideav::core::{AudioFrame, CodecId, CodecParameters, SampleFormat, VideoFrame};
 
     use super::*;
 
@@ -1438,6 +1470,7 @@ mod tests {
                 video_stream,
                 audio_stream: None,
                 audio_output: None,
+                pending_audio_frame: None,
                 video_queue: VecDeque::new(),
                 timeline_origin_seconds: Some(0.0),
                 first_video_seconds: Some(0.0),
@@ -1452,6 +1485,80 @@ mod tests {
             },
             tx,
         )
+    }
+
+    fn audio_frame_lease(samples: usize, pts: i64) -> FrameLease {
+        let mut bytes = Vec::with_capacity(samples * 2 * 4);
+        for _ in 0..samples {
+            bytes.extend_from_slice(&0.25f32.to_le_bytes());
+            bytes.extend_from_slice(&(-0.25f32).to_le_bytes());
+        }
+        FrameLease::from_frame(Frame::Audio(AudioFrame {
+            samples: samples as u32,
+            pts: Some(pts),
+            data: vec![bytes],
+        }))
+    }
+
+    #[test]
+    fn deferred_audio_frame_stays_head_of_line_until_ring_has_space() {
+        let (mut playback, tx) = clock_test_playback();
+        let mut params = CodecParameters::audio(CodecId::new("aac"));
+        params.sample_rate = Some(48_000);
+        params.channels = Some(2);
+        params.sample_format = Some(SampleFormat::F32);
+        let audio_stream = StreamInfo {
+            index: 1,
+            time_base: TimeBase::AUDIO_48K,
+            duration: None,
+            start_time: Some(0),
+            params: params.clone(),
+        };
+        let driver =
+            oxideav_sysaudio::driver_by_name("mock").expect("mock sysaudio driver available");
+        let output =
+            AudioOutput::open_with_driver(driver, &params, TimeBase::AUDIO_48K, false).unwrap();
+        playback.audio_stream = Some(audio_stream);
+        playback.audio_output = Some(output);
+        playback.first_audio_seconds = None;
+        playback.audio_anchor_seconds = None;
+
+        playback
+            .handle_session_message(SessionMsg::Frame {
+                kind: MediaType::Audio,
+                frame: audio_frame_lease(2_400, 0),
+            })
+            .unwrap();
+        assert!(playback.pending_audio_frame.is_none());
+
+        playback
+            .handle_session_message(SessionMsg::Frame {
+                kind: MediaType::Audio,
+                frame: audio_frame_lease(32, 500_000),
+            })
+            .unwrap();
+        assert!(playback.pending_audio_frame.is_some());
+        assert_eq!(playback.pump_block_reason(), Some("audio-frame-pending"));
+
+        tx.send(SessionMsg::Frame {
+            kind: MediaType::Video,
+            frame: FrameLease::from_frame(Frame::Video(VideoFrame {
+                pts: Some(90_000),
+                planes: Vec::new(),
+            })),
+        })
+        .unwrap();
+
+        playback.pump_session();
+        assert!(playback.pending_audio_frame.is_some());
+        assert!(playback.video_queue.is_empty());
+        assert!(matches!(
+            playback.rx.try_recv(),
+            Ok(SessionMsg::Frame {
+                kind: MediaType::Video,
+                ..
+            })
+        ));
     }
 
     #[test]

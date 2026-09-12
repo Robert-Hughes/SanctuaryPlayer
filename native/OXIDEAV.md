@@ -156,41 +156,52 @@ the H.264 video track and the AAC audio track.
 The sink forwards audio and video through one bounded two-message session channel.
 Video leases remain zero-copy/retained exactly as before. Decoded `Frame::Audio`
 values are converted with `oxideav-audio-filter::sample_convert::decode_to_f32`,
-interleaved, and pushed into a bounded `ringbuf` SPSC queue owned by
-`native/app/src/audio_output.rs`. The platform callback is supplied by
+interleaved, and merged into a timestamp-aware bounded SPSC PCM ring implemented in
+`native/app/src/audio_timeline.rs`. The platform callback is supplied by
 `oxideav-sysaudio`: FreeBSD/GhostBSD uses native OSS (`/dev/dsp`), Windows uses
 WASAPI, macOS uses CoreAudio, and Linux uses the first working configured backend.
 Sanctuary does not contain an OSS-specific device implementation.
 
-`AudioOutput` opens the device at the decoded stream rate/channel count, keeps the
-stream paused initially, and uses a 50 ms PCM preroll before it may start. If the
-device negotiates a different sample rate, Sanctuary runs the existing OxideAV
-polyphase `Resample` filter before f32 interleaving. A negotiated channel-count change
-is currently rejected explicitly rather than silently applying an incorrect remix.
-The ring is sized for roughly four seconds and the session stops draining the executor
-when audio headroom falls below roughly 250 ms; the existing bounded OxideAV channels
-then provide normal upstream back-pressure. During initial preroll Sanctuary permits
-up to eight video leases so interleaved video messages do not prevent the small audio
-preroll from filling.
+The audio ring's timeline is expressed as integer device-rate sample-frame PTS values.
+Each decoded frame PTS is rescaled from the stream time base onto that integer sample
+clock before queueing. Contiguous frames append directly; forward gaps are padded with
+zero PCM; fully stale frames are dropped; partially overlapping frames have only their
+already-covered prefix discarded. A frame without a PTS is treated as contiguous with
+the current expected end. If a gap or frame cannot yet fit, Sanctuary retains that exact
+decoded frame as the audio head of line, fills as much of the gap with zeroes as capacity
+permits, and stops draining later session messages until callback consumption creates
+enough room to retry it.
 
-Audio-device consumption is now the master media clock for A/V playback. The callback
-increments `played_samples` only for real PCM popped from the ring; backend-requested
-silence on underrun does **not** advance media time. The application establishes one
-common media-time origin from both stream start times when available, otherwise from
-the first timestamp observed on each stream, and preserves any initial A/V offset.
-Video PTS values are converted onto that same timeline and due/stale frames are chosen
-against the audio-derived position. Pause pauses the sysaudio stream, so the master
-clock freezes naturally. For media with no audio track, the earlier video-only clock
-remains as the fallback and still stalls when no decoded video is buffered.
+`AudioOutput` opens the device at the decoded stream rate/channel count, keeps the
+stream paused initially, and uses a 50 ms PCM preroll before it may start. A negotiated
+sample-rate or channel-count change is currently a hard error: resampling/remixing is
+deliberately deferred until its timestamp semantics are designed explicitly. The ring
+is sized for roughly four seconds. Normal A/V pumping still stops when both forward
+targets are ready, while a near-full audio ring and a deferred head-of-line frame provide
+additional upstream back-pressure.
+
+The sysaudio callback owns a `next_output_pts` cursor. For each requested destination
+block it first discards queued PCM older than that cursor, emits silence when the ring is
+empty or begins in the future, copies aligned PCM where available, and finally advances
+`next_output_pts` by the full requested block duration. Therefore a decoder miss does
+not stop audio time: silence occupies the missed presentation interval and late decoded
+samples are subsequently discarded or trimmed.
+
+The wider wall-clock/controller A/V clock redesign is intentionally not part of this
+change. For compatibility, the current player position is still derived from the audio
+timeline while an audio track is present, now using `next_output_pts` rather than a
+count of real PCM popped from the ring. Output latency is also not yet applied. Pause
+pauses the sysaudio stream, so this temporary position still freezes naturally. Media
+without audio retains the existing video-only fallback.
 
 `2fe9a28` in `oxideav-pipeline` is required for that fallback to be trustworthy. The
 pipeline previously synthesised sink-facing primary streams with `start_time: Some(0)`
 regardless of source metadata. Twitch MPEG-TS starts on a non-zero transport clock
 (the observed VOD first segment is around 70.024 s audio / 70.060 s video), so the
-fabricated zero made Sanctuary queue video around 70 s in the future while its audio
-master clock started at zero. The pipeline now preserves a known source start (rescaled
-when necessary) and leaves an unknown start as `None`; Sanctuary then anchors from the
-first actual decoded A/V PTS values. Runtime logs print those first PTS values and the
+fabricated zero made Sanctuary queue video around 70 s in the future while its then
+audio-derived clock started at zero. The pipeline now preserves a known source start
+(rescaled when necessary) and leaves an unknown start as `None`; Sanctuary then anchors
+from the first actual decoded A/V PTS values. Runtime logs print those first PTS values and the
 chosen media-timeline origin explicitly.
 
 Native HLS seeking is implemented by `b0234ab` (optional `PacketSource::seek_to`),
@@ -204,9 +215,9 @@ video queue, drains/discards pre-seek frames and waits for the matching barriers
 both routed A/V tracks. A successful `SeekFlush` carries the decode-safe MPEG-TS landing
 PTS; Sanctuary converts that back to media time, drops/reopens its PCM output so no
 pre-seek samples survive, resets video presentation, and lets the first post-seek AAC
-PTS establish the new audio-master epoch before normal preroll can resume. A rejected
-seek restores the previous position/play state and disables further seeks for that
-session. Rapid later seeks supersede older generations, whose stale barriers are ignored.
+PTS initialise the new audio timeline before normal preroll can resume. A rejected seek
+restores the previous position/play state and disables further seeks for that session.
+Rapid later seeks supersede older generations, whose stale barriers are ignored.
 
 `242ae29` tightens that behaviour at the Sanctuary boundary for expensive HLS/MPEG-TS
 seeks. Sanctuary now permits only one physical source seek to be in flight. Further
@@ -228,31 +239,30 @@ avoids probing the byte lengths of every preceding segment. Playlist `#EXTINF` t
 are also propagated as the player-visible duration.
 
 The audio and video frames arrive through one ordered, bounded session channel, so
-back-pressure must be decided for the A/V session as a whole. The first audio version
-incorrectly stopped draining that shared channel as soon as the four-frame video target
-was full. If audio messages were waiting behind those video frames, the PCM ring could
-empty, the audio master clock would stop, and the four future video frames could never
-become due: a stable self-stall. The corrected policy keeps draining while **either**
-forward target still needs data and stops only when both the video queue (four frames)
-and audio queue (about 500 ms) are ready. A separate eight-frame video hard cap drops
-excess decoded video if unusual output ordering is needed to reach pending audio; the
-audio ring retains its own hard capacity/headroom guard.
+back-pressure must be decided for the A/V session as a whole. Normal playback keeps
+draining while **either** forward target still needs data and stops when both the video
+queue (four frames) and audio queue (about 500 ms) are ready. A separate eight-frame
+video hard cap still prevents unusual output ordering from growing video without bound.
+
+Timestamp-aware audio adds one stronger ordering rule. If the next decoded audio frame
+cannot yet fit, it is retained as `pending_audio_frame` and no later shared-channel
+message is consumed until that same frame is accepted. This is the application-level
+equivalent of leaving the decoded frame at the head of the queue, and lets a large PTS
+gap be materialised incrementally as zero PCM without allowing later audio/video to
+overtake it.
 
 Runtime diagnostics are intentionally always available on stderr while native playback
-is active. Once per second Sanctuary prints playback state, master-clock position, the
-current pump/back-pressure reason, executor/sink completion, video queue depth/front/
-back PTS plus received/presented/dropped counts, and audio stream/preroll state, queued
-and free PCM duration, played-sample count, and underrun counters. The sink also emits
-a rate-limited line when the two-message session channel is full before it blocks. Play,
-pause, audio-clock anchoring, preroll completion, and audio device play/pause transitions
-are logged as discrete events. These diagnostics are intended to distinguish decoder,
-session-channel, video-queue, audio-ring, and device-clock stalls without requiring a
-profiler.
+is active. Once per second Sanctuary prints playback state, current player position, the
+pump/back-pressure reason, executor/sink completion, video queue depth/front/back PTS
+plus received/presented/dropped counts, and audio stream/preroll state, queued/free PCM
+duration, submitted sample count, `next_output_pts`, and underrun counters. The sink
+also emits a rate-limited line when the two-message session channel is full before it
+blocks. Play, pause, timeline anchoring, preroll completion, and audio device play/pause
+transitions are logged as discrete events.
 
-Because audio is now authoritative, real A/V sessions currently expose only 1.0x
-playback. Pitch-preserving time stretch/tempo control is a separate milestone; the UI
-must not move the media clock faster or slower than the samples actually consumed by
-the output device.
+Real A/V sessions currently expose only 1.0x playback. Pitch-preserving time
+stretch/tempo control remains a separate milestone; the forthcoming wall-clock A/V
+controller will define how independent audio/video presentation rates are adjusted.
 
 Before opening playback, Sanctuary now calls `oxideav_hls::inspect_hls()` on the signed
 master playlist. That is one bounded GET of the master only: the inspection returns
@@ -290,22 +300,24 @@ The desktop launcher accepts
 `--mute`, and `--decode-mode cpu|vdpau-readback|vdpau-direct`, using the same
 `VideoSource::parse` rules as the in-app Change Video flow. The decode mode defaults
 to `cpu`. `--mute` sets sysaudio's per-stream software gain to zero while leaving
-the audio callback and audio-master playback clock active.
+the audio callback and timestamp timeline active.
 
 Muted/paused GhostBSD validation against Twitch VOD `2386400830` confirms the real
 integration without producing sound. Both CPU and `vdpau-direct` runs selected the
 1280x720/60 HLS rendition, discovered AAC as 44.1 kHz stereo S16, and opened
 `sysaudio/oss` at 44.1 kHz stereo. The VDPAU run additionally initialised the NVIDIA
 580.173.02 streaming decoder and the four-slot `GLX interop2 -> Vulkan -> wgpu`
-bridge. A hardware-free `oxideav-sysaudio` mock regression proves that the 50 ms
-preroll gates start, consumed PCM advances the master clock, and an empty ring causes
-the clock to remain fixed while the callback emits silence. A separate real-network
-seek smoke test was run through `OxidePlayback` while remaining paused throughout:
-Twitch 160p requested media 300.000 s, selected segment 29 (`#EXTINF` start 290.290 s),
-landed on a video access point at media 298.334 s / raw 368.358 s, then received the
-first post-seek AAC epoch at media 298.368 s. The OSS stream never entered Playing.
-The temporary network-dependent test was removed afterwards. The full Sanctuary app
-suite currently passes 78 tests.
+bridge. A current muted `vdpau-direct` playing smoke test confirms the timestamp-aware
+path on real OSS: source/device both negotiated 44.1 kHz stereo, the PCM ring stayed near
+its 500 ms forward target, `next_output_pts` advanced by 44,100 sample frames per
+second, and no audio underruns were reported.
+
+The timestamp-aware audio path is covered primarily by deterministic mock/ring tests:
+contiguous PTS, missing PTS, partial/full overlap, late frames after underrun, small and
+ring-spanning gaps, incremental zero padding, whole-frame deferral on capacity pressure,
+empty/partial underflow, stale-buffer discard, future-ring silence, stereo sample-frame
+accounting, and head-of-line back-pressure are all pinned. The Sanctuary app suite
+currently passes 102 tests.
 
 This Twitch web-player GraphQL/Usher protocol is not a stable public playback API,
 so all Twitch-specific request shape, client ID and token handling remain isolated
@@ -313,20 +325,21 @@ in `twitch.rs` for straightforward future replacement.
 
 ## Audio integration
 
-The native audio path is now implemented around the decoder's sink-facing
-`CodecParameters`. The real Twitch VOD validation reports authoritative AAC output as
-44.1 kHz, two channels, S16; those parameters are passed to `AudioOutput` before PCM
-conversion. The sysaudio stream's negotiated format is then checked. Sample-rate
-mismatch is handled by OxideAV's polyphase resampler; channel-count mismatch remains a
-hard error until Sanctuary has an explicit speaker-layout/remix policy.
+The native audio path is implemented around the decoder's sink-facing
+`CodecParameters` plus the stream `TimeBase`. Incoming audio PTS values are rescaled
+onto integer output-sample-clock ticks and the PCM ring carries that timeline explicitly.
+The sysaudio stream's negotiated format is checked before playback; sample-rate and
+channel-count mismatches are both hard errors for now so no resampler can obscure the
+timestamp model while this work is being established.
 
-The current master clock counts PCM accepted by the device callback, not output
-latency. `oxideav-sysaudio::Stream::latency()` is available for future Bluetooth /
-network/output-pipeline compensation, but Sanctuary does not yet subtract that value
-from video scheduling. Output-device selection, volume controls, surround/downmix
-policy, and Android audio output are likewise future application work. In particular,
-`oxideav-sysaudio` has no Android backend today, so real A/V opening on Android will
-fail cleanly until an Android backend (for example AAudio) is added.
+`next_output_pts` describes the PTS immediately after the block most recently supplied
+to sysaudio, including any silence supplied for missing/late decoded audio. It is a
+submission-side timeline, not an estimate of what the listener hears. The already
+available `oxideav-sysaudio::Stream::latency()` API will be incorporated later when the
+wall-clock A/V controller is designed. Output-device selection, volume controls,
+surround/downmix policy, and Android audio output are likewise future application work.
+In particular, `oxideav-sysaudio` has no Android backend today, so real A/V opening on
+Android will fail cleanly until an Android backend (for example AAudio) is added.
 
 ## Local validation fixtures
 
@@ -346,10 +359,10 @@ experiment material used during this integration:
   the wider source-extraction investigation.
 
 Assistant-driven playback/audio tests for this work must remain muted unless sound
-is explicitly authorised. Use the sysaudio mock backend for callback/clock unit tests,
+is explicitly authorised. Use the sysaudio mock backend for callback/timeline unit tests,
 or pass `--mute` for real playing-state Sanctuary regressions so the audio callback and
-master clock still run without audible programme PCM. Paused playback remains suitable
-when a playing audio clock is not required.
+timestamp timeline still advance without audible programme PCM. Paused playback remains
+suitable when callback advancement is not required.
 
 ## Current SanctuaryPlayer follow-ups
 

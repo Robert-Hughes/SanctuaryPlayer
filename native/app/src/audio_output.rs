@@ -2,33 +2,29 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
-use ::oxideav::core::{AudioFrame, CodecParameters};
-use oxideav_audio_filter::{
-    AudioFilter, AudioStreamParams, Resample, sample_convert::decode_to_f32,
-};
-use oxideav_sysaudio::{self as sysaudio, Driver, StreamRequest};
-use ringbuf::{
-    HeapRb,
-    traits::{Consumer, Observer, Producer, Split},
-};
+use ::oxideav::core::{AudioFrame, CodecParameters, TimeBase};
+use oxideav_audio_filter::{AudioStreamParams, sample_convert::decode_to_f32};
+use oxideav_sysaudio::{self as sysaudio, Driver, StreamFormat, StreamRequest};
+
+use crate::audio_timeline::{PcmTimelineProducer, QueueResult, pcm_timeline_ring};
 
 const RING_SECONDS: usize = 4;
 const PREROLL_MILLIS: u64 = 50;
 
-/// Sanctuary-owned decoded-audio output. OxideAV pushes decoded `AudioFrame`s
-/// on the application thread; the platform audio callback pulls interleaved
-/// f32 samples from the bounded SPSC ring without taking a mutex.
+/// Sanctuary-owned decoded-audio output. Decoded `AudioFrame`s are converted
+/// to interleaved f32 PCM and merged into a timestamp-aware bounded ring on the
+/// application thread. The platform audio callback consumes exactly the PTS it
+/// needs next, dropping stale PCM and inserting silence for unavailable time.
 pub(crate) struct AudioOutput {
     stream: sysaudio::Stream,
-    producer: ringbuf::HeapProd<f32>,
-    played_samples: Arc<AtomicU64>,
+    producer: PcmTimelineProducer,
+    submitted_samples: Arc<AtomicU64>,
     underrun_callbacks: Arc<AtomicU64>,
     underrun_samples: Arc<AtomicU64>,
     callback_active: Arc<AtomicBool>,
     source_params: AudioStreamParams,
+    source_time_base: TimeBase,
     device_rate: u32,
-    device_channels: u16,
-    resampler: Option<Resample>,
     media_origin: Option<Duration>,
     preroll_target_samples: u64,
     preroll_done: bool,
@@ -37,15 +33,20 @@ pub(crate) struct AudioOutput {
 }
 
 impl AudioOutput {
-    pub(crate) fn open(params: &CodecParameters, muted: bool) -> Result<Self, String> {
+    pub(crate) fn open(
+        params: &CodecParameters,
+        time_base: TimeBase,
+        muted: bool,
+    ) -> Result<Self, String> {
         let driver = sysaudio::default_driver()
             .ok_or_else(|| "oxideav-sysaudio: no usable audio output backend".to_owned())?;
-        Self::open_with_driver(driver, params, muted)
+        Self::open_with_driver(driver, params, time_base, muted)
     }
 
-    fn open_with_driver(
+    pub(crate) fn open_with_driver(
         driver: Driver,
         params: &CodecParameters,
+        time_base: TimeBase,
         muted: bool,
     ) -> Result<Self, String> {
         let source_rate = params
@@ -59,48 +60,45 @@ impl AudioOutput {
         let source_format = params
             .sample_format
             .ok_or_else(|| "decoded audio stream has no sample format".to_owned())?;
+        if !time_base.is_valid() {
+            return Err("decoded audio stream has no valid time base".to_owned());
+        }
         let source_params = AudioStreamParams {
             format: source_format,
             channels: source_channels,
             sample_rate: source_rate,
         };
 
-        let capacity = (source_rate.max(48_000) as usize)
-            .saturating_mul(source_channels.max(1) as usize)
+        let capacity_frames = (source_rate as usize)
             .saturating_mul(RING_SECONDS)
-            .max(8192);
-        let rb = HeapRb::<f32>::new(capacity);
-        let (producer, mut consumer) = rb.split();
-        let played_samples = Arc::new(AtomicU64::new(0));
-        let played_samples_cb = Arc::clone(&played_samples);
+            .max(4096);
+        let (producer, mut consumer) = pcm_timeline_ring(capacity_frames, source_channels);
+        let submitted_samples = Arc::new(AtomicU64::new(0));
+        let submitted_samples_cb = Arc::clone(&submitted_samples);
         let underrun_callbacks = Arc::new(AtomicU64::new(0));
         let underrun_callbacks_cb = Arc::clone(&underrun_callbacks);
         let underrun_samples = Arc::new(AtomicU64::new(0));
         let underrun_samples_cb = Arc::clone(&underrun_samples);
         let callback_active = Arc::new(AtomicBool::new(false));
         let callback_active_cb = Arc::clone(&callback_active);
-        let callback_channels = source_channels.max(1) as usize;
 
         let request = StreamRequest::new(source_rate, source_channels);
         let mut stream = sysaudio::open(driver, request, move |out, _info| {
-            let written = consumer.pop_slice(out);
-            if written < out.len() && callback_active_cb.load(Ordering::Relaxed) {
-                underrun_callbacks_cb.fetch_add(1, Ordering::Relaxed);
-                underrun_samples_cb.fetch_add(
-                    ((out.len() - written) / callback_channels) as u64,
-                    Ordering::Relaxed,
-                );
+            let stats = consumer.fill(out);
+            if callback_active_cb.load(Ordering::Relaxed) {
+                submitted_samples_cb.fetch_add(stats.output_frames, Ordering::Relaxed);
+                if stats.silence_frames != 0 {
+                    underrun_callbacks_cb.fetch_add(1, Ordering::Relaxed);
+                    underrun_samples_cb.fetch_add(stats.silence_frames, Ordering::Relaxed);
+                }
             }
-            out[written..].fill(0.0);
-            debug_assert_eq!(written % callback_channels, 0);
-            played_samples_cb.fetch_add((written / callback_channels) as u64, Ordering::Relaxed);
         })
         .map_err(|error| format!("oxideav-sysaudio {} open failed: {error}", driver.name()))?;
 
         // Streams start immediately. Keep the device paused until Sanctuary has
         // enough decoded PCM for a small preroll and the user actually presses
-        // Play. The callback can race once before this pause, but the ring is
-        // empty so it can emit only silence and the media clock stays at zero.
+        // Play. A racing callback before this pause receives silence but cannot
+        // advance the uninitialised audio timeline.
         stream
             .pause()
             .map_err(|error| format!("oxideav-sysaudio {} pause failed: {error}", driver.name()))?;
@@ -110,23 +108,7 @@ impl AudioOutput {
         }
 
         let device = stream.format();
-        if device.channels != source_channels {
-            return Err(format!(
-                "oxideav-sysaudio {} negotiated {} channels for a {}-channel source; channel remixing is not implemented yet",
-                driver.name(),
-                device.channels,
-                source_channels
-            ));
-        }
-
-        let resampler = if device.sample_rate != source_rate {
-            Some(
-                Resample::new(source_rate, device.sample_rate)
-                    .map_err(|error| format!("configure audio resampler: {error}"))?,
-            )
-        } else {
-            None
-        };
+        validate_device_format(source_rate, source_channels, device, driver.name())?;
         let preroll_target_samples = ((device.sample_rate as u64) * PREROLL_MILLIS / 1000).max(1);
 
         eprintln!(
@@ -144,14 +126,13 @@ impl AudioOutput {
         Ok(Self {
             stream,
             producer,
-            played_samples,
+            submitted_samples,
             underrun_callbacks,
             underrun_samples,
             callback_active,
             source_params,
+            source_time_base: time_base,
             device_rate: device.sample_rate,
-            device_channels: device.channels,
-            resampler,
             media_origin: None,
             preroll_target_samples,
             preroll_done: false,
@@ -171,40 +152,7 @@ impl AudioOutput {
         self.apply_play_state()
     }
 
-    pub(crate) fn queue(&mut self, frame: &AudioFrame) -> Result<(), String> {
-        if self.resampler.is_some() {
-            let output = self
-                .resampler
-                .as_mut()
-                .expect("resampler checked above")
-                .process(frame, self.source_params)
-                .map_err(|error| format!("resample decoded audio: {error}"))?;
-            for frame in output {
-                self.queue_device_rate_frame(&frame)?;
-            }
-        } else {
-            self.queue_device_rate_frame(frame)?;
-        }
-        self.maybe_finish_preroll()
-    }
-
-    pub(crate) fn finish_input(&mut self) -> Result<(), String> {
-        let output = match self.resampler.as_mut() {
-            Some(resampler) => resampler
-                .flush(self.source_params)
-                .map_err(|error| format!("flush audio resampler: {error}"))?,
-            None => Vec::new(),
-        };
-        for frame in output {
-            self.queue_device_rate_frame(&frame)?;
-        }
-        // EOF is also a preroll boundary: a clip shorter than the normal
-        // target must still be allowed to start and drain.
-        self.preroll_done = true;
-        self.apply_play_state()
-    }
-
-    fn queue_device_rate_frame(&mut self, frame: &AudioFrame) -> Result<(), String> {
+    pub(crate) fn queue(&mut self, frame: &AudioFrame) -> Result<QueueResult, String> {
         let channels = decode_to_f32(
             frame,
             self.source_params.format,
@@ -212,21 +160,30 @@ impl AudioOutput {
         )
         .map_err(|error| format!("convert decoded audio to f32: {error}"))?;
         let interleaved = interleave(&channels, frame.samples as usize)?;
-        if self.producer.vacant_len() < interleaved.len() {
-            return Err(format!(
-                "audio ring has insufficient headroom: need {} f32 samples, have {}",
-                interleaved.len(),
-                self.producer.vacant_len()
-            ));
-        }
-        let pushed = self.producer.push_slice(&interleaved);
-        if pushed != interleaved.len() {
-            return Err(format!(
-                "audio ring accepted only {pushed} of {} f32 samples",
-                interleaved.len()
-            ));
-        }
-        Ok(())
+        let sample_time_base = TimeBase::from_rate(self.device_rate);
+        let frame_pts = match frame.pts {
+            Some(pts) => Some(
+                self.source_time_base
+                    .rescale_checked(pts, sample_time_base)
+                    .ok_or_else(|| {
+                        "cannot rescale decoded audio PTS to device sample time".to_owned()
+                    })?,
+            ),
+            None => None,
+        };
+
+        let result =
+            self.producer
+                .queue_interleaved(frame_pts, u64::from(frame.samples), &interleaved)?;
+        self.maybe_finish_preroll()?;
+        Ok(result)
+    }
+
+    pub(crate) fn finish_input(&mut self) -> Result<(), String> {
+        // EOF is also a preroll boundary: a clip shorter than the normal
+        // target must still be allowed to start and drain.
+        self.preroll_done = true;
+        self.apply_play_state()
     }
 
     fn maybe_finish_preroll(&mut self) -> Result<(), String> {
@@ -247,15 +204,19 @@ impl AudioOutput {
     }
 
     fn apply_play_state(&mut self) -> Result<(), String> {
-        let should_play = self.preroll_done && self.media_origin.is_some() && !self.user_paused;
+        let should_play = self.preroll_done
+            && self.media_origin.is_some()
+            && self.producer.origin_pts().is_some()
+            && !self.user_paused;
         if should_play == self.stream.is_playing() {
             return Ok(());
         }
         eprintln!(
-            "SanctuaryPlayer: audio stream {} queued={:.1}ms played={:.3}s",
+            "SanctuaryPlayer: audio stream {} queued={:.1}ms submitted={:.3}s next_output_pts={:?}",
             if should_play { "playing" } else { "paused" },
             self.queued_duration().as_secs_f64() * 1000.0,
-            duration_from_samples(self.played_samples(), self.device_rate).as_secs_f64(),
+            duration_from_samples(self.submitted_samples(), self.device_rate).as_secs_f64(),
+            self.producer.next_output_pts(),
         );
         self.callback_active.store(should_play, Ordering::Relaxed);
         let result = if should_play {
@@ -280,11 +241,11 @@ impl AudioOutput {
     }
 
     pub(crate) fn queued_samples(&self) -> u64 {
-        (self.producer.occupied_len() / self.device_channels.max(1) as usize) as u64
+        self.producer.queued_frames() as u64
     }
 
     pub(crate) fn headroom_samples(&self) -> u64 {
-        (self.producer.vacant_len() / self.device_channels.max(1) as usize) as u64
+        self.producer.vacant_frames() as u64
     }
 
     pub(crate) fn queue_target_samples(&self) -> u64 {
@@ -303,8 +264,12 @@ impl AudioOutput {
         duration_from_samples(self.headroom_samples(), self.device_rate)
     }
 
-    pub(crate) fn played_samples(&self) -> u64 {
-        self.played_samples.load(Ordering::Relaxed)
+    pub(crate) fn submitted_samples(&self) -> u64 {
+        self.submitted_samples.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn next_output_pts(&self) -> Option<i64> {
+        self.producer.next_output_pts()
     }
 
     pub(crate) fn underrun_callbacks(&self) -> u64 {
@@ -320,12 +285,33 @@ impl AudioOutput {
     }
 
     pub(crate) fn media_position(&self) -> Option<Duration> {
-        let origin = self.media_origin?;
-        Some(origin.saturating_add(duration_from_samples(
-            self.played_samples(),
-            self.device_rate,
-        )))
+        let media_origin = self.media_origin?;
+        let timeline_origin = self.producer.origin_pts()?;
+        let next_output = self.producer.next_output_pts()?;
+        let elapsed_samples = next_output.saturating_sub(timeline_origin).max(0) as u64;
+        Some(media_origin.saturating_add(duration_from_samples(elapsed_samples, self.device_rate)))
     }
+}
+
+fn validate_device_format(
+    source_rate: u32,
+    source_channels: u16,
+    device: StreamFormat,
+    backend_name: &str,
+) -> Result<(), String> {
+    if device.channels != source_channels {
+        return Err(format!(
+            "oxideav-sysaudio {backend_name} negotiated {} channels for a {source_channels}-channel source; channel remixing is not implemented yet",
+            device.channels
+        ));
+    }
+    if device.sample_rate != source_rate {
+        return Err(format!(
+            "oxideav-sysaudio {backend_name} negotiated {} Hz for a {source_rate} Hz source; audio resampling is intentionally unsupported in Sanctuary for now",
+            device.sample_rate
+        ));
+    }
+    Ok(())
 }
 
 fn interleave(channels: &[Vec<f32>], samples: usize) -> Result<Vec<f32>, String> {
@@ -356,7 +342,7 @@ fn duration_from_samples(samples: u64, rate: u32) -> Duration {
 
 #[cfg(test)]
 mod tests {
-    use ::oxideav::core::{CodecId, SampleFormat};
+    use ::oxideav::core::{CodecId, SampleFormat as CoreSampleFormat};
 
     use super::*;
 
@@ -364,11 +350,11 @@ mod tests {
         let mut params = CodecParameters::audio(CodecId::new("aac"));
         params.sample_rate = Some(48_000);
         params.channels = Some(2);
-        params.sample_format = Some(SampleFormat::F32);
+        params.sample_format = Some(CoreSampleFormat::F32);
         params
     }
 
-    fn f32_stereo_frame(samples: usize) -> AudioFrame {
+    fn f32_stereo_frame(samples: usize, pts: Option<i64>) -> AudioFrame {
         let mut bytes = Vec::with_capacity(samples * 2 * 4);
         for _ in 0..samples {
             bytes.extend_from_slice(&0.25f32.to_le_bytes());
@@ -376,7 +362,7 @@ mod tests {
         }
         AudioFrame {
             samples: samples as u32,
-            pts: Some(0),
+            pts,
             data: vec![bytes],
         }
     }
@@ -408,43 +394,79 @@ mod tests {
     #[test]
     fn muted_output_sets_software_gain_to_zero() {
         let driver = sysaudio::driver_by_name("mock").expect("mock sysaudio driver");
-        let output = AudioOutput::open_with_driver(driver, &mock_audio_params(), true).unwrap();
+        let output =
+            AudioOutput::open_with_driver(driver, &mock_audio_params(), TimeBase::AUDIO_48K, true)
+                .unwrap();
         assert_eq!(output.stream.volume(), 0.0);
     }
 
     #[test]
-    fn mock_output_uses_real_pcm_consumption_as_master_clock() {
+    fn audio_frame_pts_is_rescaled_to_integer_device_sample_pts() {
         let driver = sysaudio::driver_by_name("mock").expect("mock sysaudio driver");
         let mut output =
-            AudioOutput::open_with_driver(driver, &mock_audio_params(), false).unwrap();
-        output.set_media_origin(Duration::from_secs(2)).unwrap();
+            AudioOutput::open_with_driver(driver, &mock_audio_params(), TimeBase::MPEG_TS, false)
+                .unwrap();
+        output
+            .queue(&f32_stereo_frame(2_400, Some(90_000)))
+            .unwrap();
+        assert_eq!(output.producer.origin_pts(), Some(48_000));
+        assert_eq!(output.producer.ring_end_pts(), Some(50_400));
+    }
 
-        output.queue(&f32_stereo_frame(2_400)).unwrap();
+    #[test]
+    fn missing_frame_pts_is_accepted_as_contiguous() {
+        let driver = sysaudio::driver_by_name("mock").expect("mock sysaudio driver");
+        let mut output =
+            AudioOutput::open_with_driver(driver, &mock_audio_params(), TimeBase::AUDIO_48K, false)
+                .unwrap();
+        output.queue(&f32_stereo_frame(1_000, Some(5_000))).unwrap();
+        output.queue(&f32_stereo_frame(500, None)).unwrap();
+        assert_eq!(output.producer.ring_end_pts(), Some(6_500));
+    }
+
+    #[test]
+    fn device_rate_mismatch_is_rejected_instead_of_resampled() {
+        let device = StreamFormat {
+            sample_rate: 44_100,
+            channels: 2,
+            format: sysaudio::SampleFormat::F32,
+        };
+        let error = validate_device_format(48_000, 2, device, "mock").unwrap_err();
+        assert!(error.contains("resampling is intentionally unsupported"));
+    }
+
+    #[test]
+    fn device_channel_mismatch_is_rejected() {
+        let device = StreamFormat {
+            sample_rate: 48_000,
+            channels: 1,
+            format: sysaudio::SampleFormat::F32,
+        };
+        let error = validate_device_format(48_000, 2, device, "mock").unwrap_err();
+        assert!(error.contains("channel remixing is not implemented"));
+    }
+
+    #[test]
+    fn mock_output_advances_next_output_pts_for_every_submitted_block() {
+        let driver = sysaudio::driver_by_name("mock").expect("mock sysaudio driver");
+        let mut output =
+            AudioOutput::open_with_driver(driver, &mock_audio_params(), TimeBase::AUDIO_48K, false)
+                .unwrap();
+        output.set_media_origin(Duration::from_secs(2)).unwrap();
+        output.queue(&f32_stereo_frame(2_400, Some(0))).unwrap();
         assert!(output.preroll_ready());
         assert_eq!(output.media_position(), Some(Duration::from_secs(2)));
 
         output.set_paused(false).unwrap();
         let deadline = std::time::Instant::now() + Duration::from_secs(1);
-        while output.queued_samples() != 0 && std::time::Instant::now() < deadline {
+        while output.submitted_samples() < 2_400 && std::time::Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(5));
         }
-        assert_eq!(output.queued_samples(), 0, "mock device did not drain PCM");
-        let drained = output.media_position().expect("audio clock anchored");
-        assert!(drained >= Duration::from_millis(2_045));
-        assert!(drained <= Duration::from_millis(2_055));
-
-        std::thread::sleep(Duration::from_millis(40));
-        assert_eq!(output.media_position(), Some(drained));
         output.set_paused(true).unwrap();
-    }
-
-    #[test]
-    fn source_format_is_kept_for_resampler_conversion() {
-        let params = AudioStreamParams {
-            format: SampleFormat::F32P,
-            channels: 2,
-            sample_rate: 48_000,
-        };
-        assert_eq!(params.format, SampleFormat::F32P);
+        assert!(output.submitted_samples() >= 2_400);
+        assert!(
+            output.media_position().expect("audio timeline initialised")
+                >= Duration::from_millis(2_050)
+        );
     }
 }
