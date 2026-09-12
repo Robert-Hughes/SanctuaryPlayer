@@ -172,13 +172,17 @@ decoded frame as the audio head of line, fills as much of the gap with zeroes as
 permits, and stops draining later session messages until callback consumption creates
 enough room to retry it.
 
-`AudioOutput` opens the device at the decoded stream rate/channel count, keeps the
-stream paused initially, and uses a 50 ms PCM preroll before it may start. A negotiated
-sample-rate or channel-count change is currently a hard error: resampling/remixing is
-deliberately deferred until its timestamp semantics are designed explicitly. The ring
-is sized for roughly four seconds. Normal A/V pumping still stops when both forward
-targets are ready, while a near-full audio ring and a deferred head-of-line frame provide
-additional upstream back-pressure.
+Initial sink-facing audio metadata can be provisional for in-band configured codecs.
+Sanctuary therefore does not open `AudioOutput` from `JobSink::start()`. The staged
+pipeline emits an ordered `stream_update()` after the decoder has consumed a packet and
+learned its actual PCM shape; Sanctuary opens the device only once rate, channels and
+sample format are all authoritative, before the corresponding decoded frame can arrive.
+`AudioOutput` then keeps the device paused initially and uses a 50 ms PCM preroll before
+it may start. A negotiated sample-rate or channel-count change is currently a hard error:
+resampling/remixing is deliberately deferred until its timestamp semantics are designed
+explicitly. The ring is sized for roughly four seconds. Normal A/V pumping still stops
+when both forward targets are ready, while a near-full audio ring and a deferred
+head-of-line frame provide additional upstream back-pressure.
 
 The sysaudio callback owns a `next_output_pts` cursor. For each requested destination
 block it first discards queued PCM older than that cursor, emits silence when the ring is
@@ -302,22 +306,22 @@ The desktop launcher accepts
 to `cpu`. `--mute` sets sysaudio's per-stream software gain to zero while leaving
 the audio callback and timestamp timeline active.
 
-Muted/paused GhostBSD validation against Twitch VOD `2386400830` confirms the real
-integration without producing sound. Both CPU and `vdpau-direct` runs selected the
-1280x720/60 HLS rendition, discovered AAC as 44.1 kHz stereo S16, and opened
-`sysaudio/oss` at 44.1 kHz stereo. The VDPAU run additionally initialised the NVIDIA
-580.173.02 streaming decoder and the four-slot `GLX interop2 -> Vulkan -> wgpu`
-bridge. A current muted `vdpau-direct` playing smoke test confirms the timestamp-aware
-path on real OSS: source/device both negotiated 44.1 kHz stereo, the PCM ring stayed near
-its 500 ms forward target, `next_output_pts` advanced by 44,100 sample frames per
-second, and no audio underruns were reported.
+Muted GhostBSD validation against Twitch VOD `2386400830` confirms the corrected
+in-band format discovery without producing sound. The initial MPEG-TS AAC stream now
+arrives with unknown rate/channels rather than a guessed 44.1 kHz shape; the first
+decoder `stream_update()` reports the actual **48 kHz stereo S16** output, and only then
+does Sanctuary open `sysaudio/oss` at 48 kHz stereo. A muted `vdpau-direct` playing
+smoke kept the PCM ring near its 500 ms forward target and advanced `next_output_pts` at
+48 kHz. Nine startup underrun callbacks occurred while first VDPAU presentation stalled
+for about 539 ms; the count then remained stable, so that is a separate preroll/startup
+issue rather than continuous PCM loss.
 
-The timestamp-aware audio path is covered primarily by deterministic mock/ring tests:
-contiguous PTS, missing PTS, partial/full overlap, late frames after underrun, small and
-ring-spanning gaps, incremental zero padding, whole-frame deferral on capacity pressure,
-empty/partial underflow, stale-buffer discard, future-ring silence, stereo sample-frame
-accounting, and head-of-line back-pressure are all pinned. The Sanctuary app suite
-currently passes 102 tests.
+The timestamp-aware audio path is covered by deterministic mock/ring tests: contiguous
+PTS, missing PTS, partial/full overlap, late frames after underrun, small and ring-spanning
+gaps, incremental zero padding, whole-frame deferral on capacity pressure, empty/partial
+underflow, stale-buffer discard, future-ring silence, stereo sample-frame accounting and
+head-of-line back-pressure. A player regression also pins deferred device opening from an
+authoritative 48 kHz stream update. The Sanctuary app suite currently passes 103 tests.
 
 This Twitch web-player GraphQL/Usher protocol is not a stable public playback API,
 so all Twitch-specific request shape, client ID and token handling remain isolated
@@ -325,12 +329,14 @@ in `twitch.rs` for straightforward future replacement.
 
 ## Audio integration
 
-The native audio path is implemented around the decoder's sink-facing
-`CodecParameters` plus the stream `TimeBase`. Incoming audio PTS values are rescaled
-onto integer output-sample-clock ticks and the PCM ring carries that timeline explicitly.
-The sysaudio stream's negotiated format is checked before playback; sample-rate and
-channel-count mismatches are both hard errors for now so no resampler can obscure the
-timestamp model while this work is being established.
+The native audio path is implemented around authoritative decoder `CodecParameters`
+plus the stream `TimeBase`. The initial sink description may contain unknown fields;
+`stream_update()` supplies the post-decode PCM shape before Sanctuary accepts the first
+audio frame. Incoming audio PTS values are then rescaled onto integer output-sample-clock
+ticks and the PCM ring carries that timeline explicitly. The sysaudio stream's negotiated
+format is checked before playback; sample-rate and channel-count mismatches are both hard
+errors for now so no resampler can obscure the timestamp model while this work is being
+established.
 
 `next_output_pts` describes the PTS immediately after the block most recently supplied
 to sysaudio, including any silence supplied for missing/late decoded audio. It is a

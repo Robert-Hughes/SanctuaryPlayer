@@ -86,6 +86,7 @@ impl PlaybackDiagnostics {
 
 enum SessionMsg {
     Started(Vec<StreamInfo>),
+    StreamUpdate(Box<StreamInfo>),
     Frame { kind: MediaType, frame: FrameLease },
     Barrier(BarrierKind),
     Finished,
@@ -95,6 +96,7 @@ impl SessionMsg {
     fn label(&self) -> &'static str {
         match self {
             Self::Started(_) => "start",
+            Self::StreamUpdate(_) => "stream-update",
             Self::Frame {
                 kind: MediaType::Audio,
                 ..
@@ -158,6 +160,10 @@ impl JobSink for SessionSink {
         self.send(SessionMsg::Started(streams.to_vec()))
     }
 
+    fn stream_update(&mut self, stream: &StreamInfo) -> ::oxideav::core::Result<()> {
+        self.send(SessionMsg::StreamUpdate(Box::new(stream.clone())))
+    }
+
     fn write_packet(&mut self, _kind: MediaType, _packet: &Packet) -> ::oxideav::core::Result<()> {
         Err(Error::unsupported(
             "SanctuaryPlayer playback sink requires decoded audio/video frames",
@@ -204,7 +210,6 @@ struct PlaybackSession {
 fn open_variant_session(
     variant_url: &Url,
     decode_mode: DecodeMode,
-    muted: bool,
 ) -> Result<PlaybackSession, String> {
     let input = hls_uri(variant_url);
     let job_json = serde_json::to_string(&json!({
@@ -255,16 +260,11 @@ fn open_variant_session(
         .find(|stream| stream.params.media_type == MediaType::Audio)
         .cloned();
 
-    let audio_output = match audio_stream.as_ref() {
-        Some(stream) => match AudioOutput::open(&stream.params, stream.time_base, muted) {
-            Ok(output) => Some(output),
-            Err(error) => {
-                stop_executor(executor);
-                return Err(format!("open audio output: {error}"));
-            }
-        },
-        None => None,
-    };
+    // Decoder output metadata may still be provisional here. In-band
+    // configured codecs such as MPEG-TS/ADTS AAC only learn their true PCM
+    // rate/channel shape after the first packet, so defer opening sysaudio
+    // until the ordered decoder StreamUpdate arrives.
+    let audio_output = None;
     let duration = streams.iter().filter_map(stream_duration).max();
     let first_video_seconds = stream_start_seconds(&video_stream);
     let first_audio_seconds = audio_stream.as_ref().and_then(stream_start_seconds);
@@ -285,17 +285,17 @@ fn open_variant_session(
     );
     if let Some(stream) = audio_stream.as_ref() {
         eprintln!(
-            "SanctuaryPlayer: OxideAV audio stream codec={} rate={}Hz channels={} format={:?} time_base={}/{}",
+            "SanctuaryPlayer: OxideAV provisional audio stream codec={} rate={:?}Hz channels={:?} format={:?} time_base={}/{}",
             stream.params.codec_id,
-            stream.params.sample_rate.unwrap_or(0),
-            stream.params.resolved_channels().unwrap_or(0),
+            stream.params.sample_rate,
+            stream.params.resolved_channels(),
             stream.params.sample_format,
             stream.time_base.num(),
             stream.time_base.den(),
         );
     }
 
-    let rates = if audio_output.is_some() {
+    let rates = if audio_stream.is_some() {
         vec![1.0]
     } else {
         vec![0.25, 0.5, 1.0, 1.5, 2.0]
@@ -328,7 +328,7 @@ impl OxidePlayback {
             "SanctuaryPlayer: HLS initial quality={} variant={}",
             quality_set.qualities[quality_set.preferred_index].label, selected_url
         );
-        let session = open_variant_session(&selected_url, decode_mode, muted)?;
+        let session = open_variant_session(&selected_url, decode_mode)?;
 
         Ok(Self {
             source,
@@ -512,6 +512,13 @@ impl OxidePlayback {
             return Some("audio-frame-pending");
         }
 
+        if self.audio_stream.is_some() && self.audio_output.is_none() {
+            // Keep draining until the decoder publishes authoritative PCM
+            // metadata; otherwise the video queue could fill first and hide
+            // the StreamUpdate behind shared-channel back-pressure.
+            return None;
+        }
+
         if let Some(audio) = self.audio_output.as_ref() {
             return av_pump_block_reason(AvPumpState {
                 state: &self.state,
@@ -577,6 +584,7 @@ impl OxidePlayback {
     fn handle_session_message(&mut self, message: SessionMsg) -> Result<(), String> {
         match message {
             SessionMsg::Started(_) => Ok(()),
+            SessionMsg::StreamUpdate(stream) => self.handle_stream_update(*stream),
             SessionMsg::Frame { kind, frame } => {
                 if self.seek_pending.is_some() {
                     if kind == MediaType::Video {
@@ -625,6 +633,76 @@ impl OxidePlayback {
                 self.sink_finished = true;
                 Ok(())
             }
+        }
+    }
+
+    fn handle_stream_update(&mut self, stream: StreamInfo) -> Result<(), String> {
+        self.handle_stream_update_with(stream, |stream, muted| {
+            AudioOutput::open(&stream.params, stream.time_base, muted)
+        })
+    }
+
+    fn handle_stream_update_with<F>(
+        &mut self,
+        stream: StreamInfo,
+        open_audio: F,
+    ) -> Result<(), String>
+    where
+        F: FnOnce(&StreamInfo, bool) -> Result<AudioOutput, String>,
+    {
+        match stream.params.media_type {
+            MediaType::Video => {
+                self.video_stream = stream;
+                Ok(())
+            }
+            MediaType::Audio => {
+                if let Some(previous) = self.audio_stream.as_ref()
+                    && self.audio_output.is_some()
+                    && !previous.params.matches_core(&stream.params)
+                {
+                    return Err(format!(
+                        "decoded audio format changed after output opened: {:?} -> {:?}",
+                        previous.params, stream.params
+                    ));
+                }
+
+                self.audio_stream = Some(stream.clone());
+                let complete = stream.params.sample_rate.is_some_and(|rate| rate > 0)
+                    && stream
+                        .params
+                        .resolved_channels()
+                        .is_some_and(|channels| channels > 0)
+                    && stream.params.sample_format.is_some();
+                if !complete {
+                    eprintln!(
+                        "SanctuaryPlayer: decoder audio stream update remains provisional codec={} rate={:?}Hz channels={:?} format={:?}",
+                        stream.params.codec_id,
+                        stream.params.sample_rate,
+                        stream.params.resolved_channels(),
+                        stream.params.sample_format,
+                    );
+                    return Ok(());
+                }
+
+                eprintln!(
+                    "SanctuaryPlayer: authoritative audio stream codec={} rate={}Hz channels={} format={:?} time_base={}/{}",
+                    stream.params.codec_id,
+                    stream.params.sample_rate.unwrap_or(0),
+                    stream.params.resolved_channels().unwrap_or(0),
+                    stream.params.sample_format,
+                    stream.time_base.num(),
+                    stream.time_base.den(),
+                );
+
+                if self.audio_output.is_none() {
+                    let mut audio = open_audio(&stream, self.muted)
+                        .map_err(|error| format!("open authoritative audio output: {error}"))?;
+                    audio.set_paused(!matches!(self.state, PlaybackState::Playing))?;
+                    self.audio_output = Some(audio);
+                }
+                Ok(())
+            }
+            _ => Ok(()),
         }
     }
 
@@ -1184,9 +1262,8 @@ impl PlaybackBackend for OxidePlayback {
         else {
             return;
         };
-        let muted = self.muted;
         if let Err(error) = self.switch_quality_with(index, |url, decode_mode| {
-            open_variant_session(url, decode_mode, muted)
+            open_variant_session(url, decode_mode)
         }) {
             self.fail(error);
         }
@@ -1498,6 +1575,47 @@ mod tests {
             pts: Some(pts),
             data: vec![bytes],
         }))
+    }
+
+    #[test]
+    fn authoritative_audio_update_opens_output_at_decoded_sample_rate() {
+        let (mut playback, _tx) = clock_test_playback();
+        playback.muted = true;
+        playback.audio_stream = Some(StreamInfo {
+            index: 1,
+            time_base: TimeBase::new(1, 90_000),
+            duration: None,
+            start_time: Some(6_300_000),
+            params: CodecParameters::audio(CodecId::new("aac")),
+        });
+        assert!(playback.audio_output.is_none());
+        assert_eq!(playback.pump_block_reason(), None);
+
+        let mut params = CodecParameters::audio(CodecId::new("aac"));
+        params.sample_rate = Some(48_000);
+        params.channels = Some(2);
+        params.sample_format = Some(SampleFormat::S16);
+        let update = StreamInfo {
+            index: 1,
+            time_base: TimeBase::new(1, 90_000),
+            duration: None,
+            start_time: Some(6_300_000),
+            params,
+        };
+
+        playback
+            .handle_stream_update_with(update, |stream, muted| {
+                let driver = oxideav_sysaudio::driver_by_name("mock")
+                    .expect("mock sysaudio driver available");
+                AudioOutput::open_with_driver(driver, &stream.params, stream.time_base, muted)
+            })
+            .unwrap();
+
+        let stream = playback.audio_stream.as_ref().unwrap();
+        assert_eq!(stream.params.sample_rate, Some(48_000));
+        assert_eq!(stream.params.channels, Some(2));
+        let output = playback.audio_output.as_ref().unwrap();
+        assert_eq!(output.queue_target_samples(), 24_000);
     }
 
     #[test]
