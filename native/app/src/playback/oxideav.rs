@@ -949,12 +949,7 @@ impl OxidePlayback {
                 }
 
                 self.audio_stream = Some(stream.clone());
-                let complete = stream.params.sample_rate.is_some_and(|rate| rate > 0)
-                    && stream
-                        .params
-                        .resolved_channels()
-                        .is_some_and(|channels| channels > 0)
-                    && stream.params.sample_format.is_some();
+                let complete = audio_stream_is_authoritative(&stream);
                 if !complete {
                     eprintln!(
                         "SanctuaryPlayer: decoder audio stream update remains provisional codec={} rate={:?}Hz channels={:?} format={:?}",
@@ -1116,14 +1111,24 @@ impl OxidePlayback {
         if let Some(audio) = self.audio_output.as_mut() {
             audio.set_paused(true)?;
         }
+        // The first post-barrier decoded audio PTS establishes the new audio
+        // epoch relative to the source-wide timeline origin.
+        self.audio_anchor_seconds = None;
         if let Some(stream) = self.audio_stream.as_ref() {
-            self.audio_output = Some(
-                AudioOutput::open(&stream.params, stream.time_base, self.muted)
-                    .map_err(|error| format!("reopen audio output after seek: {error}"))?,
-            );
-            // The first post-barrier decoded audio PTS establishes the new
-            // audio epoch relative to the source-wide timeline origin.
-            self.audio_anchor_seconds = None;
+            if audio_stream_is_authoritative(stream) {
+                self.audio_output = Some(
+                    AudioOutput::open(&stream.params, stream.time_base, self.muted)
+                        .map_err(|error| format!("reopen audio output after seek: {error}"))?,
+                );
+            } else {
+                // A freshly opened rendition can complete its seek before AAC
+                // has decoded enough data to publish rate/channels. The first
+                // ordered post-seek StreamUpdate will open AudioOutput.
+                self.audio_output = None;
+                eprintln!(
+                    "SanctuaryPlayer: seek completed before authoritative audio metadata; waiting for decoder stream update"
+                );
+            }
         }
 
         self.video_queue.clear();
@@ -1832,6 +1837,15 @@ fn stream_start_seconds(stream: &StreamInfo) -> Option<f64> {
     let ticks = stream.start_time?;
     let seconds = stream.time_base.seconds_of(ticks);
     seconds.is_finite().then_some(seconds)
+}
+
+fn audio_stream_is_authoritative(stream: &StreamInfo) -> bool {
+    stream.params.sample_rate.is_some_and(|rate| rate > 0)
+        && stream
+            .params
+            .resolved_channels()
+            .is_some_and(|channels| channels > 0)
+        && stream.params.sample_format.is_some()
 }
 
 fn timeline_origin_seconds(
@@ -2811,6 +2825,83 @@ mod tests {
         assert_eq!(playback.position, Duration::from_secs(30));
         assert_eq!(playback.state, PlaybackState::Playing);
         assert!(!playback.first_frame_presented);
+    }
+
+    #[test]
+    fn seek_completion_waits_for_authoritative_audio_after_fresh_session() {
+        let (mut playback, _tx) = clock_test_playback();
+        playback.state = PlaybackState::Seeking;
+        playback.position = Duration::from_secs(5);
+        playback.audio_stream = Some(StreamInfo {
+            index: 1,
+            time_base: TimeBase::new(1, 90_000),
+            duration: None,
+            start_time: Some(6_302_160),
+            params: CodecParameters::audio(CodecId::new("aac")),
+        });
+        playback.audio_output = None;
+        playback.audio_anchor_seconds = Some(70.024);
+        playback.seek_pending = Some(PendingSeek {
+            generation: 11,
+            requested: Duration::from_secs(5),
+            prior_position: Duration::ZERO,
+            resume_playing: false,
+            barriers_remaining: 2,
+            landing: None,
+            rejected: false,
+        });
+
+        playback
+            .handle_seek_barrier(BarrierKind::SeekFlush {
+                generation: 11,
+                landed_pts: 6_666_000,
+                time_base: TimeBase::new(1, 90_000),
+            })
+            .unwrap();
+        playback
+            .handle_seek_barrier(BarrierKind::SeekFlush {
+                generation: 11,
+                landed_pts: 6_666_000,
+                time_base: TimeBase::new(1, 90_000),
+            })
+            .unwrap();
+
+        assert!(playback.seek_pending.is_none());
+        assert_eq!(playback.state, PlaybackState::Paused);
+        assert!(
+            playback.audio_output.is_none(),
+            "seek completion must not open sysaudio from provisional AAC metadata"
+        );
+        assert!(
+            playback.audio_anchor_seconds.is_none(),
+            "the first post-seek audio PTS must establish the new audio epoch"
+        );
+
+        let mut params = CodecParameters::audio(CodecId::new("aac"));
+        params.sample_rate = Some(48_000);
+        params.channels = Some(2);
+        params.sample_format = Some(SampleFormat::S16);
+        let authoritative = StreamInfo {
+            index: 1,
+            time_base: TimeBase::new(1, 90_000),
+            duration: None,
+            start_time: Some(6_302_160),
+            params,
+        };
+
+        playback
+            .handle_stream_update_with(authoritative, |stream, muted| {
+                let driver = oxideav_sysaudio::driver_by_name("mock")
+                    .expect("mock sysaudio driver available");
+                AudioOutput::open_with_driver(driver, &stream.params, stream.time_base, muted)
+            })
+            .unwrap();
+
+        let output = playback
+            .audio_output
+            .as_ref()
+            .expect("authoritative post-seek update should open audio output");
+        assert_eq!(output.queue_target_samples(), 24_000);
     }
 
     #[test]

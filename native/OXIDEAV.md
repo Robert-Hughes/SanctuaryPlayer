@@ -366,9 +366,12 @@ and dispatches it through `ExecutorHandle::seek_with_generation()`. While a seek
 pending it exposes `PlaybackState::Seeking`, pauses OSS/WASAPI/CoreAudio, clears its
 video queue, drains/discards pre-seek frames and waits for the matching barriers from
 both routed A/V tracks. A successful `SeekFlush` carries the decode-safe MPEG-TS landing
-PTS; Sanctuary converts that back to media time, drops/reopens its PCM output so no
-pre-seek samples survive, resets video presentation, and lets the first post-seek AAC
-PTS initialise the new audio timeline before normal preroll can resume. A rejected seek
+PTS; Sanctuary converts that back to media time and discards the old PCM output so no
+pre-seek samples survive. If the current audio metadata is already authoritative it
+reopens the output immediately; a freshly opened quality rendition may still have
+provisional AAC metadata, in which case Sanctuary leaves audio closed until the first
+ordered post-seek `StreamUpdate` supplies rate/channels/format. The first post-seek AAC
+PTS then initialises the new audio timeline before normal preroll can resume. A rejected seek
 restores the previous position/play state and disables further seeks for that session.
 Rapid later seeks supersede older generations, whose stale barriers are ignored.
 
@@ -477,7 +480,7 @@ underflow, stale-buffer discard, future-ring silence, stereo sample-frame accoun
 audio-local head-of-line back-pressure. Playback regressions additionally pin independent
 audio/video TrackSink progress, cancellation of a blocked TrackSink, two-frame video
 back-pressure, authoritative late audio format discovery and multi-track seek barriers.
-The Sanctuary app suite currently passes **116 tests**.
+The Sanctuary app suite currently passes **117 tests**.
 
 This Twitch web-player GraphQL/Usher protocol is not a stable public playback API,
 so all Twitch-specific request shape, client ID and token handling remain isolated
