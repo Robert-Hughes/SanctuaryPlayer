@@ -3,9 +3,11 @@ use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError};
 use std::time::{Duration, Instant};
 
 use ::oxideav::core::{
-    Error, Frame, FrameLease, MediaType, Packet, Rounding, StreamInfo, TimeBase,
+    CancellationToken, Error, Frame, FrameLease, MediaType, Packet, Rounding, StreamInfo, TimeBase,
 };
-use ::oxideav::pipeline::{BarrierKind, CodecPreferences, Executor, ExecutorHandle, Job, JobSink};
+use ::oxideav::pipeline::{
+    BarrierKind, CodecPreferences, Executor, ExecutorHandle, Job, JobSink, TrackSink, TrackSinkInfo,
+};
 use oxideav_hls::{HlsPlaylistInfo, HlsVariant};
 use serde_json::json;
 use url::Url;
@@ -37,12 +39,12 @@ pub struct OxidePlayback {
     muted: bool,
     wake: PlaybackWake,
     rx: Receiver<SessionMsg>,
+    video_rx: Receiver<SessionMsg>,
     executor: Option<ExecutorHandle>,
     video_stream: StreamInfo,
     audio_stream: Option<StreamInfo>,
     audio_output: Option<AudioOutput>,
     pending_audio_frame: Option<FrameLease>,
-    pending_video_frame: Option<FrameLease>,
     video_queue: VecDeque<FrameLease>,
     video_clock: VideoClock,
     timeline_origin_seconds: Option<f64>,
@@ -192,66 +194,202 @@ impl SessionMsg {
 
 struct SessionSink {
     tx: SyncSender<SessionMsg>,
+    video_tx: SyncSender<SessionMsg>,
     wake: PlaybackWake,
+}
+
+impl SessionSink {
+    fn new(
+        tx: SyncSender<SessionMsg>,
+        video_tx: SyncSender<SessionMsg>,
+        wake: PlaybackWake,
+    ) -> Self {
+        Self { tx, video_tx, wake }
+    }
+
+    fn send_control(&mut self, message: SessionMsg) -> ::oxideav::core::Result<()> {
+        let wake_kind = message.wake_kind();
+        self.tx
+            .send(message)
+            .map_err(|_| Error::other("SanctuaryPlayer: playback receiver dropped"))?;
+        self.wake.wake(wake_kind);
+        Ok(())
+    }
+
+    fn send_legacy_track_message(
+        &mut self,
+        kind: MediaType,
+        message: SessionMsg,
+    ) -> ::oxideav::core::Result<()> {
+        let (tx, wake_kind, label) = match kind {
+            MediaType::Audio => (&self.tx, PlaybackWakeKind::Audio, "audio"),
+            MediaType::Video => (&self.video_tx, PlaybackWakeKind::Video, "video"),
+            _ => return Ok(()),
+        };
+        tx.send(message)
+            .map_err(|_| Error::other(format!("SanctuaryPlayer: {label} receiver dropped")))?;
+        self.wake.wake(wake_kind);
+        Ok(())
+    }
+}
+
+struct SessionTrackSink {
+    kind: MediaType,
+    tx: SyncSender<SessionMsg>,
+    wake: PlaybackWake,
+    cancellation: CancellationToken,
     blocked_sends: u64,
     last_backpressure_log: Option<Instant>,
 }
 
-impl SessionSink {
-    fn new(tx: SyncSender<SessionMsg>, wake: PlaybackWake) -> Self {
+impl SessionTrackSink {
+    fn new(
+        kind: MediaType,
+        tx: SyncSender<SessionMsg>,
+        wake: PlaybackWake,
+        cancellation: CancellationToken,
+    ) -> Self {
         Self {
+            kind,
             tx,
             wake,
+            cancellation,
             blocked_sends: 0,
             last_backpressure_log: None,
         }
     }
 
-    fn send(&mut self, message: SessionMsg) -> ::oxideav::core::Result<()> {
+    fn wake_kind(&self) -> PlaybackWakeKind {
+        match self.kind {
+            MediaType::Audio => PlaybackWakeKind::Audio,
+            MediaType::Video => PlaybackWakeKind::Video,
+            _ => PlaybackWakeKind::Control,
+        }
+    }
+
+    fn send(&mut self, mut message: SessionMsg) -> ::oxideav::core::Result<()> {
         let label = message.label();
-        let wake_kind = message.wake_kind();
-        match self.tx.try_send(message) {
-            Ok(()) => {
-                self.wake.wake(wake_kind);
-                Ok(())
+        let wake_kind = self.wake_kind();
+        loop {
+            if self.cancellation.is_cancelled() {
+                return Err(Error::cancelled(format!(
+                    "SanctuaryPlayer: {label} TrackSink send cancelled"
+                )));
             }
-            Err(TrySendError::Full(message)) => {
-                self.blocked_sends = self.blocked_sends.saturating_add(1);
-                let now = Instant::now();
-                if self
-                    .last_backpressure_log
-                    .is_none_or(|last| now.duration_since(last) >= DIAGNOSTIC_INTERVAL)
-                {
-                    eprintln!(
-                        "SanctuaryPlayer: pipeline sink backpressure channel=full waiting_for={} blocked_sends={}",
-                        label, self.blocked_sends
-                    );
-                    self.last_backpressure_log = Some(now);
+            match self.tx.try_send(message) {
+                Ok(()) => {
+                    self.wake.wake(wake_kind);
+                    return Ok(());
                 }
-                // Wake before the blocking send so the receiver can make room,
-                // then wake again after enqueue so no message can arrive after
-                // the event loop has already gone back to sleep.
-                self.wake.wake(wake_kind);
-                self.tx
-                    .send(message)
-                    .map_err(|_| Error::other("SanctuaryPlayer: playback receiver dropped"))?;
-                self.wake.wake(wake_kind);
-                Ok(())
-            }
-            Err(TrySendError::Disconnected(_)) => {
-                Err(Error::other("SanctuaryPlayer: playback receiver dropped"))
+                Err(TrySendError::Full(returned)) => {
+                    message = returned;
+                    self.blocked_sends = self.blocked_sends.saturating_add(1);
+                    let now = Instant::now();
+                    if self
+                        .last_backpressure_log
+                        .is_none_or(|last| now.duration_since(last) >= DIAGNOSTIC_INTERVAL)
+                    {
+                        eprintln!(
+                            "SanctuaryPlayer: TrackSink backpressure kind={:?} waiting_for={} blocked_sends={}",
+                            self.kind, label, self.blocked_sends
+                        );
+                        self.last_backpressure_log = Some(now);
+                    }
+                    // Wake the event loop before waiting so it can consume the
+                    // bounded channel. The short poll keeps the wait
+                    // cancellation-aware without exposing WouldBlock through
+                    // the OxideAV sink contract.
+                    self.wake.wake(wake_kind);
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                Err(TrySendError::Disconnected(_)) => {
+                    if self.cancellation.is_cancelled() {
+                        return Err(Error::cancelled(format!(
+                            "SanctuaryPlayer: {label} TrackSink receiver dropped during cancellation"
+                        )));
+                    }
+                    return Err(Error::other(format!(
+                        "SanctuaryPlayer: {label} TrackSink receiver dropped"
+                    )));
+                }
             }
         }
     }
 }
 
-impl JobSink for SessionSink {
-    fn start(&mut self, streams: &[StreamInfo]) -> ::oxideav::core::Result<()> {
-        self.send(SessionMsg::Started(streams.to_vec()))
+impl TrackSink for SessionTrackSink {
+    fn write_packet(
+        &mut self,
+        _stream_index: u32,
+        _kind: MediaType,
+        _packet: Packet,
+    ) -> ::oxideav::core::Result<()> {
+        Err(Error::unsupported(
+            "SanctuaryPlayer playback TrackSink requires decoded frames",
+        ))
+    }
+
+    fn write_frame_lease(
+        &mut self,
+        _stream_index: u32,
+        kind: MediaType,
+        frame: FrameLease,
+    ) -> ::oxideav::core::Result<()> {
+        if kind != self.kind {
+            return Err(Error::other(format!(
+                "SanctuaryPlayer: TrackSink kind mismatch expected={:?} got={kind:?}",
+                self.kind
+            )));
+        }
+        self.send(SessionMsg::Frame { kind, frame })
     }
 
     fn stream_update(&mut self, stream: &StreamInfo) -> ::oxideav::core::Result<()> {
         self.send(SessionMsg::StreamUpdate(Box::new(stream.clone())))
+    }
+
+    fn barrier(&mut self, barrier: BarrierKind) -> ::oxideav::core::Result<()> {
+        self.send(SessionMsg::Barrier(barrier))
+    }
+}
+
+impl JobSink for SessionSink {
+    fn start(&mut self, streams: &[StreamInfo]) -> ::oxideav::core::Result<()> {
+        self.send_control(SessionMsg::Started(streams.to_vec()))
+    }
+
+    fn open_track_sinks(
+        &mut self,
+        tracks: &[TrackSinkInfo],
+        cancellation: CancellationToken,
+    ) -> ::oxideav::core::Result<Option<Vec<Box<dyn TrackSink + Send>>>> {
+        let mut sinks: Vec<Box<dyn TrackSink + Send>> = Vec::with_capacity(tracks.len());
+        for track in tracks {
+            let kind = track.stream.params.media_type;
+            let tx = match kind {
+                MediaType::Audio => self.tx.clone(),
+                MediaType::Video => self.video_tx.clone(),
+                other => {
+                    return Err(Error::unsupported(format!(
+                        "SanctuaryPlayer: unsupported playback TrackSink media type {other:?}"
+                    )));
+                }
+            };
+            sinks.push(Box::new(SessionTrackSink::new(
+                kind,
+                tx,
+                self.wake.clone(),
+                cancellation.clone(),
+            )));
+        }
+        Ok(Some(sinks))
+    }
+
+    fn stream_update(&mut self, stream: &StreamInfo) -> ::oxideav::core::Result<()> {
+        self.send_legacy_track_message(
+            stream.params.media_type,
+            SessionMsg::StreamUpdate(Box::new(stream.clone())),
+        )
     }
 
     fn write_packet(&mut self, _kind: MediaType, _packet: &Packet) -> ::oxideav::core::Result<()> {
@@ -269,23 +407,21 @@ impl JobSink for SessionSink {
         kind: MediaType,
         frame: FrameLease,
     ) -> ::oxideav::core::Result<()> {
-        if !matches!(kind, MediaType::Audio | MediaType::Video) {
-            return Ok(());
-        }
-        self.send(SessionMsg::Frame { kind, frame })
+        self.send_legacy_track_message(kind, SessionMsg::Frame { kind, frame })
     }
 
     fn barrier(&mut self, barrier: BarrierKind) -> ::oxideav::core::Result<()> {
-        self.send(SessionMsg::Barrier(barrier))
+        self.send_control(SessionMsg::Barrier(barrier))
     }
 
     fn finish(&mut self) -> ::oxideav::core::Result<()> {
-        self.send(SessionMsg::Finished)
+        self.send_control(SessionMsg::Finished)
     }
 }
 
 struct PlaybackSession {
     rx: Receiver<SessionMsg>,
+    video_rx: Receiver<SessionMsg>,
     executor: Option<ExecutorHandle>,
     video_stream: StreamInfo,
     audio_stream: Option<StreamInfo>,
@@ -319,7 +455,8 @@ fn open_variant_session(
 
     let codec_preferences = codec_preferences(decode_mode);
     let (tx, rx) = mpsc::sync_channel(SESSION_CHANNEL_CAP);
-    let sink = Box::new(SessionSink::new(tx, wake));
+    let (video_tx, video_rx) = mpsc::sync_channel(SESSION_CHANNEL_CAP);
+    let sink = Box::new(SessionSink::new(tx, video_tx, wake));
     let executor = Executor::new(&job, &registries)
         .with_sink_override("@display", sink)
         .with_codec_preferences(codec_preferences)
@@ -390,6 +527,7 @@ fn open_variant_session(
 
     Ok(PlaybackSession {
         rx,
+        video_rx,
         executor: Some(executor),
         video_stream,
         audio_stream,
@@ -433,12 +571,12 @@ impl OxidePlayback {
             muted,
             wake,
             rx: session.rx,
+            video_rx: session.video_rx,
             executor: session.executor,
             video_stream: session.video_stream,
             audio_stream: session.audio_stream,
             audio_output: session.audio_output,
             pending_audio_frame: None,
-            pending_video_frame: None,
             video_queue: VecDeque::new(),
             video_clock: VideoClock::default(),
             timeline_origin_seconds: session.timeline_origin_seconds,
@@ -465,26 +603,28 @@ impl OxidePlayback {
         // stopped draining.
         let (_placeholder_tx, placeholder_rx) = mpsc::sync_channel(1);
         let old_rx = std::mem::replace(&mut self.rx, placeholder_rx);
+        let (_video_placeholder_tx, video_placeholder_rx) = mpsc::sync_channel(1);
+        let old_video_rx = std::mem::replace(&mut self.video_rx, video_placeholder_rx);
         drop(old_rx);
+        drop(old_video_rx);
 
         if let Some(executor) = self.executor.take() {
             stop_executor(executor);
         }
         self.audio_output = None;
         self.pending_audio_frame = None;
-        self.pending_video_frame = None;
         self.video_queue.clear();
         self.video_clock.reset();
     }
 
     fn install_session(&mut self, session: PlaybackSession) {
         self.rx = session.rx;
+        self.video_rx = session.video_rx;
         self.executor = session.executor;
         self.video_stream = session.video_stream;
         self.audio_stream = session.audio_stream;
         self.audio_output = session.audio_output;
         self.pending_audio_frame = None;
-        self.pending_video_frame = None;
         self.duration = session.duration;
         self.rates = session.rates;
         self.position = Duration::ZERO;
@@ -606,10 +746,6 @@ impl OxidePlayback {
         if self.pending_audio_frame.is_some() {
             return Some("audio-frame-pending");
         }
-        if self.pending_video_frame.is_some() {
-            return Some("video-frame-pending");
-        }
-
         if self.audio_stream.is_some() && self.audio_output.is_none() {
             // Keep draining until the decoder publishes authoritative PCM
             // metadata; otherwise the video queue could fill first and hide
@@ -638,28 +774,48 @@ impl OxidePlayback {
         (self.video_queue.len() >= target).then_some("video-buffer-ready")
     }
 
-    fn should_pump(&self) -> bool {
-        self.pump_block_reason().is_none()
+    fn should_pump_main_channel(&self) -> bool {
+        if self.sink_finished || matches!(self.state, PlaybackState::Error(_)) {
+            return false;
+        }
+        if self.seek_pending.is_some() {
+            return true;
+        }
+        if self.pending_audio_frame.is_some() {
+            return false;
+        }
+        if self.audio_stream.is_some() && self.audio_output.is_none() {
+            return true;
+        }
+        let Some(audio) = self.audio_output.as_ref() else {
+            return true;
+        };
+        if audio.headroom_samples() < audio.minimum_headroom_samples() {
+            return false;
+        }
+        if !audio.preroll_ready() {
+            return true;
+        }
+        if matches!(self.state, PlaybackState::Paused) {
+            return false;
+        }
+        audio.queued_samples() < audio.queue_target_samples()
+    }
+
+    fn video_pump_limit(&self) -> usize {
+        if self.seek_pending.is_some() {
+            usize::MAX
+        } else if matches!(self.state, PlaybackState::Paused) {
+            usize::from(self.video_queue.is_empty())
+        } else {
+            VIDEO_QUEUE_CAP
+        }
     }
 
     fn pump_session(&mut self) {
-        if let Some(frame) = self.pending_video_frame.take()
-            && let Some(frame) = self.queue_video_frame(frame)
-        {
-            self.pending_video_frame = Some(frame);
-            self.collect_executor_result();
-            self.update_end_state();
-            return;
-        }
-
         if let Some(frame) = self.pending_audio_frame.take() {
             match self.queue_audio_frame(frame) {
-                Ok(Some(frame)) => {
-                    self.pending_audio_frame = Some(frame);
-                    self.collect_executor_result();
-                    self.update_end_state();
-                    return;
-                }
+                Ok(Some(frame)) => self.pending_audio_frame = Some(frame),
                 Ok(None) => {}
                 Err(error) => {
                     self.fail(error);
@@ -668,7 +824,7 @@ impl OxidePlayback {
             }
         }
 
-        while self.should_pump() {
+        while self.should_pump_main_channel() {
             match self.rx.try_recv() {
                 Ok(message) => {
                     if let Err(error) = self.handle_session_message(message) {
@@ -681,6 +837,21 @@ impl OxidePlayback {
                     self.sink_finished = true;
                     break;
                 }
+            }
+        }
+
+        loop {
+            if self.video_queue.len() >= self.video_pump_limit() {
+                break;
+            }
+            match self.video_rx.try_recv() {
+                Ok(message) => {
+                    if let Err(error) = self.handle_session_message(message) {
+                        self.fail(error);
+                        break;
+                    }
+                }
+                Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
             }
         }
 
@@ -719,7 +890,12 @@ impl OxidePlayback {
                             }
                             return Ok(());
                         }
-                        self.pending_video_frame = self.queue_video_frame(frame);
+                        if self.queue_video_frame(frame).is_some() {
+                            return Err(
+                                "video TrackSink delivered beyond the configured presentation lookahead"
+                                    .to_owned(),
+                            );
+                        }
                         Ok(())
                     }
                     MediaType::Audio => {
@@ -950,7 +1126,6 @@ impl OxidePlayback {
             self.audio_anchor_seconds = None;
         }
 
-        self.pending_video_frame = None;
         self.video_queue.clear();
         self.video_clock.reset();
         self.first_frame_presented = false;
@@ -1065,10 +1240,7 @@ impl OxidePlayback {
     }
 
     fn update_end_state(&mut self) {
-        if !self.sink_finished
-            || !self.video_queue.is_empty()
-            || self.pending_video_frame.is_some()
-            || self.pending_audio_frame.is_some()
+        if !self.sink_finished || !self.video_queue.is_empty() || self.pending_audio_frame.is_some()
         {
             return;
         }
@@ -1277,7 +1449,6 @@ impl OxidePlayback {
             .map_err(|error| format!("dispatch OxideAV seek: {error}"))?;
 
         self.pending_audio_frame = None;
-        self.pending_video_frame = None;
         self.video_queue.clear();
         self.video_clock.reset();
         self.first_frame_presented = false;
@@ -1712,6 +1883,7 @@ mod tests {
 
     fn clock_test_playback() -> (OxidePlayback, SyncSender<SessionMsg>) {
         let (tx, rx) = mpsc::sync_channel(SESSION_CHANNEL_CAP);
+        let (_video_tx, video_rx) = mpsc::sync_channel(SESSION_CHANNEL_CAP);
         let video_stream = StreamInfo {
             index: 0,
             time_base: TimeBase::new(1, 90_000),
@@ -1735,12 +1907,12 @@ mod tests {
                 muted: false,
                 wake: PlaybackWake::noop(),
                 rx,
+                video_rx,
                 executor: None,
                 video_stream,
                 audio_stream: None,
                 audio_output: None,
                 pending_audio_frame: None,
-                pending_video_frame: None,
                 video_queue: VecDeque::new(),
                 video_clock: VideoClock {
                     origin: Some((90_000, Instant::now())),
@@ -1936,7 +2108,7 @@ mod tests {
     }
 
     #[test]
-    fn video_scheduler_drops_all_older_due_frames_before_presenting_latest_due() {
+    fn video_scheduler_drops_older_due_frame_before_presenting_newer_due() {
         let (mut playback, _tx) = clock_test_playback();
         let start = Instant::now();
         playback.video_clock.establish(0, start, true);
@@ -1945,15 +2117,13 @@ mod tests {
         playback
             .video_queue
             .push_back(video_frame_lease(Some(1_800)));
-        playback.pending_video_frame = Some(video_frame_lease(Some(2_700)));
 
         let frame = playback
             .take_due_frame_at(start + Duration::from_millis(30))
-            .expect("latest due frame");
-        assert_eq!(frame.pts(), Some(2_700));
-        assert_eq!(playback.diagnostics.dropped_video_frames, 2);
+            .expect("newer due frame");
+        assert_eq!(frame.pts(), Some(1_800));
+        assert_eq!(playback.diagnostics.dropped_video_frames, 1);
         assert!(playback.video_queue.is_empty());
-        assert!(playback.pending_video_frame.is_none());
     }
 
     #[test]
@@ -1989,7 +2159,6 @@ mod tests {
             .unwrap();
 
         assert!(playback.video_queue.is_empty());
-        assert!(playback.pending_video_frame.is_none());
         assert_eq!(playback.diagnostics.dropped_video_frames, 1);
     }
 
@@ -2076,8 +2245,10 @@ mod tests {
 
     fn replacement_test_session() -> PlaybackSession {
         let (_tx, rx) = mpsc::sync_channel(SESSION_CHANNEL_CAP);
+        let (_video_tx, video_rx) = mpsc::sync_channel(SESSION_CHANNEL_CAP);
         PlaybackSession {
             rx,
+            video_rx,
             executor: None,
             video_stream: StreamInfo {
                 index: 0,
@@ -2172,23 +2343,21 @@ mod tests {
     }
 
     #[test]
-    fn session_sink_wakes_after_video_message_is_enqueued() {
-        let (tx, rx) = mpsc::sync_channel(1);
+    fn session_track_sink_wakes_after_video_message_is_enqueued() {
+        let (video_tx, video_rx) = mpsc::sync_channel(1);
         let (wake_tx, wake_rx) = mpsc::channel();
         let wake = PlaybackWake::new(move || {
             wake_tx.send(()).unwrap();
         });
         let wake_probe = wake.clone();
-        let mut sink = SessionSink::new(tx, wake);
+        let mut sink =
+            SessionTrackSink::new(MediaType::Video, video_tx, wake, CancellationToken::new());
 
-        sink.send(SessionMsg::Frame {
-            kind: MediaType::Video,
-            frame: video_frame_lease(Some(90_000)),
-        })
-        .unwrap();
+        sink.write_frame_lease(0, MediaType::Video, video_frame_lease(Some(90_000)))
+            .unwrap();
 
         assert!(matches!(
-            rx.try_recv(),
+            video_rx.try_recv(),
             Ok(SessionMsg::Frame {
                 kind: MediaType::Video,
                 ..
@@ -2196,6 +2365,70 @@ mod tests {
         ));
         assert_eq!(wake_rx.try_recv(), Ok(()));
         assert!(wake_probe.take_pending().contains(PlaybackWakeKind::Video));
+    }
+
+    #[test]
+    fn blocked_video_track_sink_does_not_block_audio_track_sink() {
+        let (audio_tx, audio_rx) = mpsc::sync_channel(1);
+        let (video_tx, video_rx) = mpsc::sync_channel(1);
+        let cancellation = CancellationToken::new();
+        let mut video_sink = SessionTrackSink::new(
+            MediaType::Video,
+            video_tx,
+            PlaybackWake::noop(),
+            cancellation.clone(),
+        );
+        let mut audio_sink = SessionTrackSink::new(
+            MediaType::Audio,
+            audio_tx,
+            PlaybackWake::noop(),
+            cancellation,
+        );
+
+        video_sink
+            .write_frame_lease(0, MediaType::Video, video_frame_lease(Some(9_000)))
+            .unwrap();
+
+        let (done_tx, done_rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let result =
+                video_sink.write_frame_lease(0, MediaType::Video, video_frame_lease(Some(18_000)));
+            let _ = done_tx.send(result);
+        });
+
+        std::thread::sleep(Duration::from_millis(10));
+        assert!(matches!(done_rx.try_recv(), Err(mpsc::TryRecvError::Empty)));
+
+        audio_sink
+            .write_frame_lease(1, MediaType::Audio, audio_frame_lease(1_024, 0))
+            .unwrap();
+        assert!(matches!(
+            audio_rx.try_recv(),
+            Ok(SessionMsg::Frame {
+                kind: MediaType::Audio,
+                ..
+            })
+        ));
+
+        assert!(matches!(
+            video_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            SessionMsg::Frame {
+                kind: MediaType::Video,
+                ..
+            }
+        ));
+        done_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("video TrackSink should unblock after channel drains")
+            .unwrap();
+        assert!(matches!(
+            video_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            SessionMsg::Frame {
+                kind: MediaType::Video,
+                ..
+            }
+        ));
+        worker.join().unwrap();
     }
 
     #[test]
@@ -2264,56 +2497,184 @@ mod tests {
     }
 
     #[test]
-    fn third_video_frame_is_backpressured_instead_of_dropped() {
+    fn third_video_frame_stays_upstream_until_lookahead_has_space() {
         let (mut playback, _tx) = clock_test_playback();
+        let (video_tx, video_rx) = mpsc::sync_channel(SESSION_CHANNEL_CAP);
+        playback.video_rx = video_rx;
         playback.video_queue.clear();
-        playback.video_clock = VideoClock {
-            origin: None,
-            frozen_pts: Some(0),
-        };
+        playback
+            .video_queue
+            .push_back(video_frame_lease(Some(9_000)));
+        playback
+            .video_queue
+            .push_back(video_frame_lease(Some(18_000)));
+        playback.diagnostics.received_video_frames = 0;
         playback.diagnostics.dropped_video_frames = 0;
 
-        for pts in [9_000, 18_000, 27_000] {
-            playback
-                .handle_session_message(SessionMsg::Frame {
-                    kind: MediaType::Video,
-                    frame: video_frame_lease(Some(pts)),
-                })
-                .unwrap();
-        }
+        video_tx
+            .send(SessionMsg::Frame {
+                kind: MediaType::Video,
+                frame: video_frame_lease(Some(27_000)),
+            })
+            .unwrap();
 
-        assert_eq!(playback.video_queue.len(), VIDEO_QUEUE_CAP);
+        playback.pump_session();
+
         assert_eq!(
             playback
-                .pending_video_frame
-                .as_ref()
-                .and_then(FrameLease::pts),
-            Some(27_000)
+                .video_queue
+                .iter()
+                .filter_map(FrameLease::pts)
+                .collect::<Vec<_>>(),
+            vec![9_000, 18_000]
         );
+        assert_eq!(playback.diagnostics.received_video_frames, 0);
+        assert_eq!(playback.diagnostics.dropped_video_frames, 0);
+
+        playback.video_queue.pop_front();
+        playback.pump_session();
+
+        assert_eq!(
+            playback
+                .video_queue
+                .iter()
+                .filter_map(FrameLease::pts)
+                .collect::<Vec<_>>(),
+            vec![18_000, 27_000]
+        );
+        assert_eq!(playback.diagnostics.received_video_frames, 1);
         assert_eq!(playback.diagnostics.dropped_video_frames, 0);
     }
 
     #[test]
-    fn session_teardown_unblocks_a_sink_waiting_on_the_full_channel() {
-        let (mut playback, _old_tx) = clock_test_playback();
-        let (tx, rx) = mpsc::sync_channel(1);
-        let mut sink = SessionSink::new(tx, PlaybackWake::noop());
-        sink.send(SessionMsg::Started(Vec::new())).unwrap();
-        playback.rx = rx;
+    fn full_video_lookahead_does_not_starve_audio_from_shared_session_channel() {
+        let (mut playback, tx) = clock_test_playback();
+        let (video_tx, video_rx) = mpsc::sync_channel(SESSION_CHANNEL_CAP);
+        playback.video_rx = video_rx;
+
+        let mut params = CodecParameters::audio(CodecId::new("aac"));
+        params.sample_rate = Some(48_000);
+        params.channels = Some(2);
+        params.sample_format = Some(SampleFormat::F32);
+        let driver =
+            oxideav_sysaudio::driver_by_name("mock").expect("mock sysaudio driver available");
+        let output =
+            AudioOutput::open_with_driver(driver, &params, TimeBase::AUDIO_48K, false).unwrap();
+        playback.audio_stream = Some(StreamInfo {
+            index: 1,
+            time_base: TimeBase::AUDIO_48K,
+            duration: None,
+            start_time: Some(0),
+            params,
+        });
+        playback.audio_output = Some(output);
+        playback.first_audio_seconds = None;
+        playback.audio_anchor_seconds = None;
+
+        playback.video_clock = VideoClock {
+            origin: None,
+            frozen_pts: Some(0),
+        };
+        playback.video_queue.clear();
+        playback
+            .video_queue
+            .push_back(video_frame_lease(Some(9_000)));
+        playback
+            .video_queue
+            .push_back(video_frame_lease(Some(18_000)));
+        video_tx
+            .send(SessionMsg::Frame {
+                kind: MediaType::Video,
+                frame: video_frame_lease(Some(27_000)),
+            })
+            .unwrap();
+
+        tx.send(SessionMsg::Frame {
+            kind: MediaType::Audio,
+            frame: audio_frame_lease(1_024, 0),
+        })
+        .unwrap();
+
+        assert_eq!(playback.diagnostics.received_audio_frames, 0);
+        assert_eq!(
+            playback
+                .audio_output
+                .as_ref()
+                .expect("audio output")
+                .queued_samples(),
+            0
+        );
+
+        playback.pump_session();
+
+        assert_eq!(
+            playback.diagnostics.received_audio_frames, 1,
+            "audio must continue while the video TrackSink is backpressured"
+        );
+        assert!(
+            playback
+                .audio_output
+                .as_ref()
+                .expect("audio output")
+                .queued_samples()
+                > 0,
+            "pumped audio must reach the PCM timeline"
+        );
+        assert_eq!(
+            playback
+                .video_queue
+                .iter()
+                .filter_map(FrameLease::pts)
+                .collect::<Vec<_>>(),
+            vec![9_000, 18_000],
+            "future video must remain upstream while the lookahead is full"
+        );
+        assert_eq!(playback.diagnostics.received_video_frames, 0);
+        assert_eq!(playback.diagnostics.dropped_video_frames, 0);
+
+        playback.video_queue.pop_front();
+        playback.pump_session();
+
+        assert_eq!(
+            playback
+                .video_queue
+                .iter()
+                .filter_map(FrameLease::pts)
+                .collect::<Vec<_>>(),
+            vec![18_000, 27_000],
+            "the preserved future frame must arrive once lookahead has space"
+        );
+        assert_eq!(playback.diagnostics.received_video_frames, 1);
+        assert_eq!(playback.diagnostics.dropped_video_frames, 0);
+    }
+
+    #[test]
+    fn cancellation_unblocks_track_sink_waiting_on_full_channel() {
+        let (video_tx, _video_rx) = mpsc::sync_channel(1);
+        let cancellation = CancellationToken::new();
+        let mut sink = SessionTrackSink::new(
+            MediaType::Video,
+            video_tx,
+            PlaybackWake::noop(),
+            cancellation.clone(),
+        );
+        sink.write_frame_lease(0, MediaType::Video, video_frame_lease(Some(9_000)))
+            .unwrap();
 
         let (done_tx, done_rx) = mpsc::channel();
         let worker = std::thread::spawn(move || {
-            let result = sink.send(SessionMsg::Finished);
-            let _ = done_tx.send(result.is_err());
+            let result =
+                sink.write_frame_lease(0, MediaType::Video, video_frame_lease(Some(18_000)));
+            let _ = done_tx.send(result);
         });
 
         std::thread::sleep(Duration::from_millis(10));
-        playback.tear_down_session();
+        cancellation.cancel();
 
-        assert!(
-            done_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
-            "dropping the receiver should disconnect a blocked sink send"
-        );
+        let result = done_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("cancellation should wake a blocked TrackSink");
+        assert!(matches!(result, Err(ref error) if error.is_cancelled()));
         worker.join().unwrap();
     }
 

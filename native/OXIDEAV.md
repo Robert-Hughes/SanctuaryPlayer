@@ -150,10 +150,19 @@ its signed HLS master-playlist URL without invoking yt-dlp:
 `AppCommand::OpenVideo` keeps both URL resolution and OxideAV source opening off the
 winit event thread. After the Twitch resolver succeeds, the worker converts the
 ordinary `https://...m3u8` URL to `hls+https://...`, creates one OxideAV A/V job, and
-starts an `Executor` with a Sanctuary-owned `JobSink`. `@display` now requests both
-the H.264 video track and the AAC audio track.
+starts an `Executor` with a Sanctuary-owned `JobSink`. `@display` requests both the
+H.264 video track and the AAC audio track, so source acquisition and MPEG-TS demux remain
+one shared graph.
 
-The sink forwards audio and video through one bounded two-message session channel.
+For staged playback the `JobSink` opts into OxideAV's independent-track output mode.
+It creates one `TrackSink` for audio and one for video, each backed by its own bounded
+Sanctuary channel. The terminal worker of each OxideAV track calls its `TrackSink`
+directly: a direct decoder therefore has no decoded-frame output queue or mux worker
+between `receive_frame_lease()` and Sanctuary. Real decoder→filter and filter→encoder
+queues remain because they are genuine processing-stage boundaries. Blocking the video
+TrackSink backpressures only the video track; audio continues independently until bounded
+pressure eventually propagates through the video packet queue to the shared demuxer.
+
 Video leases remain zero-copy/retained exactly as before. Decoded `Frame::Audio`
 values are converted with `oxideav-audio-filter::sample_convert::decode_to_f32`,
 interleaved, and merged into a timestamp-aware bounded SPSC PCM ring implemented in
@@ -168,21 +177,19 @@ clock before queueing. Contiguous frames append directly; forward gaps are padde
 zero PCM; fully stale frames are dropped; partially overlapping frames have only their
 already-covered prefix discarded. A frame without a PTS is treated as contiguous with
 the current expected end. If a gap or frame cannot yet fit, Sanctuary retains that exact
-decoded frame as the audio head of line, fills as much of the gap with zeroes as capacity
-permits, and stops draining later session messages until callback consumption creates
-enough room to retry it.
+decoded frame as the audio head of line and stops draining its audio TrackSink channel
+until callback consumption creates enough room to retry it. This audio-local ordering
+does not block video delivery.
 
 Initial sink-facing audio metadata can be provisional for in-band configured codecs.
-Sanctuary therefore does not open `AudioOutput` from `JobSink::start()`. The staged
-pipeline emits an ordered `stream_update()` after the decoder has consumed a packet and
-learned its actual PCM shape; Sanctuary opens the device only once rate, channels and
-sample format are all authoritative, before the corresponding decoded frame can arrive.
-`AudioOutput` then keeps the device paused initially and uses a 50 ms PCM preroll before
-it may start. A negotiated sample-rate or channel-count change is currently a hard error:
-resampling/remixing is deliberately deferred until its timestamp semantics are designed
-explicitly. The ring is sized for roughly four seconds. Normal A/V pumping still stops
-when both forward targets are ready, while a near-full audio ring and a deferred
-head-of-line frame provide additional upstream back-pressure.
+Sanctuary therefore does not open `AudioOutput` from `JobSink::start()`. The audio
+track emits an ordered `TrackSink::stream_update()` after the decoder has consumed a
+packet and learned its actual PCM shape; Sanctuary opens the device only once rate,
+channels and sample format are authoritative, before the corresponding decoded frame can
+arrive. `AudioOutput` then keeps the device paused initially and uses a 50 ms PCM
+preroll before it may start. A negotiated sample-rate or channel-count change is
+currently a hard error: resampling/remixing is deliberately deferred until its timestamp
+semantics are designed explicitly. The ring is sized for roughly four seconds.
 
 The sysaudio callback owns a `next_output_pts` cursor. For each requested destination
 block it first discards queued PCM older than that cursor, emits silence when the ring is
@@ -242,27 +249,30 @@ MPEG-TS demuxer for the nearest video access point at or before the raw target P
 avoids probing the byte lengths of every preceding segment. Playlist `#EXTINF` totals
 are also propagated as the player-visible duration.
 
-The audio and video frames arrive through one ordered, bounded session channel, so
-back-pressure must be decided for the A/V session as a whole. Normal playback keeps
-draining while **either** forward target still needs data and stops when both the video
-queue (four frames) and audio queue (about 500 ms) are ready. A separate eight-frame
-video hard cap still prevents unusual output ordering from growing video without bound.
+Audio and video now arrive through separate bounded TrackSink channels. Sanctuary makes
+no assumption about cross-track callback interleaving: PTS is the media timeline, while
+ordering is guaranteed only within each track. Normal video presentation retains a
+two-frame decoded lookahead. When those two slots are full Sanctuary stops draining the
+video TrackSink channel; the next decoded frame therefore remains upstream and
+backpressures the video decoder instead of being copied into an extra hidden video
+buffer or discarded merely to service audio. Audio can continue filling its PCM
+timeline independently.
 
-Timestamp-aware audio adds one stronger ordering rule. If the next decoded audio frame
-cannot yet fit, it is retained as `pending_audio_frame` and no later shared-channel
-message is consumed until that same frame is accepted. This is the application-level
-equivalent of leaving the decoded frame at the head of the queue, and lets a large PTS
-gap be materialised incrementally as zero PCM without allowing later audio/video to
-overtake it.
+Timestamp-aware audio has its own head-of-line rule. If the next decoded audio frame
+cannot yet fit, it is retained as `pending_audio_frame` and Sanctuary stops draining
+later messages from the audio TrackSink channel until that exact frame is accepted.
+Video remains independent. Seek barriers and decoder stream updates travel through the
+same TrackSink as their media payloads, preserving the required per-track order; seek
+completion still waits for the matching barrier from every routed A/V track.
 
 Runtime diagnostics are intentionally always available on stderr while native playback
 is active. Once per second Sanctuary prints playback state, current player position, the
 pump/back-pressure reason, executor/sink completion, video queue depth/front/back PTS
 plus received/presented/dropped counts, and audio stream/preroll state, queued/free PCM
-duration, submitted sample count, `next_output_pts`, and underrun counters. The sink
-also emits a rate-limited line when the two-message session channel is full before it
-blocks. Play, pause, timeline anchoring, preroll completion, and audio device play/pause
-transitions are logged as discrete events.
+duration, submitted sample count, `next_output_pts`, and underrun counters. Each
+TrackSink also emits a rate-limited line when its bounded Sanctuary channel is full
+before it blocks. Play, pause, timeline anchoring, preroll completion, and audio device
+play/pause transitions are logged as discrete events.
 
 Real A/V sessions currently expose only 1.0x playback. Pitch-preserving time
 stretch/tempo control remains a separate milestone; the forthcoming wall-clock A/V
