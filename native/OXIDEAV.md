@@ -35,8 +35,8 @@ traits/types with incompatible Rust identities.
 The local OxideAV workspace provides the pieces needed for native playback:
 
 - FreeBSD OSS audio in `oxideav-sysaudio` (`5195ab8`).
-- HLS VOD source support with lazy MPEG-TS segment access (`147e0b6`, `65e03ab`,
-  `7f0acec`).
+- HLS VOD source support with lazy MPEG-TS segment access and one-segment
+  successor readahead (`147e0b6`, `65e03ab`, `5e4c400`, `7f0acec`).
 - Shared H.264 streaming frontends and software picture state (`1041a0f`,
   `8d2a3e5`).
 - FreeBSD VDPAU H.264 streaming decode (`1abfbe8`) with explicit unsupported-case
@@ -101,11 +101,18 @@ For the current Twitch/HLS path the graph is:
 
 ### Demuxing and bounded upstream coupling
 
-The selected HLS media playlist is opened once and feeds one MPEG-TS demuxer. TS
-packets are read sequentially, while audio and video PIDs have independent PES
-reassembly state. A completed audio PES and a completed video PES therefore do not
-form a useful global delivery sequence: **PTS is authoritative media time**, not
-cross-track callback order.
+The selected HLS media playlist is opened once and feeds one active MPEG-TS
+demuxer. TS packets are read sequentially, while audio and video PIDs have
+independent PES reassembly state. A completed audio PES and a completed video PES
+therefore do not form a useful global delivery sequence: **PTS is authoritative media
+time**, not cross-track callback order.
+
+`5e4c400` keeps this shared-source model while removing synchronous HTTP setup from
+normal segment boundaries. HLS maintains exactly one prepared successor outside the
+decoded A/V queues: a background worker opens the next segment and primes its MPEG-TS
+demuxer through the first packet. At EOF the prepared demuxer is installed directly.
+This readahead is intentionally independent of downstream backpressure and remains
+bounded to one successor rather than increasing decoded-frame or PCM lookahead.
 
 After demuxing, each routed track has its own bounded compressed-packet queue before
 its decoder. This lets one decoder or presenter lag temporarily without immediately
@@ -388,11 +395,14 @@ segment opens/access-point searches. A real paused Twitch regression requested 6
 and the final seek landed at 2398.911 s. The OSS stream remained paused throughout.
 
 The HLS source no longer models a VOD as one giant concatenated byte stream. It retains
-resolved segment URLs and cumulative `#EXTINF` timing, owns one MPEG-TS demuxer for the
-active segment, and on seek jumps directly to the target segment before asking the inner
-MPEG-TS demuxer for the nearest video access point at or before the raw target PTS. This
-avoids probing the byte lengths of every preceding segment. Playlist `#EXTINF` totals
-are also propagated as the player-visible duration.
+resolved segment URLs and cumulative `#EXTINF` timing, owns one active MPEG-TS demuxer
+plus one HLS-local prepared successor, and on seek jumps directly to the target segment
+before asking the inner MPEG-TS demuxer for the nearest video access point at or before
+the raw target PTS. A successful landing invalidates the previous successor slot and
+starts preparation after the actual landed segment; readahead failures are retained until
+the successor is needed. This avoids both probing every preceding segment length and the
+normal synchronous next-segment HTTP startup at EOF. Playlist `#EXTINF` totals are also
+propagated as the player-visible duration.
 
 Audio and video now arrive through separate bounded TrackSink channels. Sanctuary makes
 no assumption about cross-track callback interleaving: PTS is the media timeline, while
@@ -505,6 +515,16 @@ wall-clock A/V controller is designed. Output-device selection, volume controls,
 surround/downmix policy, and Android audio output are likewise future application work.
 In particular, `oxideav-sysaudio` has no Android backend today, so real A/V opening on
 Android will fail cleanly until an Android backend (for example AAudio) is added.
+
+### HLS successor-readahead validation
+
+After `5e4c400`, a muted real Twitch VOD regression using the native VDPAU path
+crossed the roughly 10 s and 20 s segment boundaries without source starvation:
+`underrun_callbacks` and `underrun_samples` remained zero, the audio queue stayed
+around its normal 500 ms target, and the video dropped-frame count remained at the
+three startup drops rather than jumping by a segment-sized batch. This directly
+regresses the previous boundary failure where both A/V queues emptied and playback
+then discarded overdue media to catch up.
 
 ## Local validation fixtures
 
