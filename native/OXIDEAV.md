@@ -383,11 +383,18 @@ pending it exposes `PlaybackState::Seeking`, pauses OSS/WASAPI/CoreAudio, clears
 video queue, drains/discards pre-seek frames and waits for the matching barriers from
 both routed A/V tracks. A successful `SeekFlush` carries the decode-safe MPEG-TS landing
 PTS; Sanctuary converts that back to media time and discards the old PCM output so no
-pre-seek samples survive. If the current audio metadata is already authoritative it
+pre-seek samples survive. The video-defined landing also becomes a temporary post-seek
+epoch floor for both tracks: decoded A/V frames timestamped before it are discarded
+until each track reaches the landed epoch. Video normally satisfies this immediately
+because the source seek itself lands on a video access point; the guard mainly protects
+audio from valid MPEG-TS mux skew where older AAC appears later in byte order.
+
+If the current audio metadata is already authoritative it
 reopens the output immediately; a freshly opened quality rendition may still have
 provisional AAC metadata, in which case Sanctuary leaves audio closed until the first
-ordered post-seek `StreamUpdate` supplies rate/channels/format. The first post-seek AAC
-PTS then initialises the new audio timeline before normal preroll can resume. A rejected seek
+ordered post-seek `StreamUpdate` supplies rate/channels/format. The first accepted AAC
+PTS at or after the landed epoch then initialises the new audio timeline before normal
+preroll can resume. A rejected seek
 restores the previous position/play state and disables further seeks for that session.
 Rapid later seeks supersede older generations, whose stale barriers are ignored.
 
@@ -551,6 +558,20 @@ and across the first HLS boundary, with no alternating audio/video queue collaps
 a longer run five startup underrun callbacks occurred before steady state, but the
 counter then remained unchanged through 13 s. This validates the larger packet depth
 as mux-interleave slack rather than presentation buffering.
+
+### Post-seek epoch-floor validation
+
+A muted real seek on VOD `2859508682` to 3721 s landed video at 3720.915 s
+(raw 3784.916 s). The post-seek guard accepted video immediately with zero
+pre-epoch drops, while audio discarded 115 decoded AAC frames whose timestamps
+were still before the video-defined landing. The first accepted audio frame was
+at 3720.917 s, only about 2 ms after the video landing, so that frame established
+the new audio epoch instead of the earlier mux-lagged AAC.
+
+After alignment, both tracks remained buffered through the following segment
+boundary with `underrun_callbacks=0` and `underrun_samples=0`. This confirms that
+the seek-specific defect was the stale audio epoch, while the symmetric video
+floor acts as an invariant check rather than a normally active correction.
 
 ## Local validation fixtures
 

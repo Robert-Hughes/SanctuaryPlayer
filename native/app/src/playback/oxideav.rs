@@ -64,6 +64,7 @@ pub struct OxidePlayback {
     first_frame_presented: bool,
     sink_finished: bool,
     seek_pending: Option<PendingSeek>,
+    post_seek_epoch: Option<PostSeekEpoch>,
     queued_seek: Option<Duration>,
     seek_supported: bool,
     diagnostics: PlaybackDiagnostics,
@@ -138,6 +139,15 @@ struct PendingSeek {
     barriers_remaining: usize,
     landing: Option<(i64, TimeBase)>,
     rejected: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct PostSeekEpoch {
+    floor: Duration,
+    audio_aligned: bool,
+    video_aligned: bool,
+    dropped_audio_frames: u64,
+    dropped_video_frames: u64,
 }
 
 struct PlaybackDiagnostics {
@@ -604,6 +614,7 @@ impl OxidePlayback {
             first_frame_presented: false,
             sink_finished: false,
             seek_pending: None,
+            post_seek_epoch: None,
             queued_seek: None,
             seek_supported: true,
             diagnostics: PlaybackDiagnostics::new(),
@@ -653,6 +664,7 @@ impl OxidePlayback {
         self.first_frame_presented = false;
         self.sink_finished = false;
         self.seek_pending = None;
+        self.post_seek_epoch = None;
         self.queued_seek = None;
         self.seek_supported = true;
         self.video_queue.clear();
@@ -889,12 +901,15 @@ impl OxidePlayback {
                     }
                     return Ok(());
                 }
-                self.observe_frame_timestamp(kind, frame.pts());
-                self.sync_audio_origin()?;
                 match kind {
                     MediaType::Video => {
                         self.diagnostics.received_video_frames =
                             self.diagnostics.received_video_frames.saturating_add(1);
+                        if self.drop_before_post_seek_epoch(kind, frame.pts()) {
+                            return Ok(());
+                        }
+                        self.observe_frame_timestamp(kind, frame.pts());
+                        self.sync_audio_origin()?;
                         if frame.pts().is_none() {
                             self.diagnostics.dropped_video_frames =
                                 self.diagnostics.dropped_video_frames.saturating_add(1);
@@ -919,6 +934,11 @@ impl OxidePlayback {
                     MediaType::Audio => {
                         self.diagnostics.received_audio_frames =
                             self.diagnostics.received_audio_frames.saturating_add(1);
+                        if self.drop_before_post_seek_epoch(kind, frame.pts()) {
+                            return Ok(());
+                        }
+                        self.observe_frame_timestamp(kind, frame.pts());
+                        self.sync_audio_origin()?;
                         self.pending_audio_frame = self.queue_audio_frame(frame)?;
                         Ok(())
                     }
@@ -1129,9 +1149,17 @@ impl OxidePlayback {
         if let Some(audio) = self.audio_output.as_mut() {
             audio.set_paused(true)?;
         }
-        // The first post-barrier decoded audio PTS establishes the new audio
-        // epoch relative to the source-wide timeline origin.
+        // The first post-barrier decoded audio PTS at or after the video-defined
+        // landing establishes the new audio epoch. Valid MPEG-TS can place older
+        // audio later in physical byte order.
         self.audio_anchor_seconds = None;
+        self.post_seek_epoch = Some(PostSeekEpoch {
+            floor: landed,
+            audio_aligned: self.audio_stream.is_none(),
+            video_aligned: false,
+            dropped_audio_frames: 0,
+            dropped_video_frames: 0,
+        });
         if let Some(stream) = self.audio_stream.as_ref() {
             if audio_stream_is_authoritative(stream) {
                 self.audio_output = Some(
@@ -1166,6 +1194,85 @@ impl OxidePlayback {
             pending.resume_playing,
         );
         Ok(())
+    }
+
+    fn drop_before_post_seek_epoch(&mut self, kind: MediaType, pts: Option<i64>) -> bool {
+        let Some(epoch) = self.post_seek_epoch else {
+            return false;
+        };
+        let aligned = match kind {
+            MediaType::Audio => epoch.audio_aligned,
+            MediaType::Video => epoch.video_aligned,
+            _ => return false,
+        };
+        if aligned {
+            return false;
+        }
+
+        let position = self.frame_position_for_kind(kind, pts);
+        let Some(position) = position else {
+            if kind == MediaType::Audio {
+                if let Some(epoch) = self.post_seek_epoch.as_mut() {
+                    epoch.dropped_audio_frames = epoch.dropped_audio_frames.saturating_add(1);
+                }
+                return true;
+            }
+            return false;
+        };
+
+        if position < epoch.floor {
+            match kind {
+                MediaType::Audio => {
+                    if let Some(epoch) = self.post_seek_epoch.as_mut() {
+                        epoch.dropped_audio_frames = epoch.dropped_audio_frames.saturating_add(1);
+                    }
+                }
+                MediaType::Video => {
+                    if let Some(epoch) = self.post_seek_epoch.as_mut() {
+                        epoch.dropped_video_frames = epoch.dropped_video_frames.saturating_add(1);
+                    }
+                    self.diagnostics.dropped_video_frames =
+                        self.diagnostics.dropped_video_frames.saturating_add(1);
+                }
+                _ => {}
+            }
+            return true;
+        }
+
+        let (dropped, complete) = {
+            let epoch = self
+                .post_seek_epoch
+                .as_mut()
+                .expect("post-seek epoch checked above");
+            let dropped = match kind {
+                MediaType::Audio => {
+                    epoch.audio_aligned = true;
+                    epoch.dropped_audio_frames
+                }
+                MediaType::Video => {
+                    epoch.video_aligned = true;
+                    epoch.dropped_video_frames
+                }
+                _ => 0,
+            };
+            (dropped, epoch.audio_aligned && epoch.video_aligned)
+        };
+
+        eprintln!(
+            "SanctuaryPlayer: post-seek {} aligned floor={:.3}s first={:.3}s dropped_pre_epoch={}",
+            match kind {
+                MediaType::Audio => "audio",
+                MediaType::Video => "video",
+                _ => "track",
+            },
+            epoch.floor.as_secs_f64(),
+            position.as_secs_f64(),
+            dropped,
+        );
+        if complete {
+            self.post_seek_epoch = None;
+        }
+        false
     }
 
     fn observe_frame_timestamp(&mut self, kind: MediaType, pts: Option<i64>) {
@@ -1472,6 +1579,7 @@ impl OxidePlayback {
             .map_err(|error| format!("dispatch OxideAV seek: {error}"))?;
 
         self.pending_audio_frame = None;
+        self.post_seek_epoch = None;
         self.video_queue.clear();
         self.video_clock.reset();
         self.first_frame_presented = false;
@@ -1957,6 +2065,7 @@ mod tests {
                 first_frame_presented: true,
                 sink_finished: false,
                 seek_pending: None,
+                post_seek_epoch: None,
                 queued_seek: None,
                 seek_supported: true,
                 diagnostics: PlaybackDiagnostics::new(),
@@ -2843,6 +2952,60 @@ mod tests {
         assert_eq!(playback.position, Duration::from_secs(30));
         assert_eq!(playback.state, PlaybackState::Playing);
         assert!(!playback.first_frame_presented);
+    }
+
+    #[test]
+    fn post_seek_epoch_drops_audio_before_video_landing() {
+        let (mut playback, _tx) = clock_test_playback();
+        playback.audio_stream = Some(StreamInfo {
+            index: 1,
+            time_base: TimeBase::new(1, 90_000),
+            duration: None,
+            start_time: Some(0),
+            params: CodecParameters::audio(CodecId::new("aac")),
+        });
+        playback.post_seek_epoch = Some(PostSeekEpoch {
+            floor: Duration::from_secs(30),
+            audio_aligned: false,
+            video_aligned: true,
+            dropped_audio_frames: 0,
+            dropped_video_frames: 0,
+        });
+
+        assert!(playback.drop_before_post_seek_epoch(MediaType::Audio, Some(29 * 90_000)));
+        let epoch = playback.post_seek_epoch.expect("audio still unaligned");
+        assert!(!epoch.audio_aligned);
+        assert_eq!(epoch.dropped_audio_frames, 1);
+
+        assert!(!playback.drop_before_post_seek_epoch(MediaType::Audio, Some(30 * 90_000)));
+        assert!(
+            playback.post_seek_epoch.is_none(),
+            "epoch guard should clear after both tracks align"
+        );
+    }
+
+    #[test]
+    fn post_seek_epoch_applies_same_floor_to_video() {
+        let (mut playback, _tx) = clock_test_playback();
+        playback.post_seek_epoch = Some(PostSeekEpoch {
+            floor: Duration::from_secs(30),
+            audio_aligned: true,
+            video_aligned: false,
+            dropped_audio_frames: 0,
+            dropped_video_frames: 0,
+        });
+
+        assert!(playback.drop_before_post_seek_epoch(MediaType::Video, Some(29 * 90_000)));
+        assert_eq!(playback.diagnostics.dropped_video_frames, 1);
+        let epoch = playback.post_seek_epoch.expect("video still unaligned");
+        assert!(!epoch.video_aligned);
+        assert_eq!(epoch.dropped_video_frames, 1);
+
+        assert!(!playback.drop_before_post_seek_epoch(MediaType::Video, Some(30 * 90_000)));
+        assert!(
+            playback.post_seek_epoch.is_none(),
+            "epoch guard should clear after both tracks align"
+        );
     }
 
     #[test]
