@@ -6,7 +6,8 @@ use ::oxideav::core::{
     CancellationToken, Error, Frame, FrameLease, MediaType, Packet, Rounding, StreamInfo, TimeBase,
 };
 use ::oxideav::pipeline::{
-    BarrierKind, CodecPreferences, Executor, ExecutorHandle, Job, JobSink, TrackSink, TrackSinkInfo,
+    BarrierKind, ChannelCaps, CodecPreferences, Executor, ExecutorHandle, Job, JobSink, TrackSink,
+    TrackSinkInfo,
 };
 use oxideav_hls::{HlsPlaylistInfo, HlsVariant};
 use serde_json::json;
@@ -21,6 +22,15 @@ use super::{DecodeMode, PlaybackBackend, PlaybackWake, PlaybackWakeKind};
 
 const SESSION_CHANNEL_CAP: usize = 2;
 const VIDEO_QUEUE_CAP: usize = 2;
+// Twitch MPEG-TS VODs can legally mux one track several seconds ahead of its
+// sibling in physical packet order. OxideAV's default of 16 compressed packets
+// per track is intentionally conservative for general pipelines, but it is too
+// shallow for native playback: a full leading-track queue can block the shared
+// demuxer before it reaches packets the lagging track needs now. Keep the
+// decoded-video lookahead at two frames; this larger bound is compressed demux
+// slack only. 256 packets covers the observed ~3.8 s skew while remaining
+// strictly bounded per track.
+const PLAYBACK_PACKET_CHANNEL_CAP: usize = 256;
 const OPEN_TIMEOUT: Duration = Duration::from_secs(30);
 const DIAGNOSTIC_INTERVAL: Duration = Duration::from_secs(1);
 
@@ -457,9 +467,17 @@ fn open_variant_session(
     let (tx, rx) = mpsc::sync_channel(SESSION_CHANNEL_CAP);
     let (video_tx, video_rx) = mpsc::sync_channel(SESSION_CHANNEL_CAP);
     let sink = Box::new(SessionSink::new(tx, video_tx, wake));
+    eprintln!(
+        "SanctuaryPlayer: OxideAV compressed packet queue cap={} per track",
+        PLAYBACK_PACKET_CHANNEL_CAP
+    );
     let executor = Executor::new(&job, &registries)
         .with_sink_override("@display", sink)
         .with_codec_preferences(codec_preferences)
+        .with_channel_caps(ChannelCaps {
+            packets: PLAYBACK_PACKET_CHANNEL_CAP,
+            ..ChannelCaps::default()
+        })
         .with_threads(0)
         .spawn()
         .map_err(|error| format!("start OxideAV playback: {error}"))?;

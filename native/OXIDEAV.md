@@ -116,11 +116,20 @@ bounded to one successor rather than increasing decoded-frame or PCM lookahead.
 
 After demuxing, each routed track has its own bounded compressed-packet queue before
 its decoder. This lets one decoder or presenter lag temporarily without immediately
-stopping its sibling. The independence is intentionally bounded, however: if video
-remains back-pressured long enough, its packet queue eventually fills and the shared
-demuxer blocks when it next needs to deliver video. Audio then also stops advancing.
-This prevents one track running arbitrarily far ahead while memory grows without
-bound.
+stopping its sibling. The independence is intentionally bounded, however: if one
+track remains back-pressured long enough, its packet queue eventually fills and the
+shared demuxer blocks before it can reach later packets for the sibling track.
+
+OxideAV's general pipeline default is 16 compressed packets per track. Sanctuary
+intentionally overrides only that packet depth to **256 per track** while leaving the
+frame-channel default unchanged. Real Twitch MPEG-TS VODs have been observed with
+about 3.8 seconds of valid physical mux skew between audio and video; 16 packets is
+only roughly 0.34 seconds of AAC or 0.53 seconds of 30 fps video and therefore causes
+head-of-line starvation in a shared demux graph. The larger Sanctuary-specific bound
+is compressed demux slack, not presentation lookahead: decoded video remains capped
+at two frames and the PCM target is unchanged. Keeping this override in Sanctuary
+rather than raising OxideAV's global default preserves the tighter general-purpose
+memory bound for pipelines that do not need Twitch-scale mux-skew tolerance.
 
 ### JobSink and independent TrackSinks
 
@@ -525,6 +534,23 @@ around its normal 500 ms target, and the video dropped-frame count remained at t
 three startup drops rather than jumping by a segment-sized batch. This directly
 regresses the previous boundary failure where both A/V queues emptied and playback
 then discarded overdue media to catch up.
+
+### Twitch mux-skew packet-slack validation
+
+VOD `2859508682` exposed a separate shared-demux head-of-line problem even with HLS
+successor readahead working. Its MPEG-TS segments carry several seconds of valid
+physical A/V interleave skew (about 3.5 s in the first 160p segment and about 3.8 s
+in inspected 480p segments), far beyond OxideAV's default 16-packet per-track slack.
+Before the Sanctuary override, the first 160p playback had fallen from about 515 ms
+audio queued to about 219 ms by 1.07 s and had accumulated 16 underrun callbacks by
+roughly 1.9 s, well before any HLS segment boundary.
+
+With Sanctuary requesting 256 compressed packets per track, the same muted
+`vdpau-direct` VOD held around its normal 500 ms audio target through steady playback
+and across the first HLS boundary, with no alternating audio/video queue collapse. In
+a longer run five startup underrun callbacks occurred before steady state, but the
+counter then remained unchanged through 13 s. This validates the larger packet depth
+as mux-interleave slack rather than presentation buffering.
 
 ## Local validation fixtures
 
