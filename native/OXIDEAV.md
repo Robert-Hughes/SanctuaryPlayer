@@ -461,24 +461,28 @@ below 720p). Sanctuary then opens that selected **media playlist URL directly**,
 normal startup path is one master GET followed by one media-playlist GET; the master is
 not fetched a second time.
 
-Changing the Quality selection performs a fixed-rendition restart while preserving
-media time. Sanctuary captures the current media position and prior play/pause intent,
-pauses and tears down the old session, then opens a fresh A/V session directly on the
-already-resolved URL for the selected variant. The master playlist is therefore not
-fetched again during a quality change. Before the replacement session is allowed to
-play, Sanctuary dispatches an HLS media-time seek to the captured position and waits for
-the replacement session's seek barriers. A previously playing session resumes only
-after that seek lands; a paused session remains paused. As with ordinary seeking, the
-reported position may move slightly backwards to the decode-safe access point selected
-by MPEG-TS/H.264.
+Changing the Quality selection performs an asynchronous fixed-rendition restart while
+preserving media time. Sanctuary captures the current media position and prior
+play/pause intent, freezes presentation immediately, detaches the old session, and moves
+its receiver disconnection, buffered-resource destruction and executor shutdown onto a
+quality-switch worker. The same worker then opens a fresh A/V session directly on the
+already-resolved URL for the selected variant, so playlist/segment/decoder startup and
+old-executor joining never block the UI thread. The master playlist is therefore not
+fetched again during a quality change. Worker completion wakes the winit event loop;
+before the replacement session is allowed to play, Sanctuary dispatches an HLS
+media-time seek to the captured position and waits for the replacement session's seek
+barriers. A previously playing session resumes only after that seek lands; a paused
+session remains paused. Rapid quality selections are coalesced to one in-flight rebuild
+plus the latest requested target. As with ordinary seeking, the reported position may
+move slightly backwards to the decode-safe access point selected by MPEG-TS/H.264.
 
 A paused live Twitch regression against VOD `2386400830` switched from 160p at
 298.334 s to 360p. The replacement rendition landed at the same 298.334 s decode-safe
 point; after its first post-seek audio timestamp established the new audio epoch, the
 reported clock was 298.859 s. The OSS stream remained paused throughout the test.
-Quality switching is still synchronous on the caller while the replacement playlist,
-segment, decoder and audio output are opened; moving that reconstruction off the UI
-thread remains separate work. Decoder overlap/cross-fade and ABR also remain later work.
+Quality switching no longer blocks the caller while the old executor is retired or the
+replacement playlist, segment and decoders are opened. Decoder overlap/cross-fade and
+ABR remain later work.
 
 The desktop launcher accepts
 `--video <URL-or-ID>` (or a positional video), `--play`/`--autoplay`,
@@ -607,8 +611,8 @@ suitable when callback advancement is not required.
    add explicit output-device / channel-layout / downmix policy.
 4. Add an Android backend to `oxideav-sysaudio` (or another Sanctuary Android audio
    implementation) before enabling real A/V playback there.
-5. Move fixed HLS quality reopen off the UI thread; add ABR only after that
-   source/session switching boundary is robust.
+5. Add ABR on top of the now-asynchronous fixed-quality source/session switching
+   boundary, retaining manual/favourite-quality overrides.
 6. Consider eliminating the final GPU-local image copy in `vdpau-direct` only if wgpu
    can safely own/sample the externally-written image without weakening resource-state
    correctness.

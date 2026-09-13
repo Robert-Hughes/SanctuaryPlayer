@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use ::oxideav::core::{
@@ -45,6 +46,8 @@ pub struct OxidePlayback {
     quality_urls: Vec<Url>,
     quality_index: usize,
     active_quality_index: usize,
+    pending_quality_switch: Option<PendingQualitySwitch>,
+    queued_quality_index: Option<usize>,
     decode_mode: DecodeMode,
     muted: bool,
     wake: PlaybackWake,
@@ -128,6 +131,18 @@ impl VideoClock {
         let nanos = u64::try_from(nanos).ok()?;
         origin_time.checked_add(Duration::from_nanos(nanos))
     }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct QualitySwitchIntent {
+    target_index: usize,
+    preserved_position: Duration,
+    resume_playing: bool,
+}
+
+struct PendingQualitySwitch {
+    intent: QualitySwitchIntent,
+    receiver: Receiver<Result<PlaybackSession, String>>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -453,6 +468,80 @@ struct PlaybackSession {
     first_audio_seconds: Option<f64>,
 }
 
+struct RetiredSession {
+    rx: Receiver<SessionMsg>,
+    video_rx: Receiver<SessionMsg>,
+    executor: Option<ExecutorHandle>,
+    audio_output: Option<AudioOutput>,
+    pending_audio_frame: Option<FrameLease>,
+    video_queue: VecDeque<FrameLease>,
+}
+
+fn retire_session(retired: RetiredSession) {
+    let RetiredSession {
+        rx,
+        video_rx,
+        executor,
+        audio_output,
+        pending_audio_frame,
+        video_queue,
+    } = retired;
+
+    // Disconnect TrackSinks before joining the executor, then release all
+    // application-owned media/audio resources on this worker as well.
+    drop(rx);
+    drop(video_rx);
+    drop(pending_audio_frame);
+    drop(video_queue);
+    drop(audio_output);
+    if let Some(executor) = executor {
+        stop_executor(executor);
+    }
+}
+
+fn retired_opened_session(session: PlaybackSession) -> RetiredSession {
+    RetiredSession {
+        rx: session.rx,
+        video_rx: session.video_rx,
+        executor: session.executor,
+        audio_output: session.audio_output,
+        pending_audio_frame: None,
+        video_queue: VecDeque::new(),
+    }
+}
+
+fn spawn_quality_open_worker<F>(
+    retired: Option<RetiredSession>,
+    variant_url: Url,
+    decode_mode: DecodeMode,
+    wake: PlaybackWake,
+    opener: F,
+) -> Receiver<Result<PlaybackSession, String>>
+where
+    F: FnOnce(&Url, DecodeMode, PlaybackWake) -> Result<PlaybackSession, String> + Send + 'static,
+{
+    let (sender, receiver) = mpsc::channel();
+    thread::Builder::new()
+        .name("sanctuary-quality-switch".into())
+        .spawn(move || {
+            if let Some(retired) = retired {
+                retire_session(retired);
+            }
+            let result = opener(&variant_url, decode_mode, wake.clone());
+            match sender.send(result) {
+                Ok(()) => {}
+                Err(error) => {
+                    if let Ok(session) = error.0 {
+                        retire_session(retired_opened_session(session));
+                    }
+                }
+            }
+            wake.wake(PlaybackWakeKind::Control);
+        })
+        .expect("spawn Sanctuary quality-switch worker");
+    receiver
+}
+
 fn open_variant_session(
     variant_url: &Url,
     decode_mode: DecodeMode,
@@ -595,6 +684,8 @@ impl OxidePlayback {
             quality_urls: quality_set.urls,
             quality_index: quality_set.preferred_index,
             active_quality_index: quality_set.preferred_index,
+            pending_quality_switch: None,
+            queued_quality_index: None,
             decode_mode,
             muted,
             wake,
@@ -621,29 +712,20 @@ impl OxidePlayback {
         })
     }
 
-    fn tear_down_session(&mut self) {
-        if let Some(audio) = self.audio_output.as_mut() {
-            let _ = audio.set_paused(true);
-        }
-
-        // A sink worker may be blocked in SyncSender::send(). Dropping its
-        // receiver first wakes that send with Disconnected so executor.stop()
-        // cannot deadlock waiting for a worker that the UI thread itself has
-        // stopped draining.
+    fn detach_session(&mut self) -> RetiredSession {
         let (_placeholder_tx, placeholder_rx) = mpsc::sync_channel(1);
         let old_rx = std::mem::replace(&mut self.rx, placeholder_rx);
         let (_video_placeholder_tx, video_placeholder_rx) = mpsc::sync_channel(1);
         let old_video_rx = std::mem::replace(&mut self.video_rx, video_placeholder_rx);
-        drop(old_rx);
-        drop(old_video_rx);
 
-        if let Some(executor) = self.executor.take() {
-            stop_executor(executor);
+        RetiredSession {
+            rx: old_rx,
+            video_rx: old_video_rx,
+            executor: self.executor.take(),
+            audio_output: self.audio_output.take(),
+            pending_audio_frame: self.pending_audio_frame.take(),
+            video_queue: std::mem::take(&mut self.video_queue),
         }
-        self.audio_output = None;
-        self.pending_audio_frame = None;
-        self.video_queue.clear();
-        self.video_clock.reset();
     }
 
     fn install_session(&mut self, session: PlaybackSession) {
@@ -672,40 +754,61 @@ impl OxidePlayback {
         self.diagnostics = PlaybackDiagnostics::new();
     }
 
-    fn switch_quality_with<F>(&mut self, index: usize, opener: F) -> Result<(), String>
-    where
-        F: FnOnce(&Url, DecodeMode) -> Result<PlaybackSession, String>,
-    {
-        self.switch_quality_with_seek(index, opener, |playback, target, resume_playing| {
-            playback.dispatch_seek(target, Duration::ZERO, resume_playing)
-        })
+    fn start_quality_worker(
+        &mut self,
+        intent: QualitySwitchIntent,
+        retired: Option<RetiredSession>,
+    ) {
+        let new_quality = self.qualities[intent.target_index].label.clone();
+        let new_url = self.quality_urls[intent.target_index].clone();
+        eprintln!(
+            "SanctuaryPlayer: quality switch worker start new={} variant={}",
+            new_quality, new_url
+        );
+        let receiver = spawn_quality_open_worker(
+            retired,
+            new_url,
+            self.decode_mode,
+            self.wake.clone(),
+            open_variant_session,
+        );
+        self.pending_quality_switch = Some(PendingQualitySwitch { intent, receiver });
     }
 
-    fn switch_quality_with_seek<F, S>(
-        &mut self,
-        index: usize,
-        opener: F,
-        seek_after_open: S,
-    ) -> Result<(), String>
-    where
-        F: FnOnce(&Url, DecodeMode) -> Result<PlaybackSession, String>,
-        S: FnOnce(&mut Self, Duration, bool) -> Result<(), String>,
-    {
+    fn begin_quality_switch(&mut self, index: usize) -> Result<(), String> {
         if index >= self.qualities.len() || index >= self.quality_urls.len() {
             return Err(format!("quality index {index} is out of range"));
         }
+
+        self.quality_index = index;
+        if let Some(pending) = self.pending_quality_switch.as_ref() {
+            self.queued_quality_index = (index != pending.intent.target_index).then_some(index);
+            eprintln!(
+                "SanctuaryPlayer: quality switch coalesced in_flight={} latest={}",
+                self.qualities[pending.intent.target_index].label, self.qualities[index].label,
+            );
+            return Ok(());
+        }
         if index == self.active_quality_index {
-            self.quality_index = index;
             return Ok(());
         }
 
-        let preserved_position = self.position;
+        let now = Instant::now();
         let resume_playing = matches!(self.state, PlaybackState::Playing)
             || matches!(self.state, PlaybackState::Seeking)
                 && self
                     .seek_pending
                     .as_ref()
                     .is_some_and(|pending| pending.resume_playing);
+        if matches!(self.state, PlaybackState::Playing) {
+            self.video_clock.pause(now, self.video_stream.time_base);
+            self.update_position_at(now);
+        }
+        let preserved_position = self.position;
+        if let Some(audio) = self.audio_output.as_mut() {
+            let _ = audio.set_paused(true);
+        }
+
         let old_quality = self.qualities[self.active_quality_index].label.clone();
         let new_quality = self.qualities[index].label.clone();
         let new_url = self.quality_urls[index].clone();
@@ -718,21 +821,46 @@ impl OxidePlayback {
             resume_playing
         );
 
-        self.tear_down_session();
+        let retired = self.detach_session();
+        self.state = PlaybackState::Loading;
+        self.position = preserved_position;
+        self.video_clock.reset();
+        self.seek_pending = None;
+        self.post_seek_epoch = None;
+        self.queued_seek = None;
+        self.queued_quality_index = None;
+        self.start_quality_worker(
+            QualitySwitchIntent {
+                target_index: index,
+                preserved_position,
+                resume_playing,
+            },
+            Some(retired),
+        );
+        Ok(())
+    }
+
+    fn finish_quality_switch_with_seek<S>(
+        &mut self,
+        intent: QualitySwitchIntent,
+        session: PlaybackSession,
+        seek_after_open: S,
+    ) -> Result<(), String>
+    where
+        S: FnOnce(&mut Self, Duration, bool) -> Result<(), String>,
+    {
+        let new_quality = self.qualities[intent.target_index].label.clone();
+        let new_url = self.quality_urls[intent.target_index].clone();
         self.state = PlaybackState::Paused;
-        self.position = Duration::ZERO;
-
-        let session = opener(&new_url, self.decode_mode)
-            .map_err(|error| format!("switch HLS quality to {new_quality}: {error}"))?;
         self.install_session(session);
-        self.quality_index = index;
-        self.active_quality_index = index;
+        self.quality_index = intent.target_index;
+        self.active_quality_index = intent.target_index;
 
-        let target = self.duration.map_or(preserved_position, |duration| {
-            preserved_position.min(duration)
+        let target = self.duration.map_or(intent.preserved_position, |duration| {
+            intent.preserved_position.min(duration)
         });
         if target.is_zero() {
-            if resume_playing {
+            if intent.resume_playing {
                 self.play();
             }
             eprintln!(
@@ -742,11 +870,9 @@ impl OxidePlayback {
             return Ok(());
         }
 
-        // The replacement AudioOutput starts paused. Dispatch the media-time
-        // seek before allowing playback to resume so no frame/PCM from the
-        // beginning of the replacement rendition can be presented. A rejected
-        // seek restores the replacement session's honest 0:00 position.
-        seek_after_open(self, target, resume_playing).map_err(|error| {
+        // The replacement session remains paused until its preserved-position
+        // seek lands, so no 0:00 frame or PCM can leak into presentation.
+        seek_after_open(self, target, intent.resume_playing).map_err(|error| {
             format!("seek replacement HLS quality to preserved position: {error}")
         })?;
         eprintln!(
@@ -754,9 +880,72 @@ impl OxidePlayback {
             new_quality,
             new_url,
             target.as_secs_f64(),
-            resume_playing
+            intent.resume_playing
         );
         Ok(())
+    }
+
+    fn poll_quality_switch(&mut self) {
+        let result = {
+            let Some(pending) = self.pending_quality_switch.as_ref() else {
+                return;
+            };
+            match pending.receiver.try_recv() {
+                Ok(result) => Some(result),
+                Err(TryRecvError::Empty) => None,
+                Err(TryRecvError::Disconnected) => {
+                    Some(Err("quality-switch worker stopped unexpectedly".into()))
+                }
+            }
+        };
+        let Some(result) = result else {
+            return;
+        };
+        let pending = self
+            .pending_quality_switch
+            .take()
+            .expect("quality-switch result implies pending worker");
+        let intent = pending.intent;
+
+        if let Some(next_index) = self.queued_quality_index.take() {
+            let retired = match result {
+                Ok(session) => Some(retired_opened_session(session)),
+                Err(error) => {
+                    eprintln!(
+                        "SanctuaryPlayer: superseded quality switch failed before latest request: {error}"
+                    );
+                    None
+                }
+            };
+            let next_intent = QualitySwitchIntent {
+                target_index: next_index,
+                preserved_position: intent.preserved_position,
+                resume_playing: intent.resume_playing,
+            };
+            self.start_quality_worker(next_intent, retired);
+            return;
+        }
+
+        match result {
+            Ok(session) => {
+                if let Err(error) = self.finish_quality_switch_with_seek(
+                    intent,
+                    session,
+                    |playback, target, resume| {
+                        playback.dispatch_seek(target, Duration::ZERO, resume)
+                    },
+                ) {
+                    self.fail(error);
+                }
+            }
+            Err(error) => {
+                self.quality_index = self.active_quality_index;
+                self.fail(format!(
+                    "switch HLS quality to {}: {error}",
+                    self.qualities[intent.target_index].label
+                ));
+            }
+        }
     }
 
     fn pump_block_reason(&self) -> Option<&'static str> {
@@ -1756,15 +1945,16 @@ impl PlaybackBackend for OxidePlayback {
         else {
             return;
         };
-        let wake = self.wake.clone();
-        if let Err(error) = self.switch_quality_with(index, |url, decode_mode| {
-            open_variant_session(url, decode_mode, wake.clone())
-        }) {
+        if let Err(error) = self.begin_quality_switch(index) {
             self.fail(error);
         }
     }
 
     fn update(&mut self, _elapsed: Duration) {
+        self.poll_quality_switch();
+        if self.pending_quality_switch.is_some() {
+            return;
+        }
         self.pump_session();
         self.update_position_at(Instant::now());
         self.update_end_state();
@@ -2043,6 +2233,8 @@ mod tests {
                 quality_urls: Vec::new(),
                 quality_index: 0,
                 active_quality_index: 0,
+                pending_quality_switch: None,
+                queued_quality_index: None,
                 decode_mode: DecodeMode::Cpu,
                 muted: false,
                 wake: PlaybackWake::noop(),
@@ -2451,13 +2643,13 @@ mod tests {
             })));
 
         playback
-            .switch_quality_with_seek(
-                0,
-                |url, decode_mode| {
-                    assert_eq!(url.as_str(), "https://example.test/1080.m3u8");
-                    assert_eq!(decode_mode, DecodeMode::VdpauDirect);
-                    Ok(replacement_test_session())
+            .finish_quality_switch_with_seek(
+                QualitySwitchIntent {
+                    target_index: 0,
+                    preserved_position: Duration::from_secs(12),
+                    resume_playing: true,
                 },
+                replacement_test_session(),
                 fake_quality_seek,
             )
             .unwrap();
@@ -2481,6 +2673,86 @@ mod tests {
             .unwrap();
         assert_eq!(playback.position, Duration::from_secs(12));
         assert_eq!(playback.state, PlaybackState::Playing);
+    }
+
+    #[test]
+    fn quality_open_worker_runs_reconstruction_off_the_caller_thread() {
+        let (release_tx, release_rx) = mpsc::channel();
+        let (wake_tx, wake_rx) = mpsc::channel();
+        let wake = PlaybackWake::new(move || {
+            wake_tx.send(()).unwrap();
+        });
+        let wake_probe = wake.clone();
+
+        let result_rx = spawn_quality_open_worker(
+            None,
+            Url::parse("https://example.test/1080.m3u8").unwrap(),
+            DecodeMode::VdpauDirect,
+            wake,
+            move |url, decode_mode, _wake| {
+                assert_eq!(url.as_str(), "https://example.test/1080.m3u8");
+                assert_eq!(decode_mode, DecodeMode::VdpauDirect);
+                release_rx.recv().unwrap();
+                Ok(replacement_test_session())
+            },
+        );
+
+        assert!(matches!(result_rx.try_recv(), Err(TryRecvError::Empty)));
+        assert!(matches!(wake_rx.try_recv(), Err(TryRecvError::Empty)));
+
+        release_tx.send(()).unwrap();
+        assert!(
+            result_rx
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap()
+                .is_ok()
+        );
+        wake_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("worker completion should wake the event loop");
+        assert!(
+            wake_probe
+                .take_pending()
+                .contains(PlaybackWakeKind::Control)
+        );
+    }
+
+    #[test]
+    fn repeated_quality_requests_keep_only_the_latest_target() {
+        let (mut playback, _old_tx) = clock_test_playback();
+        playback.qualities = vec![
+            Quality::new("1080p60", "1080p60 (Source)"),
+            Quality::new("720p60", "720p60"),
+            Quality::new("160p", "160p"),
+        ];
+        playback.quality_urls = vec![
+            Url::parse("https://example.test/1080.m3u8").unwrap(),
+            Url::parse("https://example.test/720.m3u8").unwrap(),
+            Url::parse("https://example.test/160.m3u8").unwrap(),
+        ];
+        playback.quality_index = 0;
+        playback.active_quality_index = 1;
+        let (_result_tx, result_rx) = mpsc::channel();
+        playback.pending_quality_switch = Some(PendingQualitySwitch {
+            intent: QualitySwitchIntent {
+                target_index: 0,
+                preserved_position: Duration::from_secs(12),
+                resume_playing: true,
+            },
+            receiver: result_rx,
+        });
+
+        playback.set_quality("160p");
+        assert_eq!(playback.quality_index, 2);
+        assert_eq!(playback.queued_quality_index, Some(2));
+
+        playback.set_quality("1080p60");
+        assert_eq!(playback.quality_index, 0);
+        assert_eq!(playback.queued_quality_index, None);
+
+        playback.set_quality("160p");
+        assert_eq!(playback.quality_index, 2);
+        assert_eq!(playback.queued_quality_index, Some(2));
     }
 
     #[test]
@@ -2836,9 +3108,13 @@ mod tests {
         playback.active_quality_index = 1;
 
         playback
-            .switch_quality_with_seek(
-                0,
-                |_url, _decode_mode| Ok(replacement_test_session()),
+            .finish_quality_switch_with_seek(
+                QualitySwitchIntent {
+                    target_index: 0,
+                    preserved_position: Duration::from_secs(7),
+                    resume_playing: false,
+                },
+                replacement_test_session(),
                 fake_quality_seek,
             )
             .unwrap();
