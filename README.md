@@ -64,6 +64,45 @@ the file synchronously; sign-out clears the stored account IDs while retaining u
 preferences. A missing file means default settings. A malformed/unreadable file is
 reported to stderr and defaults are used rather than preventing application startup.
 
+Native Rust player architecture
+===============================
+
+The native Rust player has its own OxideAV-based media pipeline rather than embedding
+the Twitch/YouTube web players. The current Twitch path uses one selected HLS rendition
+and one shared MPEG-TS demux graph, then separates audio and video into independently
+back-pressured decode/presentation paths:
+
+```text
+shared HLS source -> MPEG-TS demux
+                         |
+                +--------+--------+
+                |                 |
+          audio packets       video packets
+                |                 |
+           AAC decoder        H.264 decoder
+                |                 |
+         AudioTrackSink       VideoTrackSink
+                |                 |
+          PCM timeline      2-frame scheduler
+                |                 |
+           sysaudio          wgpu renderer
+```
+
+The terminal OxideAV stage owns each `TrackSink`; there is no decoded-output queue or
+central mux worker merely forwarding already-final frames to the application. Audio and
+video therefore have independent bounded back-pressure domains, while prolonged pressure
+still propagates to their shared demuxer and keeps memory bounded.
+
+Both tracks use MPEG-TS PTS mapped onto one media-relative timeline. Audio advances on an
+integer device-sample clock through the sysaudio callback; video uses a PTS/`Instant`
+clock and exact winit presentation deadlines. There is currently no active A/V
+drift-correction controller between those two clocks. Seeking uses ordered per-track
+barriers and completes only after the required audio/video barriers for that generation
+arrive.
+
+See `native/OXIDEAV.md` for the full source/demux/decode/back-pressure, timing, seeking,
+quality-switch and hardware-presentation design.
+
 Known Issues
 ============
 

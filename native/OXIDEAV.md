@@ -57,22 +57,164 @@ GLX interop into the existing wgpu/Vulkan renderer (`23a415e`, `07d07e9`,
 `ac54031`, `981e3ae`). Those commits are useful reference implementations, not
 application dependencies.
 
-## Native media boundary
+## Current end-to-end playback architecture
 
-The intended ownership split is:
+The native player uses **one shared source/demux graph with independent per-track
+decode, back-pressure and presentation paths**. Audio and video share one media PTS
+timeline, but Sanctuary deliberately does not depend on the order in which the two
+tracks happen to produce decoded output.
+
+For the current Twitch/HLS path the graph is:
 
 ```text
-SanctuaryPlayer UI / state
-        ↓
-Sanctuary media-session abstraction
-        ↓
-OxideAV source / demux / codec / audio crates
-        ↓
-decoded FrameLease + audio frames
-        ↓
-Sanctuary-owned renderer / audio sink / playback clock
+                    Twitch / selected HLS rendition
+                               │
+                               ▼
+                         shared HLS source
+                               │
+                               ▼
+                         MPEG-TS demuxer
+                               │
+                  ┌────────────┴────────────┐
+                  │                         │
+           audio packet queue        video packet queue
+                  │                         │
+                  ▼                         ▼
+             AAC decoder              H.264 decoder
+                  │                         │
+          terminal owns sink         terminal owns sink
+                  │                         │
+                  ▼                         ▼
+           AudioTrackSink             VideoTrackSink
+                  │                         │
+       bounded Sanctuary channel   bounded Sanctuary channel
+                  │                         │
+                  ▼                         ▼
+      timestamped PCM timeline     two-frame FrameLease queue
+                  │                         │
+                  ▼                         ▼
+       sysaudio callback clock      VideoClock + deadlines
+                  │                         │
+                  ▼                         ▼
+        OSS / WASAPI / etc.        winit + wgpu presentation
 ```
 
+### Demuxing and bounded upstream coupling
+
+The selected HLS media playlist is opened once and feeds one MPEG-TS demuxer. TS
+packets are read sequentially, while audio and video PIDs have independent PES
+reassembly state. A completed audio PES and a completed video PES therefore do not
+form a useful global delivery sequence: **PTS is authoritative media time**, not
+cross-track callback order.
+
+After demuxing, each routed track has its own bounded compressed-packet queue before
+its decoder. This lets one decoder or presenter lag temporarily without immediately
+stopping its sibling. The independence is intentionally bounded, however: if video
+remains back-pressured long enough, its packet queue eventually fills and the shared
+demuxer blocks when it next needs to deliver video. Audio then also stops advancing.
+This prevents one track running arbitrarily far ahead while memory grows without
+bound.
+
+### JobSink and independent TrackSinks
+
+`JobSink` remains the lifecycle owner for one logical output. For native playback it
+opts into one independently blocking `TrackSink` per primary pipeline track:
+
+```text
+JobSink
+├── AudioTrackSink
+└── VideoTrackSink
+```
+
+The **terminal processing stage owns its TrackSink**. On Sanctuary's direct playback
+routes that means:
+
+```text
+AAC decoder  -> AudioTrackSink
+H.264 decoder -> VideoTrackSink
+```
+
+There is no OxideAV decoded-output queue or central mux worker merely to hand an
+already-final frame to the application. Genuine processing boundaries still retain
+their queues: demux/source -> decoder packets, decoder -> real filter frames,
+filter -> encoder frames, and frame-source fan-out.
+
+A blocked video TrackSink therefore blocks the video terminal worker without
+immediately blocking audio, and vice versa. Blocking TrackSinks receive the executor's
+shared `CancellationToken` and must make their waits cancellation-aware so stop or a
+sibling failure cannot deadlock teardown.
+
+`StreamUpdate` and seek barriers travel through the same TrackSink path as that
+track's media. Ordering is strict **within a track** but intentionally undefined
+between tracks.
+
+### Audio presentation and clock
+
+AAC may initially have incomplete PCM metadata. The decoder first emits an ordered
+`TrackSink::stream_update()` once sample rate, channel count and sample format are
+authoritative; Sanctuary opens `AudioOutput` only after that update.
+
+Decoded audio is converted to interleaved f32 and written into the timestamp-aware
+ring in `audio_timeline.rs`. Frame PTS is rescaled onto the output device's integer
+sample-frame clock. Contiguous PCM appends normally; forward gaps are represented by
+zero PCM; stale data is discarded; partial overlaps are trimmed; missing PTS is
+treated as contiguous with the current expected end.
+
+If a complete next audio frame cannot fit, Sanctuary retains that exact frame as
+`pending_audio_frame` and stops draining **the audio TrackSink channel only** until
+callback consumption frees space. Video remains independent.
+
+The sysaudio callback owns `next_output_pts`. Every callback advances that cursor by
+the full requested block duration, including periods filled with silence, so audio
+presentation time continues even through a decode miss. The device is held paused
+until roughly 50 ms of preroll is ready. On normal playback Sanctuary currently aims
+for roughly 500 ms of queued PCM.
+
+### Video presentation and clock
+
+Decoded video remains in `FrameLease` ownership. Sanctuary keeps a strict two-frame
+presentation lookahead. Once those two slots are full it stops draining the video
+TrackSink channel; the next decoded frame stays upstream and naturally back-pressures
+the video decoder. There is no extra `pending_video_frame` slot and no larger hidden
+decoded-frame buffer used merely to keep audio moving.
+
+`VideoClock` anchors an integer media PTS to a high-resolution `Instant`. Desired
+video PTS at a later wall-clock instant is derived from that anchor. If the next frame
+is in the future, Sanctuary asks winit to wake at its exact presentation deadline
+rather than polling continuously. If more than one queued frame is already due, older
+due frames may be dropped so the newest currently-due frame is presented. Future
+frames are not discarded merely to relieve back-pressure. A video frame without PTS
+is dropped because it cannot be scheduled meaningfully.
+
+The public playback position is currently derived from this video clock (except while
+a seek is explicitly in flight). Pause freezes the video PTS/Instant mapping and
+pauses sysaudio; resume establishes a new wall-clock anchor without counting paused
+time as media time.
+
+### Current A/V synchronisation model
+
+Audio and video are both mapped onto the same media-relative timeline derived from
+their MPEG-TS PTS values and the chosen timeline origin:
+
+```text
+                 common media PTS timeline
+                    /               \
+                   /                 \
+        audio sample clock        video PTS clock
+          (sysaudio callback)      (Instant deadlines)
+```
+
+There is **not yet an active A/V drift controller** that compares the two clocks and
+nudges one presentation rate toward the other. At 1.0x each side currently presents at
+its nominal rate against the common PTS timeline. Adding measured drift correction,
+output-latency compensation and later variable-rate playback is a separate layer above
+this transport/decode/back-pressure architecture.
+
+Seeking does not depend on cross-track arrival order. A seek generation is carried
+down each routed track as an ordered barrier. Sanctuary discards old-epoch state and
+does not complete the seek until the matching barriers required from the routed A/V
+tracks have arrived. The landed transport PTS is then converted back onto the common
+media-relative timeline before presentation resumes.
 The first Sanctuary media-session implementation now retains `FrameLease`s directly.
 For ordinary frame-coded software H.264, `FrameLease::ArenaVideo` stays on the pooled
 decoder allocation through the OxideAV sink, Sanctuary's bounded video queue, and
@@ -198,12 +340,12 @@ empty or begins in the future, copies aligned PCM where available, and finally a
 not stop audio time: silence occupies the missed presentation interval and late decoded
 samples are subsequently discarded or trimmed.
 
-The wider wall-clock/controller A/V clock redesign is intentionally not part of this
-change. For compatibility, the current player position is still derived from the audio
-timeline while an audio track is present, now using `next_output_pts` rather than a
-count of real PCM popped from the ring. Output latency is also not yet applied. Pause
-pauses the sysaudio stream, so this temporary position still freezes naturally. Media
-without audio retains the existing video-only fallback.
+Audio timing and video timing are now deliberately separate. The audio callback advances
+`next_output_pts` on the integer sample clock, while `VideoClock` maps video PTS to
+high-resolution wall-clock deadlines. The public playback position is derived from the
+video clock outside an in-flight seek. Both clocks are mapped to the same media-relative
+PTS origin, but Sanctuary does not yet run an active drift-correction controller between
+them. Output-device latency is likewise not yet applied to the audio presentation clock.
 
 `2fe9a28` in `oxideav-pipeline` is required for that fallback to be trustworthy. The
 pipeline previously synthesised sink-facing primary streams with `start_time: Some(0)`
@@ -316,22 +458,26 @@ The desktop launcher accepts
 to `cpu`. `--mute` sets sysaudio's per-stream software gain to zero while leaving
 the audio callback and timestamp timeline active.
 
-Muted GhostBSD validation against Twitch VOD `2386400830` confirms the corrected
-in-band format discovery without producing sound. The initial MPEG-TS AAC stream now
-arrives with unknown rate/channels rather than a guessed 44.1 kHz shape; the first
-decoder `stream_update()` reports the actual **48 kHz stereo S16** output, and only then
-does Sanctuary open `sysaudio/oss` at 48 kHz stereo. A muted `vdpau-direct` playing
-smoke kept the PCM ring near its 500 ms forward target and advanced `next_output_pts` at
-48 kHz. Nine startup underrun callbacks occurred while first VDPAU presentation stalled
-for about 539 ms; the count then remained stable, so that is a separate preroll/startup
-issue rather than continuous PCM loss.
+Muted GhostBSD validation against Twitch VOD `2386400830` confirms the current
+independent-track architecture without producing sound. The initial MPEG-TS AAC stream
+arrives with unknown rate/channels; the first ordered audio `stream_update()` reports
+the actual **48 kHz stereo S16** output, and only then does Sanctuary open
+`sysaudio/oss` at 48 kHz stereo.
 
-The timestamp-aware audio path is covered by deterministic mock/ring tests: contiguous
-PTS, missing PTS, partial/full overlap, late frames after underrun, small and ring-spanning
-gaps, incremental zero padding, whole-frame deferral on capacity pressure, empty/partial
+Real `vdpau-direct` regressions after the TrackSink split sustained approximately
+**30 fps at 160p** and **59.9-60.0 fps at 720p60**, kept the normal two-frame video
+lookahead and roughly 500 ms audio target, and recorded **zero audio underrun callbacks
+and zero underrun samples** after startup. A real initial seek request to 60 s delivered
+the matching per-track barriers, landed at the decode-safe point around 58.094 s, and
+resumed stable 160p playback with zero underruns.
+
+The timestamp-aware audio path is covered by deterministic mock/ring tests for contiguous
+PTS, missing PTS, overlap, late frames, gaps, zero padding, whole-frame deferral,
 underflow, stale-buffer discard, future-ring silence, stereo sample-frame accounting and
-head-of-line back-pressure. A player regression also pins deferred device opening from an
-authoritative 48 kHz stream update. The Sanctuary app suite currently passes 103 tests.
+audio-local head-of-line back-pressure. Playback regressions additionally pin independent
+audio/video TrackSink progress, cancellation of a blocked TrackSink, two-frame video
+back-pressure, authoritative late audio format discovery and multi-track seek barriers.
+The Sanctuary app suite currently passes **116 tests**.
 
 This Twitch web-player GraphQL/Usher protocol is not a stable public playback API,
 so all Twitch-specific request shape, client ID and token handling remain isolated
@@ -382,9 +528,11 @@ suitable when callback advancement is not required.
 
 ## Current SanctuaryPlayer follow-ups
 
-1. Apply `VideoSource::start_time` through the real HLS seek path during initial open.
+1. Add an explicit A/V drift controller above the existing independent clocks. Measure
+   audio presentation time (including device latency) against `VideoClock`, then apply a
+   bounded correction policy rather than relying indefinitely on nominal-rate clocks.
 2. Add pitch-preserving audio time-stretch before re-enabling 0.25x-2.0x rates for
-   real A/V sessions.
+   real A/V sessions, using the same controller model for rate changes.
 3. Apply output-latency compensation from `oxideav-sysaudio::Stream::latency()` and
    add explicit output-device / channel-layout / downmix policy.
 4. Add an Android backend to `oxideav-sysaudio` (or another Sanctuary Android audio
