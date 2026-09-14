@@ -22,6 +22,7 @@ const CONTROLS_HIDE_AFTER: Duration = Duration::from_secs(2);
 const LOCK_SLIDE_BACK_DURATION: Duration = Duration::from_millis(500);
 const POSITION_UPLOAD_DELTA: Duration = Duration::from_secs(10);
 const POSITION_SAVE_RETRY_DELAY: Duration = Duration::from_secs(5);
+const DEFAULT_WINDOW_TITLE: &str = "Sanctuary Player";
 
 type TwitchResolver = fn(&str) -> Result<ResolvedTwitchVod, TwitchVodResolveError>;
 type PlaybackFactory = fn(
@@ -893,6 +894,15 @@ impl AppState {
             .map(|metadata| sanitise_title(&metadata.title))
     }
 
+    pub fn window_title(&self) -> String {
+        self.safe_title()
+            .filter(|title| !title.trim().is_empty())
+            .map_or_else(
+                || DEFAULT_WINDOW_TITLE.to_owned(),
+                |title| format!("{title} - {DEFAULT_WINDOW_TITLE}"),
+            )
+    }
+
     pub fn release_age(&self) -> Option<Duration> {
         self.metadata.as_ref().map(|metadata| metadata.release_age)
     }
@@ -1119,6 +1129,38 @@ mod tests {
                 .release_age()
                 .is_some_and(|age| age > Duration::from_secs(24 * 3600))
         );
+        assert_eq!(state.window_title(), "_ vs _ - Game _ - Sanctuary Player");
+    }
+
+    #[test]
+    fn window_title_falls_back_without_usable_metadata() {
+        let mut state = AppState::new();
+        assert_eq!(state.window_title(), "Sanctuary Player");
+
+        state.metadata = Some(VideoMetadata {
+            title: "   ".into(),
+            release_age: Duration::ZERO,
+        });
+        assert_eq!(state.window_title(), "Sanctuary Player");
+    }
+
+    #[test]
+    fn opening_new_video_clears_previous_window_title_until_metadata_arrives() {
+        let mut state = AppState::new();
+        state.metadata = Some(VideoMetadata {
+            title: "Alpha vs Beta - Game 3".into(),
+            release_age: Duration::ZERO,
+        });
+        assert_eq!(state.window_title(), "_ vs _ - Game _ - Sanctuary Player");
+
+        state.twitch_resolver = test_twitch_resolver;
+        state.playback_factory = test_playback_factory;
+        state.apply(AppCommand::OpenVideo(
+            VideoSource::parse("2386400830").unwrap(),
+        ));
+
+        assert!(state.pending_video_open.is_some());
+        assert_eq!(state.window_title(), "Sanctuary Player");
     }
 
     #[test]
@@ -1161,6 +1203,7 @@ mod tests {
 
         assert!(state.has_video());
         assert_eq!(state.safe_title(), None);
+        assert_eq!(state.window_title(), "Sanctuary Player");
         assert_eq!(state.release_age(), None);
     }
 

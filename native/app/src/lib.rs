@@ -141,6 +141,7 @@ pub struct SanctuaryPlayerApp {
     next_animation_frame: Instant,
     next_egui_repaint: Option<Instant>,
     render_diagnostics: RenderDiagnostics,
+    window_title: String,
 }
 
 impl SanctuaryPlayerApp {
@@ -155,6 +156,7 @@ impl SanctuaryPlayerApp {
             next_animation_frame: Instant::now(),
             next_egui_repaint: None,
             render_diagnostics: RenderDiagnostics::new(),
+            window_title: String::new(),
         }
     }
 
@@ -214,7 +216,16 @@ impl SanctuaryPlayerApp {
         if let Some(effect) = self.state.apply(command) {
             Self::apply_effect(window, effect);
         }
+        self.sync_window_title(window);
         window.request_redraw();
+    }
+
+    fn sync_window_title(&mut self, window: &Window) {
+        let title = self.state.window_title();
+        if title != self.window_title {
+            window.set_title(&title);
+            self.window_title = title;
+        }
     }
 
     fn update_state_at(&mut self, now: Instant) {
@@ -244,8 +255,9 @@ impl ApplicationHandler<AppEvent> for SanctuaryPlayerApp {
         if self.window.is_some() {
             return;
         }
+        let initial_title = self.state.window_title();
         let attrs = WindowAttributes::default()
-            .with_title("Sanctuary Player")
+            .with_title(initial_title.clone())
             .with_window_icon(icon::app_icon())
             .with_inner_size(winit::dpi::PhysicalSize::new(1280, 720));
         let window = match event_loop.create_window(attrs) {
@@ -267,6 +279,7 @@ impl ApplicationHandler<AppEvent> for SanctuaryPlayerApp {
         self.last_update = Instant::now();
         self.next_animation_frame = self.last_update;
         self.next_egui_repaint = None;
+        self.window_title = initial_title;
         self.window = Some(window.clone());
         self.graphics = Some(graphics);
         if let Some(source) = self.initial_video.take() {
@@ -296,6 +309,7 @@ impl ApplicationHandler<AppEvent> for SanctuaryPlayerApp {
                 };
                 let now = Instant::now();
                 self.update_state_at(now);
+                self.sync_window_title(window.as_ref());
                 let control = pending.contains(PlaybackWakeKind::Control);
                 let video_due = pending.contains(PlaybackWakeKind::Video)
                     && self
@@ -401,6 +415,7 @@ impl ApplicationHandler<AppEvent> for SanctuaryPlayerApp {
                 }
 
                 self.update_state_at(now);
+                self.sync_window_title(window);
 
                 if let Some(graphics) = self.graphics.as_mut() {
                     match graphics.render(window, &mut self.state) {
