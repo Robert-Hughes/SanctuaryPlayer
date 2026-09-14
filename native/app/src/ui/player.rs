@@ -215,6 +215,20 @@ fn text_control_size(ui: &egui::Ui, label: &str, font_size: f32, padding: f32) -
     galley.size() + egui::vec2(2.0 * padding, 2.0 * padding)
 }
 
+fn bottom_control_row_origins(
+    centre_x: f32,
+    middle_width: f32,
+    gap: f32,
+    left_widths: &[f32],
+) -> (f32, f32, f32) {
+    let middle_x = centre_x - middle_width * 0.5;
+    let left_width =
+        left_widths.iter().sum::<f32>() + gap * left_widths.len().saturating_sub(1) as f32;
+    let left_x = middle_x - gap - left_width;
+    let right_x = middle_x + middle_width + gap;
+    (left_x, middle_x, right_x)
+}
+
 fn paint_bottom_controls(ui: &mut egui::Ui, state: &mut AppState, commands: &mut Vec<AppCommand>) {
     let ctx = ui.ctx().clone();
     let screen = ctx.content_rect();
@@ -238,11 +252,9 @@ fn paint_bottom_controls(ui: &mut egui::Ui, state: &mut AppState, commands: &mut
         .iter()
         .map(|(label, _)| text_control_size(ui, label, font_size, padding))
         .collect();
-    let total_width = left_sizes.iter().map(|size| size.x).sum::<f32>()
-        + right_sizes.iter().map(|size| size.x).sum::<f32>()
-        + middle_width
-        + 6.0 * gap;
-    let mut x = screen.center().x - total_width * 0.5;
+    let left_widths: Vec<_> = left_sizes.iter().map(|size| size.x).collect();
+    let (mut x, middle_x, right_x) =
+        bottom_control_row_origins(screen.center().x, middle_width, gap, &left_widths);
 
     for ((label, offset), size) in left.into_iter().zip(left_sizes) {
         let y = bottom - size.y;
@@ -260,7 +272,6 @@ fn paint_bottom_controls(ui: &mut egui::Ui, state: &mut AppState, commands: &mut
         x += size.x + gap;
     }
 
-    let middle_x = x;
     egui::Area::new(egui::Id::new("bottom-controls-middle"))
         .fixed_pos(egui::pos2(middle_x, bottom - middle_height))
         .order(egui::Order::Foreground)
@@ -315,7 +326,7 @@ fn paint_bottom_controls(ui: &mut egui::Ui, state: &mut AppState, commands: &mut
                 }
             });
         });
-    x += middle_width + gap;
+    x = right_x;
 
     for ((label, offset), size) in right.into_iter().zip(right_sizes) {
         let y = bottom - size.y;
@@ -404,4 +415,28 @@ fn paint_lock_slider(
             response.on_hover_text("Drag right to lock/unlock controls");
         });
     area.response.rect
+}
+
+#[cfg(test)]
+mod tests {
+    use super::bottom_control_row_origins;
+
+    #[test]
+    fn bottom_middle_controls_stay_centred_with_asymmetric_seek_widths() {
+        let centre_x = 591.0;
+        let middle_width = 144.0;
+        let gap = 7.2;
+        let left_widths = [84.6925, 64.41125, 48.755];
+
+        let (left_x, middle_x, right_x) =
+            bottom_control_row_origins(centre_x, middle_width, gap, &left_widths);
+
+        assert!((middle_x + middle_width * 0.5 - centre_x).abs() < f32::EPSILON);
+
+        let left_end = left_x
+            + left_widths.iter().sum::<f32>()
+            + gap * left_widths.len().saturating_sub(1) as f32;
+        assert!((middle_x - left_end - gap).abs() < 0.001);
+        assert!((right_x - (middle_x + middle_width) - gap).abs() < 0.001);
+    }
 }
