@@ -73,6 +73,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     if let Err(error) = event_loop.run_app(&mut app) {
         log::error!("SanctuaryPlayer: event loop failed: {error}");
+        app.flush_persistence_for_shutdown();
         log::logger().flush();
     }
     Ok(())

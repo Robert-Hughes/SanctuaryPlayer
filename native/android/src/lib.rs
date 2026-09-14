@@ -30,6 +30,7 @@ pub fn android_main(android_app: winit::platform::android::activity::AndroidApp)
     app.set_session_path(session_path);
     if let Err(error) = event_loop.run_app(&mut app) {
         log::error!("SanctuaryPlayer: Android event loop failed: {error}");
+        app.flush_persistence_for_shutdown();
         log::logger().flush();
     }
 }

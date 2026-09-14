@@ -47,6 +47,7 @@ pub enum AppEvent {
 
 const ANIMATION_FRAME_INTERVAL: Duration = Duration::from_millis(16);
 const RENDER_DIAGNOSTIC_INTERVAL: Duration = Duration::from_secs(1);
+const SHUTDOWN_POSITION_FLUSH_BUDGET: Duration = Duration::from_secs(2);
 
 struct RenderDiagnostics {
     last_redraw: Option<Instant>,
@@ -175,6 +176,11 @@ impl SanctuaryPlayerApp {
         self.state.set_muted(muted);
     }
 
+    pub fn flush_persistence_for_shutdown(&mut self) {
+        self.state
+            .flush_persistence_for_shutdown(SHUTDOWN_POSITION_FLUSH_BUDGET);
+    }
+
     pub fn set_event_proxy(&mut self, proxy: EventLoopProxy<AppEvent>) {
         self.state.set_playback_wake(PlaybackWake::new(move || {
             let _ = proxy.send_event(AppEvent::PlaybackWake);
@@ -242,7 +248,7 @@ impl SanctuaryPlayerApp {
     }
 
     fn shutdown(&mut self, event_loop: &ActiveEventLoop) {
-        self.state.flush_local_session();
+        self.flush_persistence_for_shutdown();
         self.next_egui_repaint = None;
         if let Some(graphics) = self.graphics.take() {
             drop(graphics);
@@ -303,7 +309,7 @@ impl ApplicationHandler<AppEvent> for SanctuaryPlayerApp {
     }
 
     fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
-        self.state.flush_local_session();
+        self.state.flush_persistence_for_background();
         self.graphics = None;
         self.window = None;
     }
@@ -351,6 +357,10 @@ impl ApplicationHandler<AppEvent> for SanctuaryPlayerApp {
         if playback_deadline.is_some_and(|when| now >= when) {
             requested_redraw = true;
         }
+        let persistence_deadline = self.state.persistence_wake_deadline(now);
+        if persistence_deadline.is_some_and(|when| now >= when) {
+            requested_redraw = true;
+        }
 
         if self.next_egui_repaint.is_some_and(|when| now >= when) {
             requested_redraw = true;
@@ -369,9 +379,11 @@ impl ApplicationHandler<AppEvent> for SanctuaryPlayerApp {
             .then_some(self.next_animation_frame)
             .filter(|deadline| *deadline > now);
         let playback_deadline = playback_deadline.filter(|deadline| *deadline > now);
+        let persistence_deadline = persistence_deadline.filter(|deadline| *deadline > now);
         let next_deadline = [
             animation_deadline,
             playback_deadline,
+            persistence_deadline,
             self.next_egui_repaint,
         ]
         .into_iter()
@@ -450,7 +462,7 @@ impl ApplicationHandler<AppEvent> for SanctuaryPlayerApp {
                         }
                         Err(error) => {
                             log::error!("SanctuaryPlayer: GPU surface error: {error}");
-                            self.state.flush_local_session();
+                            self.flush_persistence_for_shutdown();
                             event_loop.exit();
                         }
                     }
