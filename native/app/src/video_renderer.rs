@@ -304,9 +304,10 @@ impl VideoRenderer {
             .ok_or_else(|| "VDPAU readback produced invalid YUV420P planes".to_owned())?;
         self.upload_yuv420p(device, queue, &view)?;
         if !self.readback_logged {
-            eprintln!(
+            log::info!(
                 "SanctuaryPlayer: VDPAU readback presentation active ({}x{}, hardware decode -> CPU I420 -> wgpu)",
-                width, height
+                width,
+                height
             );
             self.readback_logged = true;
         }
@@ -416,9 +417,11 @@ impl VideoRenderer {
             }
             self.vdpau_busy_drops = 0;
             self.presentation = Presentation::None;
-            eprintln!(
+            log::info!(
                 "SanctuaryPlayer: VDPAU direct presentation active (GLX interop2 -> Vulkan -> wgpu, {}x{}, {} async slots)",
-                width, height, VDPAU_BRIDGE_SLOTS
+                width,
+                height,
+                VDPAU_BRIDGE_SLOTS
             );
         }
 
@@ -430,7 +433,7 @@ impl VideoRenderer {
         let Some(slot) = slot else {
             self.vdpau_busy_drops += 1;
             if self.vdpau_busy_drops == 1 || self.vdpau_busy_drops.is_multiple_of(120) {
-                eprintln!(
+                log::info!(
                     "SanctuaryPlayer: all {VDPAU_BRIDGE_SLOTS} VDPAU direct slots are in flight; dropping video frame"
                 );
             }

@@ -10,6 +10,7 @@ mod audio_timeline;
 mod graphics;
 mod icon;
 mod input;
+pub mod logging;
 pub mod model;
 pub mod playback;
 pub mod services;
@@ -101,7 +102,7 @@ impl RenderDiagnostics {
         } else {
             self.redraw_work_total.as_secs_f64() * 1000.0 / self.redraws as f64
         };
-        eprintln!(
+        log::info!(
             "SanctuaryPlayer: render cadence redraws={} rate={rate:.1}/s gap_gt20ms={} gap_gt33ms={} max_gap={:.2}ms redraw_work_avg={average_work_ms:.2}ms redraw_work_max={:.2}ms",
             self.redraws,
             self.gaps_over_20ms,
@@ -263,7 +264,7 @@ impl ApplicationHandler<AppEvent> for SanctuaryPlayerApp {
         let window = match event_loop.create_window(attrs) {
             Ok(window) => Arc::new(window),
             Err(error) => {
-                eprintln!("SanctuaryPlayer: failed to create window: {error}");
+                log::error!("SanctuaryPlayer: failed to create window: {error}");
                 event_loop.exit();
                 return;
             }
@@ -271,7 +272,7 @@ impl ApplicationHandler<AppEvent> for SanctuaryPlayerApp {
         let graphics = match Graphics::new(window.clone()) {
             Ok(graphics) => graphics,
             Err(error) => {
-                eprintln!("SanctuaryPlayer: failed to initialise GPU rendering: {error}");
+                log::error!("SanctuaryPlayer: failed to initialise GPU rendering: {error}");
                 event_loop.exit();
                 return;
             }
@@ -438,7 +439,7 @@ impl ApplicationHandler<AppEvent> for SanctuaryPlayerApp {
                             }
                         }
                         Err(error) => {
-                            eprintln!("SanctuaryPlayer: GPU surface error: {error}");
+                            log::error!("SanctuaryPlayer: GPU surface error: {error}");
                             event_loop.exit();
                         }
                     }

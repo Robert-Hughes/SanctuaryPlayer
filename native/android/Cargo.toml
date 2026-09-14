@@ -13,6 +13,7 @@ path = "src/lib.rs"
 
 [dependencies]
 sanctuary-player-app = { path = "../app" }
+log.workspace = true
 
 [target.'cfg(target_os = "android")'.dependencies]
 winit = { workspace = true, features = ["android-native-activity"] }

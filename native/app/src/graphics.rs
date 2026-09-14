@@ -131,9 +131,11 @@ impl Graphics {
         let egui_renderer =
             egui_wgpu::Renderer::new(&device, format, egui_wgpu::RendererOptions::default());
         let video_renderer = VideoRenderer::new(&device, &queue, format, max_texture_dimension_2d);
-        eprintln!(
+        log::info!(
             "SanctuaryPlayer: GPU {} ({:?}, {:?})",
-            adapter_info.name, adapter_info.device_type, adapter_info.backend
+            adapter_info.name,
+            adapter_info.device_type,
+            adapter_info.backend
         );
 
         Ok(Self {

@@ -20,6 +20,7 @@ egui_extras.workspace = true
 pollster.workspace = true
 ringbuf.workspace = true
 chrono.workspace = true
+log.workspace = true
 oxideav.workspace = true
 oxideav-meta.workspace = true
 oxideav-pixfmt.workspace = true

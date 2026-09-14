@@ -100,7 +100,7 @@ fn parse_positions(body: &str) -> Result<Vec<SavedPosition>, String> {
         match parse_position(row) {
             Ok(position) => positions.push(position),
             Err(error) => {
-                eprintln!("SanctuaryPlayer: skipping saved-position row {index}: {error}");
+                log::warn!("SanctuaryPlayer: skipping saved-position row {index}: {error}");
             }
         }
     }

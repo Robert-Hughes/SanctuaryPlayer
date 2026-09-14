@@ -242,7 +242,7 @@ impl AppState {
 
     pub fn set_settings_path(&mut self, path: PathBuf) {
         let store = SettingsStore::new(path);
-        eprintln!("SanctuaryPlayer: settings path={}", store.path().display());
+        log::info!("SanctuaryPlayer: settings path={}", store.path().display());
         match store.load() {
             Ok(settings) => {
                 self.account.user_id = settings.user_id;
@@ -251,7 +251,7 @@ impl AppState {
                 self.positions_refresh_requested = self.signed_in();
             }
             Err(error) => {
-                eprintln!("SanctuaryPlayer: unable to load settings: {error}");
+                log::warn!("SanctuaryPlayer: unable to load settings: {error}");
             }
         }
         self.settings_store = Some(store);
@@ -267,7 +267,7 @@ impl AppState {
             favourite_qualities: self.preferences.favourite_qualities.clone(),
         };
         if let Err(error) = store.save(&settings) {
-            eprintln!("SanctuaryPlayer: unable to save settings: {error}");
+            log::warn!("SanctuaryPlayer: unable to save settings: {error}");
         }
     }
 
@@ -464,7 +464,7 @@ impl AppState {
         }
         match result {
             Ok(positions) => {
-                eprintln!(
+                log::info!(
                     "SanctuaryPlayer: loaded {} saved positions",
                     positions.len()
                 );
@@ -472,7 +472,7 @@ impl AppState {
                 self.positions_error = None;
             }
             Err(error) => {
-                eprintln!("SanctuaryPlayer: saved-position fetch failed: {error}");
+                log::warn!("SanctuaryPlayer: saved-position fetch failed: {error}");
                 self.positions_error = Some(error);
             }
         }
@@ -559,7 +559,7 @@ impl AppState {
         self.pending_position_save = None;
         match result {
             Ok(()) => {
-                eprintln!(
+                log::info!(
                     "SanctuaryPlayer: saved position video={} position={}s",
                     source.id,
                     position.as_secs()
@@ -577,7 +577,7 @@ impl AppState {
                 }
             }
             Err(error) => {
-                eprintln!("SanctuaryPlayer: saved-position upload failed: {error}");
+                log::warn!("SanctuaryPlayer: saved-position upload failed: {error}");
                 self.next_position_save_allowed = Instant::now() + POSITION_SAVE_RETRY_DELAY;
             }
         }

@@ -324,9 +324,11 @@ impl SessionTrackSink {
                         .last_backpressure_log
                         .is_none_or(|last| now.duration_since(last) >= DIAGNOSTIC_INTERVAL)
                     {
-                        eprintln!(
+                        log::info!(
                             "SanctuaryPlayer: TrackSink backpressure kind={:?} waiting_for={} blocked_sends={}",
-                            self.kind, label, self.blocked_sends
+                            self.kind,
+                            label,
+                            self.blocked_sends
                         );
                         self.last_backpressure_log = Some(now);
                     }
@@ -566,7 +568,7 @@ fn open_variant_session(
     let (tx, rx) = mpsc::sync_channel(SESSION_CHANNEL_CAP);
     let (video_tx, video_rx) = mpsc::sync_channel(SESSION_CHANNEL_CAP);
     let sink = Box::new(SessionSink::new(tx, video_tx, wake));
-    eprintln!(
+    log::info!(
         "SanctuaryPlayer: OxideAV compressed packet queue cap={} per track",
         PLAYBACK_PACKET_CHANNEL_CAP
     );
@@ -619,7 +621,7 @@ fn open_variant_session(
         audio_stream.is_some(),
     );
 
-    eprintln!(
+    log::info!(
         "SanctuaryPlayer: OxideAV video stream mode={} codec={} {}x{} time_base={}/{}",
         decode_mode,
         video_stream.params.codec_id,
@@ -629,7 +631,7 @@ fn open_variant_session(
         video_stream.time_base.den(),
     );
     if let Some(stream) = audio_stream.as_ref() {
-        eprintln!(
+        log::info!(
             "SanctuaryPlayer: OxideAV provisional audio stream codec={} rate={:?}Hz channels={:?} format={:?} time_base={}/{}",
             stream.params.codec_id,
             stream.params.sample_rate,
@@ -667,9 +669,10 @@ impl OxidePlayback {
     ) -> Result<Self, String> {
         let quality_set = inspect_hls_qualities(&m3u8_url)?;
         let selected_url = quality_set.urls[quality_set.preferred_index].clone();
-        eprintln!(
+        log::info!(
             "SanctuaryPlayer: HLS initial quality={} variant={}",
-            quality_set.qualities[quality_set.preferred_index].label, selected_url
+            quality_set.qualities[quality_set.preferred_index].label,
+            selected_url
         );
         let session = open_variant_session(&selected_url, decode_mode, wake.clone())?;
 
@@ -761,9 +764,10 @@ impl OxidePlayback {
     ) {
         let new_quality = self.qualities[intent.target_index].label.clone();
         let new_url = self.quality_urls[intent.target_index].clone();
-        eprintln!(
+        log::info!(
             "SanctuaryPlayer: quality switch worker start new={} variant={}",
-            new_quality, new_url
+            new_quality,
+            new_url
         );
         let receiver = spawn_quality_open_worker(
             retired,
@@ -783,9 +787,10 @@ impl OxidePlayback {
         self.quality_index = index;
         if let Some(pending) = self.pending_quality_switch.as_ref() {
             self.queued_quality_index = (index != pending.intent.target_index).then_some(index);
-            eprintln!(
+            log::info!(
                 "SanctuaryPlayer: quality switch coalesced in_flight={} latest={}",
-                self.qualities[pending.intent.target_index].label, self.qualities[index].label,
+                self.qualities[pending.intent.target_index].label,
+                self.qualities[index].label,
             );
             return Ok(());
         }
@@ -812,7 +817,7 @@ impl OxidePlayback {
         let old_quality = self.qualities[self.active_quality_index].label.clone();
         let new_quality = self.qualities[index].label.clone();
         let new_url = self.quality_urls[index].clone();
-        eprintln!(
+        log::info!(
             "SanctuaryPlayer: quality switch begin old={} new={} variant={} preserve={:.3}s resume_playing={}",
             old_quality,
             new_quality,
@@ -863,9 +868,10 @@ impl OxidePlayback {
             if intent.resume_playing {
                 self.play();
             }
-            eprintln!(
+            log::info!(
                 "SanctuaryPlayer: quality switch complete active={} variant={} position=0s",
-                new_quality, new_url
+                new_quality,
+                new_url
             );
             return Ok(());
         }
@@ -875,7 +881,7 @@ impl OxidePlayback {
         seek_after_open(self, target, intent.resume_playing).map_err(|error| {
             format!("seek replacement HLS quality to preserved position: {error}")
         })?;
-        eprintln!(
+        log::info!(
             "SanctuaryPlayer: quality switch active={} variant={} seeking={:.3}s resume_playing={}",
             new_quality,
             new_url,
@@ -911,7 +917,7 @@ impl OxidePlayback {
             let retired = match result {
                 Ok(session) => Some(retired_opened_session(session)),
                 Err(error) => {
-                    eprintln!(
+                    log::info!(
                         "SanctuaryPlayer: superseded quality switch failed before latest request: {error}"
                     );
                     None
@@ -1105,7 +1111,7 @@ impl OxidePlayback {
                             if self.diagnostics.dropped_video_frames <= 3
                                 || self.diagnostics.dropped_video_frames.is_multiple_of(60)
                             {
-                                eprintln!(
+                                log::info!(
                                     "SanctuaryPlayer: dropping decoded video frame with no PTS dropped={}",
                                     self.diagnostics.dropped_video_frames
                                 );
@@ -1178,7 +1184,7 @@ impl OxidePlayback {
                 self.audio_stream = Some(stream.clone());
                 let complete = audio_stream_is_authoritative(&stream);
                 if !complete {
-                    eprintln!(
+                    log::info!(
                         "SanctuaryPlayer: decoder audio stream update remains provisional codec={} rate={:?}Hz channels={:?} format={:?}",
                         stream.params.codec_id,
                         stream.params.sample_rate,
@@ -1188,7 +1194,7 @@ impl OxidePlayback {
                     return Ok(());
                 }
 
-                eprintln!(
+                log::info!(
                     "SanctuaryPlayer: authoritative audio stream codec={} rate={}Hz channels={} format={:?} time_base={}/{}",
                     stream.params.codec_id,
                     stream.params.sample_rate.unwrap_or(0),
@@ -1260,13 +1266,14 @@ impl OxidePlayback {
             | BarrierKind::SeekRejected { generation } => generation,
         };
         let Some(pending) = self.seek_pending.as_mut() else {
-            eprintln!("SanctuaryPlayer: ignoring stale seek barrier generation={generation}");
+            log::info!("SanctuaryPlayer: ignoring stale seek barrier generation={generation}");
             return Ok(());
         };
         if generation != pending.generation {
-            eprintln!(
+            log::info!(
                 "SanctuaryPlayer: ignoring stale seek barrier generation={} current={}",
-                generation, pending.generation
+                generation,
+                pending.generation
             );
             return Ok(());
         }
@@ -1298,7 +1305,7 @@ impl OxidePlayback {
             if pending.resume_playing {
                 self.play();
             }
-            eprintln!(
+            log::info!(
                 "SanctuaryPlayer: seek rejected generation={} restored={:.3}s",
                 pending.generation,
                 self.position.as_secs_f64()
@@ -1325,7 +1332,7 @@ impl OxidePlayback {
             // most one more physical seek to perform. Keep audio paused and do
             // not rebuild/preroll intermediate A/V state that will immediately
             // be discarded again.
-            eprintln!(
+            log::info!(
                 "SanctuaryPlayer: seek generation={} superseded after landing={:.3}s; dispatching latest={:.3}s",
                 pending.generation,
                 landed.as_secs_f64(),
@@ -1360,7 +1367,7 @@ impl OxidePlayback {
                 // has decoded enough data to publish rate/channels. The first
                 // ordered post-seek StreamUpdate will open AudioOutput.
                 self.audio_output = None;
-                eprintln!(
+                log::info!(
                     "SanctuaryPlayer: seek completed before authoritative audio metadata; waiting for decoder stream update"
                 );
             }
@@ -1374,7 +1381,7 @@ impl OxidePlayback {
         if pending.resume_playing {
             self.play();
         }
-        eprintln!(
+        log::info!(
             "SanctuaryPlayer: seek landed generation={} requested={:.3}s landed={:.3}s raw={:.3}s resume_playing={}",
             pending.generation,
             pending.requested.as_secs_f64(),
@@ -1447,7 +1454,7 @@ impl OxidePlayback {
             (dropped, epoch.audio_aligned && epoch.video_aligned)
         };
 
-        eprintln!(
+        log::info!(
             "SanctuaryPlayer: post-seek {} aligned floor={:.3}s first={:.3}s dropped_pre_epoch={}",
             match kind {
                 MediaType::Audio => "audio",
@@ -1483,17 +1490,17 @@ impl OxidePlayback {
         match kind {
             MediaType::Video if self.first_video_seconds.is_none() => {
                 self.first_video_seconds = Some(seconds);
-                eprintln!("SanctuaryPlayer: first decoded video PTS={seconds:.3}s raw={pts}");
+                log::info!("SanctuaryPlayer: first decoded video PTS={seconds:.3}s raw={pts}");
             }
             MediaType::Audio if self.first_audio_seconds.is_none() => {
                 self.first_audio_seconds = Some(seconds);
-                eprintln!("SanctuaryPlayer: first decoded audio PTS={seconds:.3}s raw={pts}");
+                log::info!("SanctuaryPlayer: first decoded audio PTS={seconds:.3}s raw={pts}");
             }
             _ => {}
         }
         if kind == MediaType::Audio && self.audio_anchor_seconds.is_none() {
             self.audio_anchor_seconds = Some(seconds);
-            eprintln!("SanctuaryPlayer: audio epoch PTS={seconds:.3}s raw={pts}");
+            log::info!("SanctuaryPlayer: audio epoch PTS={seconds:.3}s raw={pts}");
         }
         if self.timeline_origin_seconds.is_none() {
             self.timeline_origin_seconds = timeline_origin_seconds(
@@ -1502,9 +1509,10 @@ impl OxidePlayback {
                 self.audio_stream.is_some(),
             );
             if let Some(origin) = self.timeline_origin_seconds {
-                eprintln!(
+                log::info!(
                     "SanctuaryPlayer: media timeline origin={origin:.3}s video_start={:?} audio_start={:?}",
-                    self.first_video_seconds, self.first_audio_seconds
+                    self.first_video_seconds,
+                    self.first_audio_seconds
                 );
             }
         }
@@ -1548,7 +1556,7 @@ impl OxidePlayback {
     }
 
     fn fail(&mut self, message: String) {
-        eprintln!("SanctuaryPlayer: {message}");
+        log::error!("SanctuaryPlayer: {message}");
         if let Some(executor) = self.executor.as_ref() {
             executor.request_abort();
         }
@@ -1706,7 +1714,7 @@ impl OxidePlayback {
             .is_none_or(ExecutorHandle::has_finished);
 
         if let Some(audio) = self.audio_output.as_ref() {
-            eprintln!(
+            log::info!(
                 "SanctuaryPlayer: A/V status state={:?} clock={:.3}s pump={} executor_finished={} sink_finished={} video[q={} front={}s back={}s recv={} present={} drop={}] audio[playing={} preroll={} queued={:.1}ms headroom={:.1}ms submitted_samples={} next_output_pts={:?} underrun_callbacks={} underrun_samples={}]",
                 self.state,
                 self.position.as_secs_f64(),
@@ -1729,7 +1737,7 @@ impl OxidePlayback {
                 audio.underrun_samples(),
             );
         } else {
-            eprintln!(
+            log::info!(
                 "SanctuaryPlayer: video status state={:?} clock={:.3}s pump={} executor_finished={} sink_finished={} video[q={} front={}s back={}s recv={} present={} drop={}]",
                 self.state,
                 self.position.as_secs_f64(),
@@ -1783,7 +1791,7 @@ impl OxidePlayback {
             landing: None,
             rejected: false,
         });
-        eprintln!(
+        log::info!(
             "SanctuaryPlayer: seek begin generation={} media={:.3}s raw={:.3}s resume_playing={}",
             generation,
             target.as_secs_f64(),
@@ -1811,7 +1819,7 @@ impl PlaybackBackend for OxidePlayback {
         if !matches!(self.state, PlaybackState::Paused) {
             return;
         }
-        eprintln!("SanctuaryPlayer: playback -> Playing");
+        log::info!("SanctuaryPlayer: playback -> Playing");
         if let Some(audio) = self.audio_output.as_mut()
             && let Err(error) = audio.set_paused(false)
         {
@@ -1826,7 +1834,7 @@ impl PlaybackBackend for OxidePlayback {
         if !matches!(self.state, PlaybackState::Playing) {
             return;
         }
-        eprintln!("SanctuaryPlayer: playback -> Paused");
+        log::info!("SanctuaryPlayer: playback -> Paused");
         if let Some(audio) = self.audio_output.as_mut()
             && let Err(error) = audio.set_paused(true)
         {
@@ -1856,11 +1864,11 @@ impl PlaybackBackend for OxidePlayback {
 
     fn seek(&mut self, position: Duration) {
         if !self.seek_supported {
-            eprintln!("SanctuaryPlayer: seek ignored; source rejected seeking earlier");
+            log::info!("SanctuaryPlayer: seek ignored; source rejected seeking earlier");
             return;
         }
         if self.timeline_origin_seconds.is_none() {
-            eprintln!("SanctuaryPlayer: seek ignored until media timeline origin is known");
+            log::info!("SanctuaryPlayer: seek ignored until media timeline origin is known");
             return;
         }
         let target = self
@@ -1878,7 +1886,7 @@ impl PlaybackBackend for OxidePlayback {
         if let Some(pending) = self.seek_pending.as_ref() {
             self.queued_seek = Some(target);
             self.position = target;
-            eprintln!(
+            log::info!(
                 "SanctuaryPlayer: seek coalesced behind generation={} latest={:.3}s",
                 pending.generation,
                 target.as_secs_f64(),
@@ -2048,7 +2056,7 @@ fn quality_set_from_variants(
         if qualities.iter().any(|quality: &Quality| quality.id == id) {
             id = variant.url.as_str().to_owned();
         }
-        eprintln!(
+        log::info!(
             "SanctuaryPlayer: HLS quality id={} label={} resolution={}x{} fps={} bandwidth={} variant={}",
             id,
             label,

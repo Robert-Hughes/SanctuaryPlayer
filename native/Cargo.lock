@@ -2616,6 +2616,7 @@ dependencies = [
 name = "sanctuary-player-android"
 version = "0.1.0"
 dependencies = [
+ "log",
  "sanctuary-player-app",
  "winit",
 ]
@@ -2632,6 +2633,7 @@ dependencies = [
  "egui-winit",
  "egui_extras",
  "glow",
+ "log",
  "oxideav",
  "oxideav-audio-filter",
  "oxideav-hls",
@@ -2655,6 +2657,7 @@ name = "sanctuary-player-desktop"
 version = "0.1.0"
 dependencies = [
  "dirs",
+ "log",
  "sanctuary-player-app",
  "winit",
  "winresource",

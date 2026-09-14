@@ -5,24 +5,29 @@
 pub fn android_main(android_app: winit::platform::android::activity::AndroidApp) {
     use winit::platform::android::EventLoopBuilderExtAndroid;
 
-    let settings_path = android_app
+    let internal_data_path = android_app
         .internal_data_path()
-        .map(|path| path.join("settings.json"));
+        .expect("Android internal data path is unavailable");
+    sanctuary_player_app::logging::init(internal_data_path.join("logs"))
+        .expect("failed to initialise Android file logging");
+    let settings_path = internal_data_path.join("settings.json");
     let event_loop =
-        winit::event_loop::EventLoop::<sanctuary_player_app::AppEvent>::with_user_event()
+        match winit::event_loop::EventLoop::<sanctuary_player_app::AppEvent>::with_user_event()
             .with_android_app(android_app)
             .build()
-            .expect("failed to create Android event loop");
+        {
+            Ok(event_loop) => event_loop,
+            Err(error) => {
+                log::error!("SanctuaryPlayer: failed to create Android event loop: {error}");
+                log::logger().flush();
+                return;
+            }
+        };
     let mut app = sanctuary_player_app::SanctuaryPlayerApp::new();
     app.set_event_proxy(event_loop.create_proxy());
-    if let Some(path) = settings_path {
-        app.set_settings_path(path);
-    } else {
-        eprintln!(
-            "SanctuaryPlayer: Android internal data path is unavailable; settings will not persist"
-        );
+    app.set_settings_path(settings_path);
+    if let Err(error) = event_loop.run_app(&mut app) {
+        log::error!("SanctuaryPlayer: Android event loop failed: {error}");
+        log::logger().flush();
     }
-    event_loop
-        .run_app(&mut app)
-        .expect("SanctuaryPlayer event loop failed");
 }

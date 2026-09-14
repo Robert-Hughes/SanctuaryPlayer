@@ -111,7 +111,7 @@ impl AudioOutput {
         validate_device_format(source_rate, source_channels, device, driver.name())?;
         let preroll_target_samples = ((device.sample_rate as u64) * PREROLL_MILLIS / 1000).max(1);
 
-        eprintln!(
+        log::info!(
             "SanctuaryPlayer: audio output sysaudio/{} source={}Hz {}ch {:?} device={}Hz {}ch {:?} preroll={}ms muted={muted}",
             driver.name(),
             source_rate,
@@ -143,7 +143,7 @@ impl AudioOutput {
 
     pub(crate) fn set_media_origin(&mut self, origin: Duration) -> Result<(), String> {
         if self.media_origin.is_none() {
-            eprintln!(
+            log::info!(
                 "SanctuaryPlayer: audio clock anchored at {:.3}s",
                 origin.as_secs_f64()
             );
@@ -189,7 +189,7 @@ impl AudioOutput {
     fn maybe_finish_preroll(&mut self) -> Result<(), String> {
         if !self.preroll_done && self.queued_samples() >= self.preroll_target_samples {
             self.preroll_done = true;
-            eprintln!(
+            log::info!(
                 "SanctuaryPlayer: audio preroll ready queued={:.1}ms",
                 self.queued_duration().as_secs_f64() * 1000.0
             );
@@ -211,7 +211,7 @@ impl AudioOutput {
         if should_play == self.stream.is_playing() {
             return Ok(());
         }
-        eprintln!(
+        log::info!(
             "SanctuaryPlayer: audio stream {} queued={:.1}ms submitted={:.3}s next_output_pts={:?}",
             if should_play { "playing" } else { "paused" },
             self.queued_duration().as_secs_f64() * 1000.0,
