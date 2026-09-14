@@ -212,6 +212,14 @@ impl SanctuaryPlayerApp {
         app
     }
 
+    fn take_startup_video(&mut self) -> Option<(video::VideoSource, bool)> {
+        let restored = self.state.take_startup_session_source();
+        self.initial_video
+            .take()
+            .map(|source| (source, self.initial_autoplay))
+            .or_else(|| restored.map(|source| (source, false)))
+    }
+
     fn apply_effect(window: &Window, effect: AppEffect) {
         match effect {
             AppEffect::ToggleFullscreen => {
@@ -296,12 +304,10 @@ impl ApplicationHandler<AppEvent> for SanctuaryPlayerApp {
         self.window_title = initial_title;
         self.window = Some(window.clone());
         self.graphics = Some(graphics);
-        if let Some(source) = self.initial_video.take() {
-            if self.initial_autoplay {
+        if let Some((source, autoplay)) = self.take_startup_video() {
+            if autoplay {
                 self.state.play_when_opened();
             }
-            self.apply_command(window.as_ref(), crate::model::AppCommand::OpenVideo(source));
-        } else if let Some(source) = self.state.take_startup_session_source() {
             self.apply_command(window.as_ref(), crate::model::AppCommand::OpenVideo(source));
         } else {
             window.request_redraw();
@@ -483,5 +489,69 @@ impl ApplicationHandler<AppEvent> for SanctuaryPlayerApp {
             }
             _ => window.request_redraw(),
         }
+    }
+}
+
+#[cfg(test)]
+mod startup_tests {
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use super::*;
+    use crate::session::{SessionState, SessionStore};
+
+    fn temporary_session_path(name: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir()
+            .join(format!(
+                "sanctuary-player-startup-test-{}-{unique}",
+                std::process::id()
+            ))
+            .join(name)
+    }
+
+    #[test]
+    fn explicit_video_wins_and_discards_one_shot_restored_session() {
+        let path = temporary_session_path("session.json");
+        SessionStore::new(path.clone())
+            .save(&SessionState {
+                source: video::VideoSource::parse("2386400830").unwrap(),
+                position: Duration::from_secs(99),
+            })
+            .unwrap();
+
+        let explicit = video::VideoSource::parse("2859508682").unwrap();
+        let mut app = SanctuaryPlayerApp::with_initial_video_options(explicit.clone(), true);
+        app.set_session_path(path.clone());
+
+        assert_eq!(app.take_startup_video(), Some((explicit, true)));
+        assert_eq!(app.take_startup_video(), None);
+
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn restored_session_starts_paused() {
+        let path = temporary_session_path("session.json");
+        SessionStore::new(path.clone())
+            .save(&SessionState {
+                source: video::VideoSource::parse("2386400830").unwrap(),
+                position: Duration::from_millis(12_345),
+            })
+            .unwrap();
+
+        let mut app = SanctuaryPlayerApp::new();
+        app.set_session_path(path.clone());
+        let (source, autoplay) = app.take_startup_video().unwrap();
+
+        assert_eq!(source.id, "2386400830");
+        assert_eq!(source.start_time, Some(Duration::from_millis(12_345)));
+        assert!(!autoplay);
+        assert_eq!(app.take_startup_video(), None);
+
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 }
