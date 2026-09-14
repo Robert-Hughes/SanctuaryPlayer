@@ -23,6 +23,7 @@ use crate::video::{VideoPlatform, VideoSource};
 const CONTROLS_HIDE_AFTER: Duration = Duration::from_secs(2);
 const LOCK_SLIDE_BACK_DURATION: Duration = Duration::from_millis(500);
 const POSITION_UPLOAD_DELTA: Duration = Duration::from_secs(10);
+const CURRENT_POSITION_ROW_TOLERANCE: Duration = Duration::from_secs(10);
 const POSITION_SAVE_RETRY_DELAY: Duration = Duration::from_secs(5);
 const PAUSE_POSITION_SAVE_DEBOUNCE: Duration = Duration::from_millis(500);
 const SESSION_SAVE_INTERVAL: Duration = Duration::from_secs(3);
@@ -1229,11 +1230,22 @@ impl AppState {
     }
 
     pub fn saved_positions(&self) -> Vec<SavedPosition> {
-        if self.signed_in() {
-            self.saved_positions.clone()
-        } else {
-            Vec::new()
+        if !self.signed_in() {
+            return Vec::new();
         }
+
+        let current_id = self.source().map(|source| source.id.as_str());
+        let current_device = self.device_id();
+        let current_position = self.position();
+        self.saved_positions
+            .iter()
+            .filter(|entry| {
+                !(Some(entry.source.id.as_str()) == current_id
+                    && Some(entry.device_id.as_str()) == current_device
+                    && entry.position.abs_diff(current_position) < CURRENT_POSITION_ROW_TOLERANCE)
+            })
+            .cloned()
+            .collect()
     }
 
     pub fn saved_positions_loading(&self) -> bool {
@@ -1791,6 +1803,50 @@ mod tests {
         assert!(!second.positions_refresh_requested);
 
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn saved_positions_hide_only_redundant_current_device_row() {
+        let mut state = loaded_state();
+        state.account.user_id = Some("test-user".into());
+        state.account.device_id = Some("Native".into());
+        state.apply(AppCommand::SeekAbsolute(Duration::from_secs(100)));
+        state.update(Duration::from_secs(1));
+
+        let current_source = VideoSource::parse("2386400830").unwrap();
+        state.saved_positions = vec![
+            SavedPosition {
+                source: current_source.clone(),
+                device_id: "Native".into(),
+                position: Duration::from_secs(95),
+                modified_age: Duration::ZERO,
+                title: None,
+                release_age: None,
+            },
+            SavedPosition {
+                source: current_source.clone(),
+                device_id: "Phone".into(),
+                position: Duration::from_secs(95),
+                modified_age: Duration::ZERO,
+                title: None,
+                release_age: None,
+            },
+            SavedPosition {
+                source: current_source,
+                device_id: "Native".into(),
+                position: Duration::from_secs(80),
+                modified_age: Duration::ZERO,
+                title: None,
+                release_age: None,
+            },
+        ];
+
+        let visible = state.saved_positions();
+        assert_eq!(visible.len(), 2);
+        assert!(visible.iter().any(|entry| entry.device_id == "Phone"));
+        assert!(visible.iter().any(|entry| {
+            entry.device_id == "Native" && entry.position == Duration::from_secs(80)
+        }));
     }
 
     #[test]

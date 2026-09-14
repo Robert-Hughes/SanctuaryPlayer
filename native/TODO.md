@@ -29,13 +29,6 @@
 - Add a manual A/V sync test mode using a deterministic synthetic cue such as a simulated metronome, so presentation offset and drift can be observed and adjusted deliberately.
 - Logs to rotating files rather than console, so easier to inspect later
 
-## Saved positions and session persistence
-
-- Force/debounce a saved-position upload after pausing so the final few seconds are not lost when no further playback ticks occur.
-- Flush the latest safe saved position when changing video, suspending/backgrounding the app, and shutting down; handle any in-flight save without silently dropping the final position.
-- Review saved-position table parity with the web client, including suppressing the current device/current video row when its saved position is effectively the same as the current playback position.
-- Decide and implement appropriate session restoration on native restart so reload/relaunch can recover the current video/time where desired.
-
 ## Sources and streaming
 
 - Implement native YouTube playback rather than only recognising YouTube IDs/URLs.
