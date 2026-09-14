@@ -6,13 +6,11 @@
 - Represent buffering/rebuffering explicitly in playback state and UI rather than leaving a starved session looking like ordinary `Playing` playback.
 - Add user-visible playback/network error reporting and recovery controls instead of relying mainly on stderr diagnostics.
 - Improve end-of-media/restart behaviour and expose an intentional replay/restart action rather than only disabling play once `Ended` is reached.
-- Keep current quality/rate UI synchronised with asynchronous backend changes such as ABR, source changes or device/player constraints.
+- Keep current quality/rate UI synchronised with asynchronous backend changes such as source changes or device/player constraints.
 - Locked controls should make menu icon appear washed out like the others
 
 ## Quality, rate and A/V timing
 
-- Move HLS quality/session reconstruction off the UI thread so a quality change cannot block egui while playlists, segments, decoders and audio output are reopened.
-- Add adaptive bitrate (ABR) quality selection based on sustained network/playback conditions, while retaining manual/favourite-quality overrides.
 - Re-enable non-1.0x playback rates for real A/V playback with pitch-preserving audio time-stretch and correct A/V clocking.
 - Compensate the media clock for reported audio output latency so presentation timing reflects when sound actually reaches the device.
 
@@ -76,7 +74,3 @@
 - Add platform media-session integration (lock-screen/system media controls and current media metadata) where available.
 - Prevent display sleep/screensaver activation while actively playing video, and release the inhibition when paused/stopped/backgrounded.
 - Add native deep-link/share support for the current video and media time, equivalent to the web client's continuously updated `videoId`/`time` URL state.
-
-## Documentation
-
-- Update `oxideav-hls/README.md` to describe the current `HlsPacketSource`/`EXTINF` media-time seeking architecture instead of the superseded concatenated-byte-source design.
