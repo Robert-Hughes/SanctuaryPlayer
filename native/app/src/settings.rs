@@ -3,6 +3,8 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
+use crate::persistence::write_atomic;
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct Settings {
     pub(crate) user_id: Option<String>,
@@ -39,11 +41,6 @@ impl SettingsStore {
     }
 
     pub(crate) fn save(&self, settings: &Settings) -> Result<(), String> {
-        if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent).map_err(|error| {
-                format!("create settings directory {}: {error}", parent.display())
-            })?;
-        }
         let value = json!({
             "user_id": settings.user_id,
             "device_id": settings.device_id,
@@ -52,7 +49,7 @@ impl SettingsStore {
         let mut text = serde_json::to_string_pretty(&value)
             .map_err(|error| format!("serialise settings: {error}"))?;
         text.push('\n');
-        fs::write(&self.path, text)
+        write_atomic(&self.path, text.as_bytes())
             .map_err(|error| format!("write settings {}: {error}", self.path.display()))
     }
 }

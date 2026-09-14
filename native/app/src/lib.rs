@@ -12,8 +12,10 @@ mod icon;
 mod input;
 pub mod logging;
 pub mod model;
+mod persistence;
 pub mod playback;
 pub mod services;
+mod session;
 mod settings;
 pub mod spoilers;
 pub mod time_format;
@@ -165,6 +167,10 @@ impl SanctuaryPlayerApp {
         self.state.set_settings_path(path);
     }
 
+    pub fn set_session_path(&mut self, path: PathBuf) {
+        self.state.set_session_path(path);
+    }
+
     pub fn set_muted(&mut self, muted: bool) {
         self.state.set_muted(muted);
     }
@@ -236,6 +242,7 @@ impl SanctuaryPlayerApp {
     }
 
     fn shutdown(&mut self, event_loop: &ActiveEventLoop) {
+        self.state.flush_local_session();
         self.next_egui_repaint = None;
         if let Some(graphics) = self.graphics.take() {
             drop(graphics);
@@ -288,12 +295,15 @@ impl ApplicationHandler<AppEvent> for SanctuaryPlayerApp {
                 self.state.play_when_opened();
             }
             self.apply_command(window.as_ref(), crate::model::AppCommand::OpenVideo(source));
+        } else if let Some(source) = self.state.take_startup_session_source() {
+            self.apply_command(window.as_ref(), crate::model::AppCommand::OpenVideo(source));
         } else {
             window.request_redraw();
         }
     }
 
     fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
+        self.state.flush_local_session();
         self.graphics = None;
         self.window = None;
     }
@@ -440,6 +450,7 @@ impl ApplicationHandler<AppEvent> for SanctuaryPlayerApp {
                         }
                         Err(error) => {
                             log::error!("SanctuaryPlayer: GPU surface error: {error}");
+                            self.state.flush_local_session();
                             event_loop.exit();
                         }
                     }

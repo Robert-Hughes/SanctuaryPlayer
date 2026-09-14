@@ -41,12 +41,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(2);
     }
 
-    let log_dir = dirs::state_dir()
+    let state_dir = dirs::state_dir()
         .or_else(dirs::data_local_dir)
-        .ok_or("platform log directory is unavailable")?
-        .join("sanctuary-player")
-        .join("logs");
-    sanctuary_player_app::logging::init(&log_dir)?;
+        .ok_or("platform state directory is unavailable")?
+        .join("sanctuary-player");
+    sanctuary_player_app::logging::init(state_dir.join("logs"))?;
 
     let event_loop = match winit::event_loop::EventLoop::<AppEvent>::with_user_event().build() {
         Ok(event_loop) => event_loop,
@@ -64,6 +63,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     app.set_muted(muted);
     app.set_event_proxy(event_loop.create_proxy());
+    app.set_session_path(state_dir.join("session.json"));
     if let Some(config_dir) = dirs::config_dir() {
         app.set_settings_path(config_dir.join("sanctuary-player").join("settings.json"));
     } else {

@@ -13,6 +13,7 @@ use crate::playback::{
     DecodeMode, DummyPlayback, OxidePlayback, PendingPlaybackWakes, PlaybackBackend, PlaybackWake,
 };
 use crate::services::{PositionService, RemotePositionService, SavedPosition, VideoMetadata};
+use crate::session::{SessionState, SessionStore};
 use crate::settings::{Settings, SettingsStore};
 use crate::spoilers::sanitise_title;
 use crate::twitch::{ResolvedTwitchVod, TwitchVodMetadata, TwitchVodResolveError, resolve_vod};
@@ -22,6 +23,7 @@ const CONTROLS_HIDE_AFTER: Duration = Duration::from_secs(2);
 const LOCK_SLIDE_BACK_DURATION: Duration = Duration::from_millis(500);
 const POSITION_UPLOAD_DELTA: Duration = Duration::from_secs(10);
 const POSITION_SAVE_RETRY_DELAY: Duration = Duration::from_secs(5);
+const SESSION_SAVE_INTERVAL: Duration = Duration::from_secs(3);
 const DEFAULT_WINDOW_TITLE: &str = "Sanctuary Player";
 
 type TwitchResolver = fn(&str) -> Result<ResolvedTwitchVod, TwitchVodResolveError>;
@@ -98,6 +100,11 @@ pub struct AppState {
     last_uploaded_position: Option<LastUploadedPosition>,
     next_position_save_allowed: Instant,
     settings_store: Option<SettingsStore>,
+    session_store: Option<SessionStore>,
+    startup_session: Option<SessionState>,
+    last_safe_session: Option<SessionState>,
+    last_persisted_session: Option<SessionState>,
+    next_session_save_allowed: Instant,
     metadata: Option<VideoMetadata>,
     account: AccountState,
     preferences: Preferences,
@@ -201,6 +208,11 @@ impl Default for AppState {
             last_uploaded_position: None,
             next_position_save_allowed: Instant::now(),
             settings_store: None,
+            session_store: None,
+            startup_session: None,
+            last_safe_session: None,
+            last_persisted_session: None,
+            next_session_save_allowed: Instant::now(),
             metadata: None,
             account: AccountState::default(),
             preferences: Preferences::default(),
@@ -257,6 +269,27 @@ impl AppState {
         self.settings_store = Some(store);
     }
 
+    pub fn set_session_path(&mut self, path: PathBuf) {
+        let store = SessionStore::new(path);
+        log::info!("SanctuaryPlayer: session path={}", store.path().display());
+        match store.load() {
+            Ok(session) => {
+                self.startup_session = session.clone();
+                self.last_persisted_session = session;
+            }
+            Err(error) => {
+                log::warn!("SanctuaryPlayer: unable to load session: {error}");
+            }
+        }
+        self.session_store = Some(store);
+    }
+
+    pub fn take_startup_session_source(&mut self) -> Option<VideoSource> {
+        self.startup_session
+            .take()
+            .map(|session| session.restore_source())
+    }
+
     fn persist_settings(&self) {
         let Some(store) = self.settings_store.as_ref() else {
             return;
@@ -281,7 +314,12 @@ impl AppState {
 
     pub fn update(&mut self, elapsed: Duration) {
         self.poll_video_open();
+        let was_seeking = matches!(self.playback.state(), PlaybackState::Seeking);
         self.playback.update(elapsed);
+        let seek_completed =
+            was_seeking && !matches!(self.playback.state(), PlaybackState::Seeking);
+        self.refresh_safe_session();
+        self.persist_session(seek_completed);
         self.age_saved_positions(elapsed);
         if let Some(metadata) = self.metadata.as_mut() {
             metadata.release_age = metadata.release_age.saturating_add(elapsed);
@@ -343,9 +381,13 @@ impl AppState {
                     .filter(|position| !position.is_zero());
                 if let Some(position) = start_time {
                     self.playback.seek(position);
-                } else if self.play_when_opened {
-                    self.playback.play();
-                    self.play_when_opened = false;
+                } else {
+                    if self.play_when_opened {
+                        self.playback.play();
+                        self.play_when_opened = false;
+                    }
+                    self.refresh_safe_session();
+                    self.persist_session(true);
                 }
                 self.ui.dialog = None;
             }
@@ -396,6 +438,55 @@ impl AppState {
             message: message.into(),
         });
         self.note_interaction();
+    }
+
+    fn refresh_safe_session(&mut self) {
+        if !matches!(
+            self.playback.state(),
+            PlaybackState::Playing | PlaybackState::Paused | PlaybackState::Ended
+        ) {
+            return;
+        }
+        let Some(mut source) = self.playback.source().cloned() else {
+            return;
+        };
+        source.start_time = None;
+        self.last_safe_session = Some(SessionState {
+            source,
+            position: self.playback.position(),
+        });
+    }
+
+    fn persist_session(&mut self, force: bool) {
+        let Some(store) = self.session_store.as_ref() else {
+            return;
+        };
+        let Some(session) = self.last_safe_session.as_ref() else {
+            return;
+        };
+        let now = Instant::now();
+        if !force && now < self.next_session_save_allowed {
+            return;
+        }
+        if self.last_persisted_session.as_ref() == Some(session) {
+            self.next_session_save_allowed = now + SESSION_SAVE_INTERVAL;
+            return;
+        }
+
+        match store.save(session) {
+            Ok(()) => {
+                self.last_persisted_session = Some(session.clone());
+            }
+            Err(error) => {
+                log::warn!("SanctuaryPlayer: unable to save session: {error}");
+            }
+        }
+        self.next_session_save_allowed = now + SESSION_SAVE_INTERVAL;
+    }
+
+    pub fn flush_local_session(&mut self) {
+        self.refresh_safe_session();
+        self.persist_session(true);
     }
 
     fn age_saved_positions(&mut self, elapsed: Duration) {
@@ -666,20 +757,31 @@ impl AppState {
         }
 
         match command {
-            AppCommand::OpenVideo(source) => match source.platform {
-                VideoPlatform::Twitch => self.begin_twitch_resolution(source),
-                VideoPlatform::YouTube => self.show_message(
-                    "YouTube is not supported yet",
-                    "SanctuaryPlayer recognises YouTube video IDs and URLs, but YouTube playback is currently unsupported.",
-                ),
+            AppCommand::OpenVideo(source) => {
+                self.flush_local_session();
+                match source.platform {
+                    VideoPlatform::Twitch => self.begin_twitch_resolution(source),
+                    VideoPlatform::YouTube => self.show_message(
+                        "YouTube is not supported yet",
+                        "SanctuaryPlayer recognises YouTube video IDs and URLs, but YouTube playback is currently unsupported.",
+                    ),
+                }
             }
             AppCommand::TogglePlayback => match self.playback.state() {
-                PlaybackState::Playing => self.playback.pause(),
+                PlaybackState::Playing => {
+                    self.playback.pause();
+                    self.refresh_safe_session();
+                    self.persist_session(true);
+                }
                 PlaybackState::Paused => self.playback.play(),
                 _ => {}
             },
             AppCommand::Play => self.playback.play(),
-            AppCommand::Pause => self.playback.pause(),
+            AppCommand::Pause => {
+                self.playback.pause();
+                self.refresh_safe_session();
+                self.persist_session(true);
+            }
             AppCommand::SeekAbsolute(position) => self.playback.seek(position),
             AppCommand::SeekRelative(offset) => {
                 let current = self.playback.position();
@@ -1331,6 +1433,48 @@ mod tests {
         state.apply(AppCommand::SetQuality("480p".into()));
         state.apply(AppCommand::SetFavouriteQualities("source".into()));
         assert_eq!(state.quality().unwrap().id, "480p");
+    }
+
+    #[test]
+    fn local_session_restores_video_and_precise_position_without_account() {
+        let path = temporary_settings_path("session-restore");
+        let store = SessionStore::new(path.clone());
+        store
+            .save(&SessionState {
+                source: VideoSource::parse("2386400830").unwrap(),
+                position: Duration::from_millis(12_345),
+            })
+            .unwrap();
+
+        let mut state = AppState::new();
+        state.set_session_path(path.clone());
+        let restored = state.take_startup_session_source().unwrap();
+        assert_eq!(restored.id, "2386400830");
+        assert_eq!(restored.start_time, Some(Duration::from_millis(12_345)));
+        assert!(!state.signed_in());
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn pausing_flushes_precise_local_session_position() {
+        let path = temporary_settings_path("session-pause");
+        let mut state = loaded_state();
+        state.set_session_path(path.clone());
+
+        state.apply(AppCommand::SeekAbsolute(Duration::from_millis(12_345)));
+        state.update(Duration::from_secs(1));
+        state.apply(AppCommand::Play);
+        state.update(Duration::from_millis(321));
+        let expected = state.position();
+        state.apply(AppCommand::Pause);
+
+        let saved = SessionStore::new(path.clone()).load().unwrap().unwrap();
+        assert_eq!(saved.source.id, "2386400830");
+        assert_eq!(saved.source.start_time, None);
+        assert_eq!(saved.position, expected);
+
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]
