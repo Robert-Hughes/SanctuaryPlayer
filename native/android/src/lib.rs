@@ -882,8 +882,10 @@ mod android {
                     repaint.request(Duration::ZERO);
                 }
                 PollEvent::Wake => {
-                    let _ = state.take_playback_wakes();
-                    repaint.request(Duration::ZERO);
+                    let playback_wakes = state.take_playback_wakes();
+                    if !playback_wakes.is_empty() {
+                        repaint.request(Duration::ZERO);
+                    }
                 }
                 PollEvent::Main(MainEvent::LowMemory) | PollEvent::Timeout => {}
                 _ => {}

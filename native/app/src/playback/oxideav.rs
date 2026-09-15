@@ -34,6 +34,7 @@ const VIDEO_QUEUE_CAP: usize = 2;
 const PLAYBACK_PACKET_CHANNEL_CAP: usize = 256;
 const OPEN_TIMEOUT: Duration = Duration::from_secs(30);
 const DIAGNOSTIC_INTERVAL: Duration = Duration::from_secs(1);
+const TRACK_SINK_BACKPRESSURE_WAIT: Duration = Duration::from_millis(20);
 
 pub struct OxidePlayback {
     source: VideoSource,
@@ -305,6 +306,7 @@ impl SessionTrackSink {
     fn send(&mut self, mut message: SessionMsg) -> ::oxideav::core::Result<()> {
         let label = message.label();
         let wake_kind = self.wake_kind();
+        let mut wake_sent_while_blocked = false;
         loop {
             if self.cancellation.is_cancelled() {
                 return Err(Error::cancelled(format!(
@@ -332,12 +334,17 @@ impl SessionTrackSink {
                         );
                         self.last_backpressure_log = Some(now);
                     }
-                    // Wake the event loop before waiting so it can consume the
-                    // bounded channel. The short poll keeps the wait
-                    // cancellation-aware without exposing WouldBlock through
-                    // the OxideAV sink contract.
-                    self.wake.wake(wake_kind);
-                    std::thread::sleep(Duration::from_millis(1));
+                    // Wake once when this message first encounters
+                    // backpressure so the event loop can consume the bounded
+                    // channel. After that, avoid repeatedly waking/repainting
+                    // a paused player while we wait. The bounded poll keeps
+                    // cancellation responsive without exposing WouldBlock
+                    // through the OxideAV sink contract.
+                    if !wake_sent_while_blocked {
+                        self.wake.wake(wake_kind);
+                        wake_sent_while_blocked = true;
+                    }
+                    std::thread::sleep(TRACK_SINK_BACKPRESSURE_WAIT);
                 }
                 Err(TrySendError::Disconnected(_)) => {
                     if self.cancellation.is_cancelled() {
