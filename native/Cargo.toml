@@ -39,7 +39,7 @@ oxideav-meta = { version = "0.0.1", default-features = false, features = [
 ] }
 oxideav-pixfmt = "0.1"
 oxideav-audio-filter = "0.1"
-oxideav-sysaudio = "0.1"
+oxideav-sysaudio = { version = "0.1", default-features = false }
 oxideav-hls = "0.1"
 oxideav-vdpau = "0.0.2"
 

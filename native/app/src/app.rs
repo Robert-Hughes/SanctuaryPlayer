@@ -166,6 +166,10 @@ pub(crate) struct UiState {
     pub(crate) lock_return_elapsed: Duration,
     pub(crate) dialog: Option<DialogState>,
     pub(crate) focus_first_dialog_input: bool,
+    #[cfg(target_os = "android")]
+    pub(crate) android_text_input: Option<AndroidTextInputSnapshot>,
+    #[cfg(target_os = "android")]
+    pub(crate) android_text_selection_override: Option<(AndroidTextField, usize, usize)>,
 }
 
 impl Default for UiState {
@@ -182,8 +186,31 @@ impl Default for UiState {
             lock_return_elapsed: Duration::ZERO,
             dialog: None,
             focus_first_dialog_input: false,
+            #[cfg(target_os = "android")]
+            android_text_input: None,
+            #[cfg(target_os = "android")]
+            android_text_selection_override: None,
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AndroidTextField {
+    ChangeVideo,
+    SeekTo,
+    FavouriteQualities,
+    SignInUser,
+    SignInDevice,
+}
+
+#[cfg(target_os = "android")]
+#[derive(Clone, Debug)]
+pub struct AndroidTextInputSnapshot {
+    pub field: AndroidTextField,
+    pub text: String,
+    pub selection_start: usize,
+    pub selection_end: usize,
+    pub clicked: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -272,6 +299,92 @@ impl AppState {
         self.playback_wake.take_pending()
     }
 
+    #[cfg(target_os = "android")]
+    pub fn begin_android_ui_frame(&mut self) {
+        self.ui.android_text_input = None;
+    }
+
+    #[cfg(target_os = "android")]
+    pub(crate) fn capture_android_text_edit(
+        &mut self,
+        ctx: &egui::Context,
+        field: AndroidTextField,
+        output: &mut egui::widgets::text_edit::TextEditOutput,
+        text: &str,
+    ) {
+        if let Some((override_field, start, end)) = self.ui.android_text_selection_override.take() {
+            if override_field == field {
+                let range = egui::text::CCursorRange::two(
+                    egui::text::CCursor::new(start),
+                    egui::text::CCursor::new(end),
+                );
+                output.state.cursor.set_char_range(Some(range));
+                output.state.clone().store(ctx, output.response.id);
+                output.cursor_range = Some(range);
+            } else {
+                self.ui.android_text_selection_override = Some((override_field, start, end));
+            }
+        }
+
+        if !output.response.has_focus() {
+            return;
+        }
+
+        let fallback = text.chars().count();
+        let (selection_start, selection_end) = output
+            .cursor_range
+            .map(|range| (range.primary.index, range.secondary.index))
+            .unwrap_or((fallback, fallback));
+        self.ui.android_text_input = Some(AndroidTextInputSnapshot {
+            field,
+            text: text.to_owned(),
+            selection_start,
+            selection_end,
+            clicked: output.response.clicked(),
+        });
+    }
+
+    #[cfg(target_os = "android")]
+    pub fn android_text_input(&self) -> Option<&AndroidTextInputSnapshot> {
+        self.ui.android_text_input.as_ref()
+    }
+
+    #[cfg(target_os = "android")]
+    pub fn apply_android_text_input_state(
+        &mut self,
+        text: String,
+        selection_start: usize,
+        selection_end: usize,
+    ) {
+        let Some(snapshot) = self.ui.android_text_input.clone() else {
+            return;
+        };
+        let updated = match (snapshot.field, self.ui.dialog.as_mut()) {
+            (AndroidTextField::ChangeVideo, Some(DialogState::ChangeVideo { input, .. }))
+            | (AndroidTextField::SeekTo, Some(DialogState::SeekTo { input, .. }))
+            | (
+                AndroidTextField::FavouriteQualities,
+                Some(DialogState::FavouriteQualities { input }),
+            ) => {
+                *input = text;
+                true
+            }
+            (AndroidTextField::SignInUser, Some(DialogState::SignIn { user_id, .. })) => {
+                *user_id = text;
+                true
+            }
+            (AndroidTextField::SignInDevice, Some(DialogState::SignIn { device_id, .. })) => {
+                *device_id = text;
+                true
+            }
+            _ => false,
+        };
+        if updated {
+            self.ui.android_text_selection_override =
+                Some((snapshot.field, selection_start, selection_end));
+        }
+    }
+
     pub fn set_settings_path(&mut self, path: PathBuf) {
         let store = SettingsStore::new(path);
         log::info!("SanctuaryPlayer: settings path={}", store.path().display());
@@ -324,7 +437,7 @@ impl AppState {
         }
     }
 
-    pub(crate) fn decode_mode(&self) -> DecodeMode {
+    pub fn decode_mode(&self) -> DecodeMode {
         self.decode_mode
     }
 
@@ -1196,7 +1309,7 @@ impl AppState {
         self.playback.quality()
     }
 
-    pub(crate) fn take_video_frame_lease(&mut self) -> Option<FrameLease> {
+    pub fn take_video_frame_lease(&mut self) -> Option<FrameLease> {
         self.playback.take_video_frame_lease()
     }
 

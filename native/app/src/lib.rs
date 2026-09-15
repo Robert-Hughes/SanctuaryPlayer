@@ -7,8 +7,11 @@
 pub mod app;
 mod audio_output;
 mod audio_timeline;
+#[cfg(not(target_os = "android"))]
 mod graphics;
+#[cfg(not(target_os = "android"))]
 mod icon;
+#[cfg(not(target_os = "android"))]
 mod input;
 pub mod logging;
 pub mod model;
@@ -20,35 +23,52 @@ mod settings;
 pub mod spoilers;
 pub mod time_format;
 pub mod twitch;
-mod ui;
+pub mod ui;
 #[cfg(target_os = "freebsd")]
 mod vdpau_vulkan_bridge;
 pub mod video;
-mod video_renderer;
+pub mod video_renderer;
 
+#[cfg(not(target_os = "android"))]
 use std::path::PathBuf;
+#[cfg(not(target_os = "android"))]
 use std::sync::Arc;
+#[cfg(not(target_os = "android"))]
 use std::time::{Duration, Instant};
 
+#[cfg(not(target_os = "android"))]
 use app::{AppEffect, AppState};
+#[cfg(not(target_os = "android"))]
 use graphics::{Graphics, RenderStatus};
+#[cfg(not(target_os = "android"))]
 use input::command_for_key;
+#[cfg(not(target_os = "android"))]
 use playback::{DecodeMode, PlaybackWake, PlaybackWakeKind};
+#[cfg(not(target_os = "android"))]
 use winit::application::ApplicationHandler;
+#[cfg(not(target_os = "android"))]
 use winit::event::{ElementState, WindowEvent};
+#[cfg(not(target_os = "android"))]
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy};
+#[cfg(not(target_os = "android"))]
 use winit::keyboard::PhysicalKey;
+#[cfg(not(target_os = "android"))]
 use winit::window::{Fullscreen, Window, WindowAttributes, WindowId};
 
+#[cfg(not(target_os = "android"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppEvent {
     PlaybackWake,
 }
 
+#[cfg(not(target_os = "android"))]
 const ANIMATION_FRAME_INTERVAL: Duration = Duration::from_millis(16);
+#[cfg(not(target_os = "android"))]
 const RENDER_DIAGNOSTIC_INTERVAL: Duration = Duration::from_secs(1);
+#[cfg(not(target_os = "android"))]
 const SHUTDOWN_POSITION_FLUSH_BUDGET: Duration = Duration::from_secs(2);
 
+#[cfg(not(target_os = "android"))]
 struct RenderDiagnostics {
     last_redraw: Option<Instant>,
     last_report: Instant,
@@ -60,6 +80,7 @@ struct RenderDiagnostics {
     max_redraw_work: Duration,
 }
 
+#[cfg(not(target_os = "android"))]
 impl RenderDiagnostics {
     fn new() -> Self {
         Self {
@@ -135,6 +156,7 @@ impl RenderDiagnostics {
     }
 }
 
+#[cfg(not(target_os = "android"))]
 pub struct SanctuaryPlayerApp {
     window: Option<Arc<Window>>,
     graphics: Option<Graphics>,
@@ -148,6 +170,7 @@ pub struct SanctuaryPlayerApp {
     window_title: String,
 }
 
+#[cfg(not(target_os = "android"))]
 impl SanctuaryPlayerApp {
     pub fn new() -> Self {
         Self {
@@ -266,12 +289,14 @@ impl SanctuaryPlayerApp {
     }
 }
 
+#[cfg(not(target_os = "android"))]
 impl Default for SanctuaryPlayerApp {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(not(target_os = "android"))]
 impl ApplicationHandler<AppEvent> for SanctuaryPlayerApp {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
@@ -492,7 +517,7 @@ impl ApplicationHandler<AppEvent> for SanctuaryPlayerApp {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_os = "android")))]
 mod startup_tests {
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};

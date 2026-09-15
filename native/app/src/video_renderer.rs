@@ -20,7 +20,7 @@ enum Presentation {
     VdpauDirect(usize),
 }
 
-pub(crate) struct VideoRenderer {
+pub struct VideoRenderer {
     pipeline: wgpu::RenderPipeline,
     bind_group_layout: wgpu::BindGroupLayout,
     #[cfg(target_os = "freebsd")]
@@ -50,7 +50,7 @@ struct YuvTextures {
 }
 
 impl VideoRenderer {
-    pub(crate) fn new(
+    pub fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         surface_format: wgpu::TextureFormat,
@@ -232,11 +232,11 @@ impl VideoRenderer {
         }
     }
 
-    pub(crate) fn reset(&mut self) {
+    pub fn reset(&mut self) {
         self.presentation = Presentation::None;
     }
 
-    pub(crate) fn upload_lease(
+    pub fn upload_lease(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -448,7 +448,7 @@ impl VideoRenderer {
         Ok(())
     }
 
-    pub(crate) fn draw(
+    pub fn draw(
         &mut self,
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,

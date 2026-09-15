@@ -1,4 +1,4 @@
-use crate::app::{AppState, DialogState};
+use crate::app::{AndroidTextField, AppState, DialogState};
 use crate::model::AppCommand;
 use crate::time_format::parse_friendly_time;
 use crate::video::VideoSource;
@@ -26,13 +26,14 @@ pub fn render(ui: &mut egui::Ui, state: &mut AppState, commands: &mut Vec<AppCom
                 .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
                 .show(&ctx, |ui| {
                     ui.label("Enter a YouTube/Twitch video URL or video ID:");
-                    let response = ui.add(
-                        egui::TextEdit::singleline(input)
-                            .id(ui.make_persistent_id("change-video-input")),
+                    singleline_text_edit(
+                        ui,
+                        state,
+                        AndroidTextField::ChangeVideo,
+                        input,
+                        "change-video-input",
+                        focus_first_input,
                     );
-                    if focus_first_input {
-                        response.request_focus();
-                    }
                     if let Some(error) = error.as_ref() {
                         ui.colored_label(egui::Color32::LIGHT_RED, error);
                     }
@@ -53,13 +54,14 @@ pub fn render(ui: &mut egui::Ui, state: &mut AppState, commands: &mut Vec<AppCom
                 .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
                 .show(&ctx, |ui| {
                     ui.label("Enter a time (e.g. 1h23m45s or 1:23:45):");
-                    let response = ui.add(
-                        egui::TextEdit::singleline(input)
-                            .id(ui.make_persistent_id("seek-to-input")),
+                    singleline_text_edit(
+                        ui,
+                        state,
+                        AndroidTextField::SeekTo,
+                        input,
+                        "seek-to-input",
+                        focus_first_input,
                     );
-                    if focus_first_input {
-                        response.request_focus();
-                    }
                     if let Some(error) = error.as_ref() {
                         ui.colored_label(egui::Color32::LIGHT_RED, error);
                     }
@@ -85,13 +87,14 @@ pub fn render(ui: &mut egui::Ui, state: &mut AppState, commands: &mut Vec<AppCom
                 .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
                 .show(&ctx, |ui| {
                     ui.label("Comma- or semicolon-separated quality names, in preference order:");
-                    let response = ui.add(
-                        egui::TextEdit::singleline(input)
-                            .id(ui.make_persistent_id("favourite-qualities-input")),
+                    singleline_text_edit(
+                        ui,
+                        state,
+                        AndroidTextField::FavouriteQualities,
+                        input,
+                        "favourite-qualities-input",
+                        focus_first_input,
                     );
-                    if focus_first_input {
-                        response.request_focus();
-                    }
                     ui.horizontal(|ui| {
                         if ui.button("Save").clicked() || accept_pressed {
                             commands.push(AppCommand::SetFavouriteQualities(input.clone()));
@@ -110,17 +113,22 @@ pub fn render(ui: &mut egui::Ui, state: &mut AppState, commands: &mut Vec<AppCom
                 .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
                 .show(&ctx, |ui| {
                     ui.label("User ID (same ID on another device to sync):");
-                    let response = ui.add(
-                        egui::TextEdit::singleline(user_id)
-                            .id(ui.make_persistent_id("sign-in-user-id-input")),
+                    singleline_text_edit(
+                        ui,
+                        state,
+                        AndroidTextField::SignInUser,
+                        user_id,
+                        "sign-in-user-id-input",
+                        focus_first_input,
                     );
-                    if focus_first_input {
-                        response.request_focus();
-                    }
                     ui.label("Device ID:");
-                    ui.add(
-                        egui::TextEdit::singleline(device_id)
-                            .id(ui.make_persistent_id("sign-in-device-id-input")),
+                    singleline_text_edit(
+                        ui,
+                        state,
+                        AndroidTextField::SignInDevice,
+                        device_id,
+                        "sign-in-device-id-input",
+                        false,
                     );
                     ui.small(
                         "Saved positions sync through sanctuaryplayer.robdh.uk. The User ID is not authenticated; anyone who knows it can access the same synced positions.",
@@ -211,5 +219,32 @@ fn submit_video(
             *keep_open = false;
         }
         Err(parse_error) => *error = Some(parse_error.to_string()),
+    }
+}
+
+fn singleline_text_edit(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    field: AndroidTextField,
+    text: &mut String,
+    id_salt: &str,
+    focus: bool,
+) -> egui::Response {
+    let output = egui::TextEdit::singleline(text)
+        .id(ui.make_persistent_id(id_salt))
+        .show(ui);
+    if focus {
+        output.response.request_focus();
+    }
+    #[cfg(target_os = "android")]
+    {
+        let mut output = output;
+        state.capture_android_text_edit(ui.ctx(), field, &mut output, text);
+        output.response.response
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = (state, field);
+        output.response.response
     }
 }
