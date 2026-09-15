@@ -1,0 +1,45 @@
+plugins {
+    id "com.android.application"
+}
+
+def sanctuaryVersionName = providers.gradleProperty("sanctuaryVersionName").orElse("0.0.0")
+def sanctuaryVersionCode = providers.gradleProperty("sanctuaryVersionCode").orElse("1")
+
+android {
+    namespace = "app.sanctuaryplayer.android"
+    compileSdk = 36
+
+    defaultConfig {
+        applicationId = "app.sanctuaryplayer.android"
+        minSdk = 24
+        targetSdk = 36
+        versionName = sanctuaryVersionName.get()
+        versionCode = Integer.parseInt(sanctuaryVersionCode.get())
+    }
+
+    sourceSets {
+        main {
+            manifest.srcFile("src/main/AndroidManifest.xml")
+            java.srcDirs = ["src/main/java"]
+            res.srcDirs = ["src/main/res"]
+            jniLibs.srcDirs = [file("${rootDir}/../target/android-jniLibs")]
+        }
+    }
+
+    buildTypes {
+        debug {
+            minifyEnabled = false
+            signingConfig = null
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    implementation "androidx.appcompat:appcompat:1.8.0"
+    implementation "androidx.games:games-activity:4.4.0"
+}
