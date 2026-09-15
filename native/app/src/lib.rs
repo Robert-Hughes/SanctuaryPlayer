@@ -176,7 +176,7 @@ impl SanctuaryPlayerApp {
         Self {
             window: None,
             graphics: None,
-            state: AppState::new(),
+            state: AppState::with_decode_mode(DecodeMode::platform_default()),
             initial_video: None,
             initial_autoplay: false,
             last_update: Instant::now(),
@@ -221,7 +221,7 @@ impl SanctuaryPlayerApp {
     }
 
     pub fn with_initial_video_options(source: video::VideoSource, autoplay: bool) -> Self {
-        Self::with_initial_video_decode_options(source, autoplay, DecodeMode::Cpu)
+        Self::with_initial_video_decode_options(source, autoplay, DecodeMode::platform_default())
     }
 
     pub fn with_initial_video_decode_options(

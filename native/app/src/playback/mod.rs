@@ -22,6 +22,40 @@ pub enum DecodeMode {
 }
 
 impl DecodeMode {
+    pub const fn platform_default() -> Self {
+        if cfg!(target_os = "freebsd") {
+            Self::VdpauDirect
+        } else {
+            Self::Cpu
+        }
+    }
+
+    const fn is_supported_with_vdpau(self, vdpau_supported: bool) -> bool {
+        match self {
+            Self::Cpu => true,
+            Self::VdpauReadback | Self::VdpauDirect => vdpau_supported,
+        }
+    }
+
+    pub const fn is_supported_on_current_platform(self) -> bool {
+        self.is_supported_with_vdpau(cfg!(target_os = "freebsd"))
+    }
+
+    fn validate_for_platform(self, vdpau_supported: bool, platform: &str) -> Result<(), String> {
+        if self.is_supported_with_vdpau(vdpau_supported) {
+            Ok(())
+        } else {
+            Err(format!(
+                "decode mode {:?} is not supported on {platform}; supported mode: cpu",
+                self.as_str()
+            ))
+        }
+    }
+
+    pub fn validate_current_platform(self) -> Result<(), String> {
+        self.validate_for_platform(cfg!(target_os = "freebsd"), std::env::consts::OS)
+    }
+
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Cpu => "cpu",
@@ -177,5 +211,56 @@ mod tests {
         wake.wake(PlaybackWakeKind::Control);
         assert_eq!(notifications.load(AtomicOrdering::SeqCst), 2);
         assert!(wake.take_pending().contains(PlaybackWakeKind::Control));
+    }
+}
+
+#[cfg(test)]
+mod decode_mode_tests {
+    use super::DecodeMode;
+
+    #[test]
+    fn platform_default_is_supported() {
+        assert!(DecodeMode::platform_default().is_supported_on_current_platform());
+        assert!(DecodeMode::Cpu.is_supported_on_current_platform());
+    }
+
+    #[test]
+    fn vdpau_request_is_rejected_when_platform_does_not_support_it() {
+        let error = DecodeMode::VdpauDirect
+            .validate_for_platform(false, "windows")
+            .unwrap_err();
+        assert_eq!(
+            error,
+            r#"decode mode "vdpau-direct" is not supported on windows; supported mode: cpu"#
+        );
+        assert!(
+            DecodeMode::Cpu
+                .validate_for_platform(false, "windows")
+                .is_ok()
+        );
+    }
+
+    #[cfg(target_os = "freebsd")]
+    #[test]
+    fn freebsd_defaults_to_vdpau_direct() {
+        assert_eq!(DecodeMode::platform_default(), DecodeMode::VdpauDirect);
+        assert!(
+            DecodeMode::VdpauReadback
+                .validate_current_platform()
+                .is_ok()
+        );
+        assert!(DecodeMode::VdpauDirect.validate_current_platform().is_ok());
+    }
+
+    #[cfg(not(target_os = "freebsd"))]
+    #[test]
+    fn non_freebsd_rejects_vdpau_modes() {
+        assert_eq!(DecodeMode::platform_default(), DecodeMode::Cpu);
+        assert!(
+            DecodeMode::VdpauReadback
+                .validate_current_platform()
+                .is_err()
+        );
+        assert!(DecodeMode::VdpauDirect.validate_current_platform().is_err());
     }
 }

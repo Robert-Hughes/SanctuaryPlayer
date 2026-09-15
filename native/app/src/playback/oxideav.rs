@@ -549,6 +549,7 @@ fn open_variant_session(
     decode_mode: DecodeMode,
     wake: PlaybackWake,
 ) -> Result<PlaybackSession, String> {
+    decode_mode.validate_current_platform()?;
     let input = hls_uri(variant_url);
     let job_json = serde_json::to_string(&json!({
         "@in": { "all": [{ "from": input }] },

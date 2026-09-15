@@ -4,7 +4,7 @@ use sanctuary_player_app::{AppEvent, SanctuaryPlayerApp};
 
 const USAGE: &str = "Usage: sanctuary-player [OPTIONS] [VIDEO]\n\n\
 VIDEO may be a YouTube/Twitch video ID or URL accepted by SanctuaryPlayer.\n\n\
-Options:\n  -v, --video <VIDEO>       Auto-load a video on startup\n      --play, --autoplay    Start playback after the video opens\n      --mute                Mute audio while keeping the audio playback clock active\n      --decode-mode <MODE>  cpu | vdpau-readback | vdpau-direct\n  -h, --help                Show this help";
+Options:\n  -v, --video <VIDEO>       Auto-load a video on startup\n      --play, --autoplay    Start playback after the video opens\n      --mute                Mute audio while keeping the audio playback clock active\n      --decode-mode <MODE>  cpu | vdpau-readback | vdpau-direct (VDPAU: FreeBSD only)\n  -h, --help                Show this help";
 
 enum CliAction {
     Run {
@@ -83,7 +83,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliAction, Strin
     let mut args = args.into_iter();
     let mut video_input = None;
     let mut autoplay = false;
-    let mut decode_mode = DecodeMode::Cpu;
+    let mut decode_mode = DecodeMode::platform_default();
     let mut muted = false;
 
     while let Some(arg) = args.next() {
@@ -95,7 +95,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliAction, Strin
                 let value = args
                     .next()
                     .ok_or_else(|| "--decode-mode requires a mode".to_owned())?;
-                decode_mode = value.parse()?;
+                decode_mode = parse_decode_mode(&value)?;
             }
             "-v" | "--video" => {
                 let value = args
@@ -114,7 +114,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliAction, Strin
                 if value.is_empty() {
                     return Err("--decode-mode requires a mode".into());
                 }
-                decode_mode = value.parse()?;
+                decode_mode = parse_decode_mode(value)?;
             }
             _ if arg.starts_with("--video=") => {
                 let value = arg["--video=".len()..].to_owned();
@@ -140,6 +140,12 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliAction, Strin
         muted,
         decode_mode,
     })
+}
+
+fn parse_decode_mode(value: &str) -> Result<DecodeMode, String> {
+    let mode: DecodeMode = value.parse()?;
+    mode.validate_current_platform()?;
+    Ok(mode)
 }
 
 fn set_video_input(slot: &mut Option<String>, value: String) -> Result<(), String> {
@@ -179,7 +185,7 @@ mod tests {
 
         assert!(!autoplay);
         assert!(!muted);
-        assert_eq!(decode_mode, DecodeMode::Cpu);
+        assert_eq!(decode_mode, DecodeMode::platform_default());
         assert_eq!(source.platform, VideoPlatform::Twitch);
         assert_eq!(source.id, "2386400830");
         assert_eq!(source.start_time, Some(Duration::from_secs(5364)));
@@ -198,7 +204,7 @@ mod tests {
         };
         assert!(!autoplay);
         assert!(!muted);
-        assert_eq!(decode_mode, DecodeMode::Cpu);
+        assert_eq!(decode_mode, DecodeMode::platform_default());
         assert_eq!(source.platform, VideoPlatform::Twitch);
         assert_eq!(source.id, "2395077199");
     }
@@ -216,7 +222,7 @@ mod tests {
         };
         assert!(autoplay);
         assert!(!muted);
-        assert_eq!(decode_mode, DecodeMode::Cpu);
+        assert_eq!(decode_mode, DecodeMode::platform_default());
         assert_eq!(source.platform, VideoPlatform::Twitch);
     }
 
@@ -232,9 +238,16 @@ mod tests {
         assert!(muted);
     }
     #[test]
-    fn accepts_explicit_decode_modes() {
+    fn accepts_supported_explicit_decode_modes_and_rejects_unsupported_ones() {
+        let CliAction::Run { decode_mode, .. } =
+            parse(&["--decode-mode", "cpu", "2395077199"]).unwrap()
+        else {
+            panic!("expected run action");
+        };
+        assert_eq!(decode_mode, DecodeMode::Cpu);
+
+        #[cfg(target_os = "freebsd")]
         for (name, expected) in [
-            ("cpu", DecodeMode::Cpu),
             ("vdpau-readback", DecodeMode::VdpauReadback),
             ("vdpau-direct", DecodeMode::VdpauDirect),
         ] {
@@ -245,6 +258,13 @@ mod tests {
             };
             assert_eq!(decode_mode, expected);
         }
+
+        #[cfg(not(target_os = "freebsd"))]
+        for name in ["vdpau-readback", "vdpau-direct"] {
+            let error = parse(&["--decode-mode", name, "2395077199"]).unwrap_err();
+            assert!(error.contains("not supported"));
+        }
+
         assert!(parse(&["--decode-mode", "banana", "2395077199"]).is_err());
     }
 
