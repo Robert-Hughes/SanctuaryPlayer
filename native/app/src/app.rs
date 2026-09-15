@@ -33,6 +33,7 @@ type TwitchResolver = fn(&str) -> Result<ResolvedTwitchVod, TwitchVodResolveErro
 type PlaybackFactory = fn(
     VideoSource,
     Url,
+    String,
     DecodeMode,
     bool,
     PlaybackWake,
@@ -41,11 +42,12 @@ type PlaybackFactory = fn(
 fn open_oxide_playback(
     source: VideoSource,
     url: Url,
+    initial_qualities: String,
     decode_mode: DecodeMode,
     muted: bool,
     wake: PlaybackWake,
 ) -> Result<Box<dyn PlaybackBackend>, String> {
-    OxidePlayback::open(source, url, decode_mode, muted, wake)
+    OxidePlayback::open(source, url, &initial_qualities, decode_mode, muted, wake)
         .map(|playback| Box::new(playback) as Box<dyn PlaybackBackend>)
 }
 
@@ -393,7 +395,6 @@ impl AppState {
                 self.playback = opened.playback;
                 self.metadata = opened.metadata;
                 self.preferences.manually_selected_quality = false;
-                self.apply_favourite_quality();
                 let start_time = self
                     .playback
                     .source()
@@ -426,6 +427,7 @@ impl AppState {
         let resolver = self.twitch_resolver;
         let playback_factory = self.playback_factory;
         let playback_wake = self.playback_wake.clone();
+        let initial_qualities = self.preferences.favourite_qualities.clone();
         let decode_mode = self.decode_mode;
         let muted = self.muted;
         let video_id = source.id.clone();
@@ -436,8 +438,15 @@ impl AppState {
                 .map_err(|error| error.to_string())
                 .and_then(|resolved| {
                     let metadata = resolved.metadata.map(video_metadata_from_twitch);
-                    playback_factory(source, resolved.hls_url, decode_mode, muted, playback_wake)
-                        .map(|playback| OpenedVideo { playback, metadata })
+                    playback_factory(
+                        source,
+                        resolved.hls_url,
+                        initial_qualities,
+                        decode_mode,
+                        muted,
+                        playback_wake,
+                    )
+                    .map(|playback| OpenedVideo { playback, metadata })
                 });
             let _ = sender.send(result);
         });
@@ -1401,6 +1410,7 @@ mod tests {
     fn test_playback_factory(
         source: VideoSource,
         _url: Url,
+        _initial_qualities: String,
         _decode_mode: DecodeMode,
         _muted: bool,
         _wake: PlaybackWake,
@@ -1410,15 +1420,22 @@ mod tests {
         Ok(Box::new(playback))
     }
 
-    fn test_playback_factory_requires_app_start_seek(
+    fn test_playback_factory_requires_initial_quality_and_app_start_seek(
         source: VideoSource,
         _url: Url,
+        initial_qualities: String,
         _decode_mode: DecodeMode,
         _muted: bool,
         _wake: PlaybackWake,
     ) -> Result<Box<dyn PlaybackBackend>, String> {
+        if initial_qualities != "480p" {
+            return Err(format!(
+                "expected initial favourite quality 480p, got {initial_qualities:?}"
+            ));
+        }
         let mut playback = DummyPlayback::new();
         playback.open(&source)?;
+        playback.set_quality("480p");
         // Preserve the source/start_time metadata but force the backend itself
         // back to zero. This models OxidePlayback, which needs AppState to
         // dispatch the actual HLS seek after opening.
@@ -1430,6 +1447,7 @@ mod tests {
     fn test_playback_factory_requires_muted(
         source: VideoSource,
         _url: Url,
+        _initial_qualities: String,
         _decode_mode: DecodeMode,
         muted: bool,
         _wake: PlaybackWake,
@@ -1443,10 +1461,11 @@ mod tests {
     }
 
     #[test]
-    fn video_start_time_is_applied_after_async_backend_open() {
+    fn video_start_time_survives_initial_favourite_quality_selection() {
         let mut state = AppState::new();
         state.twitch_resolver = test_twitch_resolver;
-        state.playback_factory = test_playback_factory_requires_app_start_seek;
+        state.playback_factory = test_playback_factory_requires_initial_quality_and_app_start_seek;
+        state.preferences.favourite_qualities = "480p".into();
         state.apply(AppCommand::OpenVideo(
             VideoSource::parse("https://www.twitch.tv/videos/2386400830?t=5m").unwrap(),
         ));
@@ -1463,6 +1482,7 @@ mod tests {
         assert!(state.pending_video_open.is_none());
         assert_eq!(state.playback_state(), &PlaybackState::Paused);
         assert_eq!(state.position(), Duration::from_secs(300));
+        assert_eq!(state.quality().unwrap().id, "480p");
     }
 
     #[test]
@@ -1719,7 +1739,7 @@ mod tests {
     }
 
     #[test]
-    fn local_session_restores_video_and_precise_position_without_account() {
+    fn local_session_restores_position_with_initial_favourite_quality_without_account() {
         let path = temporary_settings_path("session-restore");
         let store = SessionStore::new(path.clone());
         store
@@ -1730,11 +1750,34 @@ mod tests {
             .unwrap();
 
         let mut state = AppState::new();
+        state.twitch_resolver = test_twitch_resolver;
+        state.playback_factory = test_playback_factory_requires_initial_quality_and_app_start_seek;
+        state.preferences.favourite_qualities = "480p".into();
         state.set_session_path(path.clone());
         let restored = state.take_startup_session_source().unwrap();
         assert_eq!(restored.id, "2386400830");
         assert_eq!(restored.start_time, Some(Duration::from_millis(12_345)));
         assert!(!state.signed_in());
+
+        state.apply(AppCommand::OpenVideo(restored));
+        for _ in 0..100 {
+            state.update(Duration::from_millis(200));
+            if state.pending_video_open.is_none()
+                && !matches!(state.playback_state(), PlaybackState::Seeking)
+            {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+
+        assert!(state.pending_video_open.is_none());
+        assert_eq!(state.playback_state(), &PlaybackState::Paused);
+        assert_eq!(state.position(), Duration::from_millis(12_345));
+        assert_eq!(state.quality().unwrap().id, "480p");
+        assert_eq!(
+            store.load().unwrap().unwrap().position,
+            Duration::from_millis(12_345)
+        );
 
         let _ = std::fs::remove_file(path);
     }

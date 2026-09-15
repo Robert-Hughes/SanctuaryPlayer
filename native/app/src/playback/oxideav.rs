@@ -663,15 +663,21 @@ impl OxidePlayback {
     pub fn open(
         source: VideoSource,
         m3u8_url: Url,
+        initial_qualities: &str,
         decode_mode: DecodeMode,
         muted: bool,
         wake: PlaybackWake,
     ) -> Result<Self, String> {
         let quality_set = inspect_hls_qualities(&m3u8_url)?;
-        let selected_url = quality_set.urls[quality_set.preferred_index].clone();
+        let initial_quality_index = select_initial_quality_index(
+            &quality_set.qualities,
+            quality_set.preferred_index,
+            initial_qualities,
+        );
+        let selected_url = quality_set.urls[initial_quality_index].clone();
         log::info!(
             "SanctuaryPlayer: HLS initial quality={} variant={}",
-            quality_set.qualities[quality_set.preferred_index].label,
+            quality_set.qualities[initial_quality_index].label,
             selected_url
         );
         let session = open_variant_session(&selected_url, decode_mode, wake.clone())?;
@@ -685,8 +691,8 @@ impl OxidePlayback {
             rates: session.rates,
             qualities: quality_set.qualities,
             quality_urls: quality_set.urls,
-            quality_index: quality_set.preferred_index,
-            active_quality_index: quality_set.preferred_index,
+            quality_index: initial_quality_index,
+            active_quality_index: initial_quality_index,
             pending_quality_switch: None,
             queued_quality_index: None,
             decode_mode,
@@ -1996,6 +2002,26 @@ struct HlsQualitySet {
     preferred_index: usize,
 }
 
+fn select_initial_quality_index(
+    qualities: &[Quality],
+    fallback_index: usize,
+    initial_qualities: &str,
+) -> usize {
+    for wanted in initial_qualities
+        .split([',', ';'])
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+    {
+        if let Some(index) = qualities
+            .iter()
+            .position(|quality| quality.id == wanted || quality.label == wanted)
+        {
+            return index;
+        }
+    }
+    fallback_index
+}
+
 fn inspect_hls_qualities(master_url: &Url) -> Result<HlsQualitySet, String> {
     let inspected = oxideav_hls::inspect_hls(&hls_uri(master_url))
         .map_err(|error| format!("inspect HLS playlist qualities: {error}"))?;
@@ -2568,6 +2594,25 @@ mod tests {
         assert_eq!(set.qualities[1].id, "720p60");
         assert_eq!(set.preferred_index, 1);
         assert_eq!(set.urls[1].as_str(), "https://example.test/720.m3u8");
+    }
+
+    #[test]
+    fn initial_quality_selection_uses_favourites_before_hls_default() {
+        let qualities = vec![
+            Quality::new("1080p60", "1080p60 (Source)"),
+            Quality::new("720p60", "720p60"),
+            Quality::new("480p", "480p"),
+        ];
+
+        assert_eq!(
+            select_initial_quality_index(&qualities, 1, "480p;1080p60"),
+            2
+        );
+        assert_eq!(
+            select_initial_quality_index(&qualities, 1, "missing,1080p60 (Source)"),
+            0
+        );
+        assert_eq!(select_initial_quality_index(&qualities, 1, "missing"), 1);
     }
 
     #[test]
