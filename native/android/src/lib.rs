@@ -242,6 +242,18 @@ mod android {
                 .ok_or_else(|| {
                     "Android surface is incompatible with the selected GPU".to_owned()
                 })?;
+            let capabilities = surface.get_capabilities(&adapter);
+            if let Some(format) = capabilities.formats.iter().copied().find(|format| {
+                matches!(
+                    format,
+                    wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Rgba8Unorm
+                )
+            }) {
+                // The YUV shader produces video R'G'B' values, which are already
+                // transfer-encoded. Rendering them into an sRGB attachment would
+                // apply an additional linear-to-sRGB transform and wash out video.
+                config.format = format;
+            }
             config.present_mode = wgpu::PresentMode::AutoVsync;
             config.desired_maximum_frame_latency = 1;
             let surface_format = config.format;

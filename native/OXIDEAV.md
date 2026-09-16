@@ -330,6 +330,12 @@ There is no `materialize()`, `VideoFrame` allocation, `plane_tight()` equivalent
 full-frame CPU repack on the ordinary 4:2:0 path. The renderer deliberately rejects
 non-arena/non-YUV420P output rather than silently copying it.
 
+Android surface selection deliberately prefers `Bgra8Unorm`/`Rgba8Unorm` over the
+sRGB variants. The YUV conversion shader emits transfer-encoded video R'G'B' values;
+rendering those values into an `*Srgb` attachment would make wgpu apply an additional
+linear-to-sRGB encode and visibly brighten/flatten the picture. Desktop already used
+the non-sRGB preference, while Android previously accepted `get_default_config()`'s
+`Rgba8UnormSrgb` choice and therefore followed a different colour path.
 The application now exposes three explicit decode/presentation contracts through
 `--decode-mode`:
 
