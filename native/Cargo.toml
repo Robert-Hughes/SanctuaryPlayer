@@ -43,23 +43,18 @@ oxideav-sysaudio = { version = "0.1", default-features = false }
 oxideav-hls = "0.1"
 oxideav-vdpau = "0.0.2"
 
-# Development uses the experimental OxideAV checkouts while retaining normal
-# versioned dependencies above. Patch every OxideAV crate in the selected
-# dependency graph so Cargo cannot mix local and crates.io type identities.
+# Sanctuary's public dependency contract is the `dev` branch of the
+# project-maintained OxideAV forks. Cargo.lock pins the exact Git revisions
+# used by a committed SanctuaryPlayer revision. Local co-development overrides
+# these entries from native/.cargo/config.toml; see OXIDEAV.md.
 [patch.crates-io]
-oxideav = { path = "../../oxideav/crates/oxideav" }
-oxideav-core = { path = "../../oxideav/crates/oxideav-core" }
-oxideav-pipeline = { path = "../../oxideav/crates/oxideav-pipeline" }
-oxideav-source = { path = "../../oxideav/crates/oxideav-source" }
-oxideav-meta = { path = "../../oxideav/crates/oxideav-meta" }
-oxideav-pixfmt = { path = "../../oxideav/crates/oxideav-pixfmt" }
-oxideav-audio-filter = { path = "../../oxideav/crates/oxideav-audio-filter" }
-oxideav-sysaudio = { path = "../../oxideav/crates/oxideav-sysaudio" }
-oxideav-aac = { path = "../../oxideav/crates/oxideav-aac" }
-oxideav-h264 = { path = "../../oxideav/crates/oxideav-h264" }
-oxideav-mp4 = { path = "../../oxideav/crates/oxideav-mp4" }
-oxideav-mpegts = { path = "../../oxideav/crates/oxideav-mpegts" }
-oxideav-http = { path = "../../oxideav/crates/oxideav-http" }
-oxideav-hls = { path = "../../oxideav/crates/oxideav-hls" }
-oxideav-vdpau = { path = "../../oxideav/crates/oxideav-vdpau" }
-oxideav-bitstream = { path = "../../oxideav/crates/oxideav-bitstream" }
+oxideav = { git = "https://github.com/OxideAV/oxideav.git", branch = "master" }
+oxideav-core = { git = "https://github.com/Robert-Hughes/oxideav-core.git", branch = "dev" }
+oxideav-pipeline = { git = "https://github.com/Robert-Hughes/oxideav-pipeline.git", branch = "dev" }
+oxideav-meta = { git = "https://github.com/Robert-Hughes/oxideav-meta.git", branch = "dev" }
+oxideav-sysaudio = { git = "https://github.com/Robert-Hughes/oxideav-sysaudio.git", branch = "dev" }
+oxideav-aac = { git = "https://github.com/Robert-Hughes/oxideav-aac.git", branch = "dev" }
+oxideav-h264 = { git = "https://github.com/Robert-Hughes/oxideav-h264.git", branch = "dev" }
+oxideav-http = { git = "https://github.com/Robert-Hughes/oxideav-http.git", branch = "dev" }
+oxideav-hls = { git = "https://github.com/Robert-Hughes/oxideav-hls.git", branch = "dev" }
+oxideav-vdpau = { git = "https://github.com/Robert-Hughes/oxideav-vdpau.git", branch = "dev" }

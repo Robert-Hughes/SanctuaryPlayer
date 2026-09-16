@@ -25,10 +25,88 @@ oxideav-sysaudio = "0.1"
 oxideav-vdpau = "0.0.2"
 ```
 
-Local co-development uses `[patch.crates-io]` entries pointing at
-`../../oxideav/crates/...`. Patch every OxideAV crate in the selected
-dependency graph: mixing local and crates.io copies can create duplicate core
-traits/types with incompatible Rust identities.
+The committed manifest uses `[patch.crates-io]` to select the public Sanctuary
+forks, while an ignored Cargo configuration overrides the complete selected
+OxideAV graph with sibling local paths during co-development. Keeping the graph
+coherent prevents duplicate core traits/types with incompatible Rust identities.
+
+### Repository layout and forked dependency workflow
+
+OxideAV's development checkout is an **orchestration workspace, not a monorepo of
+all library crates**. The upstream `OxideAV/oxideav-workspace` repository tracks
+the workspace manifest/scripts plus `oxideav-cli`, `oxideplay` and
+`oxideav-tests`. `scripts/update-crates.sh` clones the library crates from
+separate `OxideAV/oxideav-*` Git repositories into ignored `crates/<name>/`
+directories. Consequently Sanctuary's custom OxideAV work spans several Git
+repositories and cannot be represented by one `oxideav-workspace` revision.
+
+The public Sanctuary dependency contract uses the project's public forks of each
+modified crate. Each relevant `[patch.crates-io]` entry in `native/Cargo.toml`
+points at that crate's generic `dev` branch. The forks retain the upstream repository
+names (`oxideav-core`, `oxideav-pipeline`, etc.). `oxideav-hls` is the one
+exception: there is currently no `OxideAV/oxideav-hls` upstream repository, so
+`Robert-Hughes/oxideav-hls` is a standalone public repository rather than a
+GitHub fork.
+
+The top-level `oxideav` facade is not locally modified, so it is not forked.
+Sanctuary patches that crate directly to upstream `OxideAV/oxideav` `master`
+because the published crates.io `0.0.3` facade still calls registry helper APIs
+that have since been removed from `oxideav-core`. `Cargo.lock` pins the exact
+upstream facade commit used by Sanctuary.
+
+For local co-development, `native/.cargo/config.toml` is intentionally ignored
+by Git and supplies local-path `[patch.crates-io]` entries for the complete
+OxideAV dependency graph used by Sanctuary. Cargo configuration patches override
+the corresponding manifest patches, so edits in the sibling
+`../../oxideav/crates/...` working trees are visible to Sanctuary immediately;
+the OxideAV changes do **not** need to be committed or pushed merely to build or
+test Sanctuary locally.
+
+The local config also sets Cargo 1.97+'s `resolver.lockfile-path` to the ignored
+`native/.cargo/Cargo.lock`. Local path resolution therefore updates that private
+lockfile instead of the committed Git-pinned `native/Cargo.lock`. This is important:
+using local `[patch]` overrides with the public lockfile directly would make
+Cargo rewrite the package sources from Git to paths.
+
+The committed `Cargo.lock` is nevertheless part of the public/reproducible
+application state. When Cargo resolves a Git dependency, the lockfile records the
+exact Git commit selected from the named `dev` branch. A normal build of an
+existing checkout therefore keeps using that locked commit even after the remote
+branch advances. Advancing Sanctuary's public OxideAV baseline requires updating
+the lockfile after the corresponding OxideAV commits have been pushed.
+
+The intended development cycle is:
+
+1. Develop and test OxideAV changes locally through the ignored path overrides.
+2. Commit the finished changes in the affected OxideAV crate repositories.
+3. With explicit permission, push those commits to the corresponding public
+   `dev` branches.
+4. Temporarily disable/bypass the local Cargo override and update Sanctuary's
+   Git dependencies so `Cargo.lock` resolves the newly pushed revisions.
+5. Run the Sanctuary validation suite against the Git-resolved configuration.
+6. Commit the resulting `Cargo.lock` together with any Sanctuary integration
+   changes.
+
+Do not treat step 4 as necessary for every experimental OxideAV edit; it is the
+publication/integration boundary. Conversely, do not omit it when Sanctuary has
+started relying on newly pushed OxideAV behaviour. Once Git revisions have
+previously been recorded in `Cargo.lock`, forgetting to update the lockfile can
+leave a public Sanctuary checkout building against older OxideAV commits than the
+ones tested through the local path overrides.
+
+During the initial conversion from path patches to Git patches, an old lockfile
+may contain no OxideAV Git revisions at all. A normal unlocked Cargo invocation
+can then resolve the current branch heads and rewrite the lockfile locally;
+`--locked` instead fails if the committed lockfile cannot satisfy the manifest.
+Relying on that implicit resolution is buildable but not reproducible: clones made
+at different times may resolve different branch heads. Sanctuary therefore keeps
+its application lockfile committed once the public Git baseline has been
+established.
+
+The local override assumes the sibling checkout layout
+`SanctuaryPlayer/` and `oxideav/` under the same parent directory. A developer
+using a different layout should adjust the ignored
+`native/.cargo/config.toml` paths rather than changing the committed manifest.
 
 ## OxideAV capabilities currently available to the app
 
@@ -36,25 +114,25 @@ The local OxideAV workspace provides the pieces needed for native playback:
 
 - FreeBSD OSS audio in `oxideav-sysaudio` (`5195ab8`).
 - HLS VOD source support with lazy MPEG-TS segment access and one-segment
-  successor readahead (`147e0b6`, `65e03ab`, `5e4c400`, `7f0acec`).
+  successor readahead (`147e0b6`, `798d0be`, `df5c63c`, `7f0acec`).
 - Shared H.264 streaming frontends and software picture state (`1041a0f`,
   `8d2a3e5`).
-- FreeBSD VDPAU H.264 streaming decode (`1abfbe8`) with explicit unsupported-case
-  fallback rather than silent approximation (`6417b12`).
+- FreeBSD VDPAU H.264 streaming decode (`a1a2463`) with explicit unsupported-case
+  fallback rather than silent approximation (`2869584`).
 - Retainable decoded-frame ownership through `FrameLease` (`c6e6f02`, `4c7099a`).
 - Native pooled software-H.264 arena output (`46f8433`, `94b6372`, `fda3143`),
   including arena-backed PAFF/SCP assembly and hard pool-exhaustion semantics
   (`d8ca4c2`).
-- Retainable VDPAU hardware-surface leases (`67ca9af`, `c0e23db`).
+- Retainable VDPAU hardware-surface leases (`bf7e468`, `a8c1c96`).
 - Native AAC fast enough for real-time playback without Symphonia (`38a8443`,
   `26f4127`, `b760012`).
 - Decoder output parameters for late-discovered output shape (`72ef547`, `a0c9d78`).
 
 `oxideplay` also demonstrates lease retention through a player queue, direct
-arena-backed YUV420P upload to wgpu (`ad91b3c`, `1a0f621`, `4d0350c`), and the
+arena-backed YUV420P upload to wgpu (`9c2f497`, `d6a6dda`, `b5caf78`), and the
 FreeBSD/NVIDIA zero-CPU-copy hardware path from a retained VDPAU surface through
-GLX interop into the existing wgpu/Vulkan renderer (`23a415e`, `07d07e9`,
-`ac54031`, `981e3ae`). Those commits are useful reference implementations, not
+GLX interop into the existing wgpu/Vulkan renderer (`f11d632`, `e60b8cf`,
+`3512397`, `e9f8acd`). Those commits are useful reference implementations, not
 application dependencies.
 
 ## Current end-to-end playback architecture
@@ -107,7 +185,7 @@ independent PES reassembly state. A completed audio PES and a completed video PE
 therefore do not form a useful global delivery sequence: **PTS is authoritative media
 time**, not cross-track callback order.
 
-`5e4c400` keeps this shared-source model while removing synchronous HTTP setup from
+`df5c63c` keeps this shared-source model while removing synchronous HTTP setup from
 normal segment boundaries. HLS maintains exactly one prepared successor outside the
 decoded A/V queues: a background worker opens the next segment and primes its MPEG-TS
 demuxer through the first packet. At EOF the prepared demuxer is installed directly.
@@ -280,11 +358,11 @@ codecs selectable. `7b9a06d` supplies the generic
 `Executor::with_codec_preferences()` plumbing that makes the per-session selection
 possible while all implementations stay registered. The direct path remains zero-CPU-copy rather than literal zero-copy: it
 still performs the GL YUV->RGBA render and one GPU-local Vulkan image copy. It also
-retains the `981e3ae` dedicated-memory requirement: because Vulkan allocates the
+retains the `e9f8acd` dedicated-memory requirement: because Vulkan allocates the
 shared image with `VkMemoryDedicatedAllocateInfo`, the GL memory object is marked
 `GL_DEDICATED_MEMORY_OBJECT_EXT` before `glImportMemoryFdEXT`.
 
-The corrected post-`981e3ae` reference-player benchmark used the local 10.03 s,
+The corrected post-`e9f8acd` reference-player benchmark used the local 10.03 s,
 1280x720/60 fps Twitch segment (600 frames, five muted paced runs per path).
 Compared with VDPAU decode followed by CPU `materialize()` and wgpu upload, the
 four-slot async bridge reduced mean total process CPU time from 7.696 s to 2.752 s
@@ -374,7 +452,7 @@ from the first actual decoded A/V PTS values. Runtime logs print those first PTS
 chosen media-timeline origin explicitly.
 
 Native HLS seeking is implemented by `b0234ab` (optional `PacketSource::seek_to`),
-`96e3e49` (packet-source seek/barrier integration and duration propagation), `982f5ae`
+`96e3e49` (packet-source seek/barrier integration and duration propagation), `3ef1eab`
 (HLS `#EXTINF` segment-time indexing plus per-segment MPEG-TS seeking), and `61a8332`
 (Sanctuary playback integration). Sanctuary converts the requested media-relative
 position back onto the source transport PTS axis (`timeline_origin + media_position`)
@@ -538,7 +616,7 @@ Android will fail cleanly until an Android backend (for example AAudio) is added
 
 ### HLS successor-readahead validation
 
-After `5e4c400`, a muted real Twitch VOD regression using the native VDPAU path
+After `df5c63c`, a muted real Twitch VOD regression using the native VDPAU path
 crossed the roughly 10 s and 20 s segment boundaries without source starvation:
 `underrun_callbacks` and `underrun_samples` remained zero, the audio queue stayed
 around its normal 500 ms target, and the video dropped-frame count remained at the

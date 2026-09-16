@@ -4,6 +4,8 @@ GOOGLE_APPLICATION_CREDENTIALS.json
 
 # Native Rust build output
 /native/target/
+/native/.cargo/config.toml
+/native/.cargo/Cargo.lock
 
 # Native Android Gradle build output
 /native/android-gradle/.gradle/

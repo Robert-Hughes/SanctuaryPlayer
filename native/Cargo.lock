@@ -1978,6 +1978,7 @@ dependencies = [
 [[package]]
 name = "oxideav"
 version = "0.0.3"
+source = "git+https://github.com/OxideAV/oxideav.git?branch=master#fcc7b633b621973430eb5389cea640d1c9481c59"
 dependencies = [
  "log",
  "oxideav-core",
@@ -1988,6 +1989,7 @@ dependencies = [
 [[package]]
 name = "oxideav-aac"
 version = "0.1.7"
+source = "git+https://github.com/Robert-Hughes/oxideav-aac.git?branch=dev#7c4e895ce5bab36731293c2860f0078e3fbf8a47"
 dependencies = [
  "oxideav-core",
 ]
@@ -1995,6 +1997,8 @@ dependencies = [
 [[package]]
 name = "oxideav-audio-filter"
 version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "349a9e0aaa983953c15b440a6e4f70ec69d424c7a027de19ab302b8e8518e9ce"
 dependencies = [
  "oxideav-core",
  "serde_json",
@@ -2003,10 +2007,13 @@ dependencies = [
 [[package]]
 name = "oxideav-bitstream"
 version = "0.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "776a36e8f0011eaacfb833e8e5b978609babb1f94e204f9c7d996bff3fe4f06c"
 
 [[package]]
 name = "oxideav-core"
-version = "0.1.35"
+version = "0.1.37"
+source = "git+https://github.com/Robert-Hughes/oxideav-core.git?branch=dev#7f6daa8dfef179e49bb6cd2c83010811a8024c16"
 dependencies = [
  "bytemuck",
  "serde_json",
@@ -2016,6 +2023,7 @@ dependencies = [
 [[package]]
 name = "oxideav-h264"
 version = "0.1.8"
+source = "git+https://github.com/Robert-Hughes/oxideav-h264.git?branch=dev#695feefad9989b833f4b1ff2f21619549dc46069"
 dependencies = [
  "log",
  "oxideav-core",
@@ -2025,6 +2033,7 @@ dependencies = [
 [[package]]
 name = "oxideav-hls"
 version = "0.1.0"
+source = "git+https://github.com/Robert-Hughes/oxideav-hls.git?branch=dev#fa52a2a87d0f87e818eb382927773520896aa231"
 dependencies = [
  "log",
  "m3u8-rs",
@@ -2037,6 +2046,7 @@ dependencies = [
 [[package]]
 name = "oxideav-http"
 version = "0.0.8"
+source = "git+https://github.com/Robert-Hughes/oxideav-http.git?branch=dev#147e0b6297cee11100ea2647b2779c5a6f339add"
 dependencies = [
  "oxideav-core",
  "oxideav-source",
@@ -2046,6 +2056,7 @@ dependencies = [
 [[package]]
 name = "oxideav-meta"
 version = "0.0.1"
+source = "git+https://github.com/Robert-Hughes/oxideav-meta.git?branch=dev#f031cb27d3034cada3770f2460b235e383783c1e"
 dependencies = [
  "oxideav-aac",
  "oxideav-core",
@@ -2061,6 +2072,8 @@ dependencies = [
 [[package]]
 name = "oxideav-mp4"
 version = "0.0.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d3fb26f41df4d00b495208a5943ae59cb33e6aff5c40a505a944b3e9361ffddc"
 dependencies = [
  "aes",
  "cbc",
@@ -2071,6 +2084,8 @@ dependencies = [
 [[package]]
 name = "oxideav-mpegts"
 version = "0.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4a72bdd896ae71cd76be5bd92999aa2ce35e2a2f7f05803f9cb3df3672c78679"
 dependencies = [
  "oxideav-core",
  "thiserror 2.0.20",
@@ -2079,6 +2094,7 @@ dependencies = [
 [[package]]
 name = "oxideav-pipeline"
 version = "0.1.12"
+source = "git+https://github.com/Robert-Hughes/oxideav-pipeline.git?branch=dev#4952a106d35de3749b5abc57b71110b8bea6f6fe"
 dependencies = [
  "indexmap",
  "log",
@@ -2092,6 +2108,8 @@ dependencies = [
 [[package]]
 name = "oxideav-pixfmt"
 version = "0.1.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e7a6735155781b67b9b1fe2ca764b5ad5cc3d452853d6f4b72f7747bc781e8d0"
 dependencies = [
  "oxideav-core",
 ]
@@ -2099,6 +2117,8 @@ dependencies = [
 [[package]]
 name = "oxideav-source"
 version = "0.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3f6ebd850b4b4063180f626695a90983fef91d7db54c88de5eae73ca1246d930"
 dependencies = [
  "oxideav-core",
 ]
@@ -2106,6 +2126,7 @@ dependencies = [
 [[package]]
 name = "oxideav-sysaudio"
 version = "0.1.1"
+source = "git+https://github.com/Robert-Hughes/oxideav-sysaudio.git?branch=dev#a9880191daca6bf36759756b141125c001fbbd6b"
 dependencies = [
  "libloading 0.9.0",
 ]
@@ -2113,6 +2134,7 @@ dependencies = [
 [[package]]
 name = "oxideav-vdpau"
 version = "0.0.2"
+source = "git+https://github.com/Robert-Hughes/oxideav-vdpau.git?branch=dev#11394957ecd60100b192003b7a92f3388838cd00"
 dependencies = [
  "libloading 0.8.9",
  "linkme",
