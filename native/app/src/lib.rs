@@ -476,6 +476,7 @@ impl ApplicationHandler<AppEvent> for SanctuaryPlayerApp {
                         Ok(frame) => {
                             if frame.status == RenderStatus::Reconfigure {
                                 graphics.reconfigure();
+                                window.request_redraw();
                             }
                             if let Some(delay) = frame.repaint_after {
                                 if delay.is_zero() {

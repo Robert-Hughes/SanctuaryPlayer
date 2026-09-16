@@ -10,6 +10,8 @@ use crate::model::AppCommand;
 use crate::ui;
 use crate::video_renderer::VideoRenderer;
 
+const MAX_SURFACE_VALIDATION_RECOVERY_ATTEMPTS: u8 = 3;
+
 pub(crate) struct Graphics {
     _instance: wgpu::Instance,
     _adapter: wgpu::Adapter,
@@ -24,6 +26,7 @@ pub(crate) struct Graphics {
     video_renderer: VideoRenderer,
     modifiers: ModifiersState,
     pending_egui_events: Vec<egui::Event>,
+    surface_validation_failures: u8,
 }
 
 impl Graphics {
@@ -65,6 +68,13 @@ impl Graphics {
             })
             .await
             .map_err(|error| format!("request_device: {error}"))?;
+
+        device.on_uncaptured_error(Arc::new(|error| {
+            log::error!("SanctuaryPlayer: uncaptured wgpu error: {error}");
+        }));
+        device.set_device_lost_callback(|reason, message| {
+            log::error!("SanctuaryPlayer: wgpu device lost reason={reason:?} message={message}");
+        });
 
         let capabilities = surface.get_capabilities(&adapter);
         let format = capabilities
@@ -131,6 +141,7 @@ impl Graphics {
             video_renderer,
             modifiers: ModifiersState::empty(),
             pending_egui_events: Vec::new(),
+            surface_validation_failures: 0,
         })
     }
 
@@ -172,8 +183,14 @@ impl Graphics {
         state: &mut AppState,
     ) -> Result<RenderFrame, String> {
         let (output, reconfigure_after_present) = match self.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(output) => (output, false),
-            wgpu::CurrentSurfaceTexture::Suboptimal(output) => (output, true),
+            wgpu::CurrentSurfaceTexture::Success(output) => {
+                self.surface_validation_failures = 0;
+                (output, false)
+            }
+            wgpu::CurrentSurfaceTexture::Suboptimal(output) => {
+                self.surface_validation_failures = 0;
+                (output, true)
+            }
             wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
                 return Ok(RenderFrame::status(RenderStatus::Reconfigure));
             }
@@ -181,7 +198,20 @@ impl Graphics {
                 return Ok(RenderFrame::status(RenderStatus::Skip));
             }
             wgpu::CurrentSurfaceTexture::Validation => {
-                return Err("surface acquisition failed validation".to_owned());
+                match next_surface_validation_recovery_attempt(self.surface_validation_failures) {
+                    Some(attempt) => {
+                        self.surface_validation_failures = attempt;
+                        log::error!(
+                            "SanctuaryPlayer: GPU surface acquisition validation failure; recovery_attempt={attempt}/{MAX_SURFACE_VALIDATION_RECOVERY_ATTEMPTS}; reconfiguring surface"
+                        );
+                        return Ok(RenderFrame::status(RenderStatus::Reconfigure));
+                    }
+                    None => {
+                        return Err(format!(
+                            "surface acquisition validation persisted after {MAX_SURFACE_VALIDATION_RECOVERY_ATTEMPTS} recovery attempts"
+                        ));
+                    }
+                }
             }
         };
         let target = output
@@ -310,6 +340,11 @@ pub(crate) enum RenderStatus {
     Skip,
 }
 
+fn next_surface_validation_recovery_attempt(previous_failures: u8) -> Option<u8> {
+    let attempt = previous_failures.saturating_add(1);
+    (attempt <= MAX_SURFACE_VALIDATION_RECOVERY_ATTEMPTS).then_some(attempt)
+}
+
 fn legacy_shift_insert_paste(
     modifiers: ModifiersState,
     state: ElementState,
@@ -329,6 +364,15 @@ fn legacy_shift_insert_paste(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn surface_validation_recovery_is_bounded() {
+        assert_eq!(next_surface_validation_recovery_attempt(0), Some(1));
+        assert_eq!(next_surface_validation_recovery_attempt(1), Some(2));
+        assert_eq!(next_surface_validation_recovery_attempt(2), Some(3));
+        assert_eq!(next_surface_validation_recovery_attempt(3), None);
+        assert_eq!(next_surface_validation_recovery_attempt(u8::MAX), None);
+    }
 
     #[test]
     fn shift_insert_is_legacy_paste_on_supported_unix_desktops() {
