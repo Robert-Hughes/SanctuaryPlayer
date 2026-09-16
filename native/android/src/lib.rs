@@ -800,7 +800,6 @@ mod android {
         });
 
         let mut state = AppState::with_decode_mode(DecodeMode::Cpu);
-        state.set_muted(true);
         state.set_settings_path(internal_data_path.join("settings.json"));
         state.set_session_path(internal_data_path.join("session.json"));
         let playback_waker = android_app.create_waker();

@@ -113,6 +113,7 @@ using a different layout should adjust the ignored
 The local OxideAV workspace provides the pieces needed for native playback:
 
 - FreeBSD OSS audio in `oxideav-sysaudio` (`5195ab8`).
+- Android AAudio output in `oxideav-sysaudio` (`c7c390c`); Android keeps the portable CPU H.264/video-renderer path and now uses native PCM-float playback instead of the mock sink.
 - HLS VOD source support with lazy MPEG-TS segment access and one-segment
   successor readahead (`147e0b6`, `798d0be`, `df5c63c`, `7f0acec`).
 - Shared H.264 streaming frontends and software picture state (`1041a0f`,
@@ -404,8 +405,9 @@ values are converted with `oxideav-audio-filter::sample_convert::decode_to_f32`,
 interleaved, and merged into a timestamp-aware bounded SPSC PCM ring implemented in
 `native/app/src/audio_timeline.rs`. The platform callback is supplied by
 `oxideav-sysaudio`: FreeBSD/GhostBSD uses native OSS (`/dev/dsp`), Windows uses
-WASAPI, macOS uses CoreAudio, and Linux uses the first working configured backend.
-Sanctuary does not contain an OSS-specific device implementation.
+WASAPI, macOS uses CoreAudio, Linux uses the first working configured backend, and
+Android uses native AAudio (`libaaudio.so`, API 26+). Sanctuary does not contain a
+platform-specific audio device implementation.
 
 The audio ring's timeline is expressed as integer device-rate sample-frame PTS values.
 Each decoded frame PTS is rescaled from the stream time base onto that integer sample
@@ -609,10 +611,10 @@ established.
 to sysaudio, including any silence supplied for missing/late decoded audio. It is a
 submission-side timeline, not an estimate of what the listener hears. The already
 available `oxideav-sysaudio::Stream::latency()` API will be incorporated later when the
-wall-clock A/V controller is designed. Output-device selection, volume controls,
-surround/downmix policy, and Android audio output are likewise future application work.
-In particular, `oxideav-sysaudio` has no Android backend today, so real A/V opening on
-Android will fail cleanly until an Android backend (for example AAudio) is added.
+wall-clock A/V controller is designed. Output-device selection, volume controls, and
+surround/downmix policy remain future application work. Android now uses the native
+`oxideav-sysaudio` AAudio backend; real Android sessions therefore follow the same
+PCM timeline/output path rather than the previous mock sink.
 
 ### HLS successor-readahead validation
 
@@ -687,12 +689,10 @@ suitable when callback advancement is not required.
    real A/V sessions, using the same controller model for rate changes.
 3. Apply output-latency compensation from `oxideav-sysaudio::Stream::latency()` and
    add explicit output-device / channel-layout / downmix policy.
-4. Add an Android backend to `oxideav-sysaudio` (or another Sanctuary Android audio
-   implementation) before enabling real A/V playback there.
-5. Add ABR on top of the now-asynchronous fixed-quality source/session switching
+4. Add ABR on top of the now-asynchronous fixed-quality source/session switching
    boundary, retaining manual/favourite-quality overrides.
-6. Consider eliminating the final GPU-local image copy in `vdpau-direct` only if wgpu
+5. Consider eliminating the final GPU-local image copy in `vdpau-direct` only if wgpu
    can safely own/sample the externally-written image without weakening resource-state
    correctness.
-7. Extend HLS support for discontinuities, byte ranges, fMP4/MAP, encryption, live
+6. Extend HLS support for discontinuities, byte ranges, fMP4/MAP, encryption, live
    reload and other source shapes only as real inputs require them.

@@ -36,7 +36,7 @@ egui-winit.workspace = true
 oxideav-sysaudio = { workspace = true, features = ["alsa", "pulse", "pipewire", "oss", "wasapi", "asio", "coreaudio"] }
 
 [target.'cfg(target_os = "android")'.dependencies]
-oxideav-sysaudio = { workspace = true, features = ["mock"] }
+oxideav-sysaudio = { workspace = true, features = ["aaudio"] }
 
 [target.'cfg(target_os = "freebsd")'.dependencies]
 ash = "0.38"
