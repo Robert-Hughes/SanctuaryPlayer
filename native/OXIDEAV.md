@@ -616,6 +616,28 @@ surround/downmix policy remain future application work. Android now uses the nat
 `oxideav-sysaudio` AAudio backend; real Android sessions therefore follow the same
 PCM timeline/output path rather than the previous mock sink.
 
+### Android AAudio / CPU-decode validation
+
+Real-device validation on a Samsung SM-F946B confirmed that Android AAudio itself is
+not the current playback bottleneck. The backend opens the speaker through AAudio's
+MMAP low-latency path at 48 kHz stereo and a 96-frame hardware burst, and decoded
+Sanctuary PCM reaches that stream correctly.
+
+Android performance measurements must use an optimised Rust build. The unoptimised
+debug build starved audio almost immediately while software H.264 decode, AAC decode,
+demux, rendering and audio pumping competed for CPU. A release-profile native build
+improved throughput substantially: 720p60 initially held the normal roughly 500 ms
+audio target with zero underruns, but after about 15 seconds the PCM queue drained,
+underruns began rising continuously, and video presentation progressively fell behind
+the playback clock. This identifies the current 720p60 software H.264 path as a
+throughput limit rather than an AAudio failure.
+
+Switching the same release build and VOD (`2859508682`) to 480p30 was stable in the
+observed run. The player held roughly 500-518 ms of queued audio with
+`underrun_callbacks=0` and `underrun_samples=0`, while video remained aligned with the
+playback clock with zero dropped frames. Until Android hardware video decode or further
+CPU-decoder optimisation is available, 480p30 is therefore the demonstrated
+real-time-safe quality on this device; 720p60 CPU decode is not yet sustainable.
 ### HLS successor-readahead validation
 
 After `df5c63c`, a muted real Twitch VOD regression using the native VDPAU path
