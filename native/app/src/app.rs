@@ -7,7 +7,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use url::Url;
 
-use ::oxideav::core::FrameLease;
+use ::oxideav::core::{FrameLease, VideoColorInfo};
 
 use crate::model::{AppCommand, PlaybackState, Quality};
 use crate::playback::{
@@ -1313,6 +1313,9 @@ impl AppState {
         self.playback.take_video_frame_lease()
     }
 
+    pub fn video_color_info(&self) -> Option<VideoColorInfo> {
+        self.playback.video_color_info()
+    }
     pub fn safe_title(&self) -> Option<String> {
         self.metadata
             .as_ref()

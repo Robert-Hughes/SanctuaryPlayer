@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::{Duration, Instant};
 
-use ::oxideav::core::FrameLease;
+use ::oxideav::core::{FrameLease, VideoColorInfo};
 
 use crate::model::{PlaybackState, Quality};
 use crate::video::VideoSource;
@@ -180,6 +180,10 @@ pub trait PlaybackBackend: Send {
     }
 
     fn take_video_frame_lease(&mut self) -> Option<FrameLease> {
+        None
+    }
+
+    fn video_color_info(&self) -> Option<VideoColorInfo> {
         None
     }
 }

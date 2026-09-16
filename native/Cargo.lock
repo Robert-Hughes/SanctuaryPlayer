@@ -2013,7 +2013,7 @@ checksum = "776a36e8f0011eaacfb833e8e5b978609babb1f94e204f9c7d996bff3fe4f06c"
 [[package]]
 name = "oxideav-core"
 version = "0.1.37"
-source = "git+https://github.com/Robert-Hughes/oxideav-core.git?branch=dev#7f6daa8dfef179e49bb6cd2c83010811a8024c16"
+source = "git+https://github.com/Robert-Hughes/oxideav-core.git?branch=dev#27967806e2234a6b420d03d67b0641558dbfa9d0"
 dependencies = [
  "bytemuck",
  "serde_json",
@@ -2023,7 +2023,7 @@ dependencies = [
 [[package]]
 name = "oxideav-h264"
 version = "0.1.8"
-source = "git+https://github.com/Robert-Hughes/oxideav-h264.git?branch=dev#695feefad9989b833f4b1ff2f21619549dc46069"
+source = "git+https://github.com/Robert-Hughes/oxideav-h264.git?branch=dev#f303fc2316818039fa2e4369b41bdc3584e63566"
 dependencies = [
  "log",
  "oxideav-core",

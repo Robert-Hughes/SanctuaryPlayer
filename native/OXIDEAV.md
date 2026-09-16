@@ -336,6 +336,14 @@ rendering those values into an `*Srgb` attachment would make wgpu apply an addit
 linear-to-sRGB encode and visibly brighten/flatten the picture. Desktop already used
 the non-sRGB preference, while Android previously accepted `get_default_config()`'s
 `Rgba8UnormSrgb` choice and therefore followed a different colour path.
+H.264 colour metadata is now also propagated from the SPS VUI through OxideAV's
+`CodecParameters::video_color` into Sanctuary's presentation path. The YUV shader uses
+the declared full/limited range and matrix coefficients instead of assuming one fixed
+full-range BT.709 transform. When range metadata is absent, SDR video defaults to
+limited range; when matrix metadata is absent/unspecified, presentation falls back to
+BT.709 for HD video and SMPTE 170M/BT.601 for SD video. Transfer-function/colour-
+primaries interpretation and HDR output remain separate future work.
+
 The application now exposes three explicit decode/presentation contracts through
 `--decode-mode`:
 

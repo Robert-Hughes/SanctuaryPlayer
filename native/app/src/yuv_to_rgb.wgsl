@@ -1,5 +1,8 @@
 struct Uniforms {
     content_scale: vec4<f32>,
+    range: vec4<f32>,
+    matrix: vec4<f32>,
+    mode: vec4<f32>,
 }
 
 @group(0) @binding(0) var y_tex: texture_2d<f32>;
@@ -29,11 +32,36 @@ fn fs(in: VsOut) -> @location(0) vec4<f32> {
     if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
         return vec4<f32>(0.0, 0.0, 0.0, 1.0);
     }
-    let y = textureSample(y_tex, samp, uv).r;
-    let u = textureSample(u_tex, samp, uv).r - 0.5;
-    let v = textureSample(v_tex, samp, uv).r - 0.5;
-    let r = y + 1.5748 * v;
-    let g = y - 0.1873 * u - 0.4681 * v;
-    let b = y + 1.8556 * u;
-    return vec4<f32>(r, g, b, 1.0);
+    let raw_y = textureSample(y_tex, samp, uv).r;
+    let raw_u = textureSample(u_tex, samp, uv).r;
+    let raw_v = textureSample(v_tex, samp, uv).r;
+    let y = (raw_y - uni.range.y) * uni.range.x;
+    let cb = (raw_u - uni.range.w) * uni.range.z;
+    let cr = (raw_v - uni.range.w) * uni.range.z;
+    let mode = uni.mode.x;
+
+    var rgb: vec3<f32>;
+    if (mode < 0.5) {
+        rgb = vec3<f32>(
+            y + uni.matrix.x * cr,
+            y + uni.matrix.y * cb + uni.matrix.z * cr,
+            y + uni.matrix.w * cb,
+        );
+    } else if (mode < 1.5) {
+        rgb = vec3<f32>(y - cb + cr, y + cb, y - cb - cr);
+    } else if (mode < 2.5) {
+        let r = y + select(1.7184, 0.9936, cr >= 0.0) * cr;
+        let b = y + select(1.9404, 1.5816, cb >= 0.0) * cb;
+        let g = (y - 0.2627 * r - 0.0593 * b) / 0.6780;
+        rgb = vec3<f32>(r, g, b);
+    } else {
+        let component_scale = uni.range.x;
+        let component_offset = uni.range.y;
+        rgb = vec3<f32>(
+            (raw_v - component_offset) * component_scale,
+            y,
+            (raw_u - component_offset) * component_scale,
+        );
+    }
+    return vec4<f32>(rgb, 1.0);
 }

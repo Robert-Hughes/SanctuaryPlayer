@@ -1,5 +1,7 @@
 use ::oxideav::core::arena::sync::Frame as ArenaFrame;
-use ::oxideav::core::{FrameLease, PixelFormat, VideoFrame};
+use ::oxideav::core::{
+    FrameLease, PixelFormat, VideoColorInfo, VideoColorRange, VideoFrame, VideoMatrixCoefficients,
+};
 
 use crate::playback::DecodeMode;
 #[cfg(target_os = "freebsd")]
@@ -49,6 +51,99 @@ struct YuvTextures {
     v: wgpu::Texture,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct YuvConversion {
+    range: [f32; 4],
+    matrix: [f32; 4],
+    mode: f32,
+}
+
+impl YuvConversion {
+    fn for_stream(color: Option<VideoColorInfo>, width: u32, height: u32) -> Self {
+        let range = match color.and_then(|info| info.range) {
+            Some(VideoColorRange::Full) => [1.0, 0.0, 1.0, 128.0 / 255.0],
+            _ => [255.0 / 219.0, 16.0 / 255.0, 255.0 / 224.0, 128.0 / 255.0],
+        };
+        let fallback = if width >= 1280 || height > 576 {
+            VideoMatrixCoefficients::Bt709
+        } else {
+            VideoMatrixCoefficients::Smpte170M
+        };
+        let matrix = color
+            .and_then(|info| info.matrix)
+            .map(|matrix| match matrix {
+                VideoMatrixCoefficients::Unspecified | VideoMatrixCoefficients::Unknown(_) => {
+                    fallback
+                }
+                other => other,
+            })
+            .unwrap_or(fallback);
+        let (matrix, mode) = match matrix {
+            VideoMatrixCoefficients::Bt709 => ([1.5748, -0.187324, -0.468124, 1.8556], 0.0),
+            VideoMatrixCoefficients::Fcc => ([1.4, -0.343, -0.711, 1.78], 0.0),
+            VideoMatrixCoefficients::Bt470Bg | VideoMatrixCoefficients::Smpte170M => {
+                ([1.402, -0.344136, -0.714136, 1.772], 0.0)
+            }
+            VideoMatrixCoefficients::Smpte240M => ([1.576, -0.2253, -0.4767, 1.826], 0.0),
+            VideoMatrixCoefficients::Bt2020Ncl => ([1.4746, -0.164553, -0.571353, 1.8814], 0.0),
+            VideoMatrixCoefficients::Ycgco => ([0.0; 4], 1.0),
+            VideoMatrixCoefficients::Bt2020Cl => ([0.0; 4], 2.0),
+            VideoMatrixCoefficients::Identity => ([0.0; 4], 3.0),
+            VideoMatrixCoefficients::Unspecified | VideoMatrixCoefficients::Unknown(_) => {
+                unreachable!()
+            }
+        };
+        Self {
+            range,
+            matrix,
+            mode,
+        }
+    }
+
+    fn uniform_words(self) -> [f32; 12] {
+        [
+            self.range[0],
+            self.range[1],
+            self.range[2],
+            self.range[3],
+            self.matrix[0],
+            self.matrix[1],
+            self.matrix[2],
+            self.matrix[3],
+            self.mode,
+            0.0,
+            0.0,
+            0.0,
+        ]
+    }
+
+    #[cfg(test)]
+    fn apply(self, raw_y: f32, raw_u: f32, raw_v: f32) -> [f32; 3] {
+        let y = (raw_y - self.range[1]) * self.range[0];
+        let cb = (raw_u - self.range[3]) * self.range[2];
+        let cr = (raw_v - self.range[3]) * self.range[2];
+        match self.mode as u32 {
+            0 => [
+                y + self.matrix[0] * cr,
+                y + self.matrix[1] * cb + self.matrix[2] * cr,
+                y + self.matrix[3] * cb,
+            ],
+            1 => [y - cb + cr, y + cb, y - cb - cr],
+            2 => {
+                let r = y + if cr >= 0.0 { 0.9936 } else { 1.7184 } * cr;
+                let b = y + if cb >= 0.0 { 1.5816 } else { 1.9404 } * cb;
+                let g = (y - 0.2627 * r - 0.0593 * b) / 0.6780;
+                [r, g, b]
+            }
+            3 => [
+                (raw_v - self.range[1]) * self.range[0],
+                y,
+                (raw_u - self.range[1]) * self.range[0],
+            ],
+            _ => unreachable!(),
+        }
+    }
+}
 impl VideoRenderer {
     pub fn new(
         device: &wgpu::Device,
@@ -198,15 +293,15 @@ impl VideoRenderer {
         });
         let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("sanctuary-video-uniform"),
-            size: 16,
+            size: 64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        queue.write_buffer(
-            &uniform_buffer,
-            0,
-            bytemuck::cast_slice(&[1.0_f32, 1.0, 0.0, 0.0]),
-        );
+        let default_conversion = YuvConversion::for_stream(None, 1280, 720);
+        let mut uniforms = [0.0_f32; 16];
+        uniforms[0..4].copy_from_slice(&[1.0, 1.0, 0.0, 0.0]);
+        uniforms[4..16].copy_from_slice(&default_conversion.uniform_words());
+        queue.write_buffer(&uniform_buffer, 0, bytemuck::cast_slice(&uniforms));
 
         Self {
             pipeline,
@@ -242,10 +337,11 @@ impl VideoRenderer {
         queue: &wgpu::Queue,
         lease: &FrameLease,
         decode_mode: DecodeMode,
+        color: Option<VideoColorInfo>,
     ) -> Result<(), String> {
         match decode_mode {
-            DecodeMode::Cpu => self.upload_cpu_lease(device, queue, lease),
-            DecodeMode::VdpauReadback => self.upload_vdpau_readback(device, queue, lease),
+            DecodeMode::Cpu => self.upload_cpu_lease(device, queue, lease, color),
+            DecodeMode::VdpauReadback => self.upload_vdpau_readback(device, queue, lease, color),
             DecodeMode::VdpauDirect => {
                 #[cfg(target_os = "freebsd")]
                 {
@@ -253,7 +349,7 @@ impl VideoRenderer {
                 }
                 #[cfg(not(target_os = "freebsd"))]
                 {
-                    let _ = (device, queue, lease);
+                    let _ = (device, queue, lease, color);
                     Err("vdpau-direct presentation is only available on FreeBSD".into())
                 }
             }
@@ -265,13 +361,14 @@ impl VideoRenderer {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         lease: &FrameLease,
+        color: Option<VideoColorInfo>,
     ) -> Result<(), String> {
         let arena = lease.as_arena_video().ok_or_else(|| {
             "CPU decode produced a non-arena video lease; refusing materialisation".to_owned()
         })?;
         let view = arena_yuv420p_view(arena)
             .ok_or_else(|| "unsupported arena video layout (expected native YUV420P)".to_owned())?;
-        self.upload_yuv420p(device, queue, &view)
+        self.upload_yuv420p(device, queue, &view, color)
     }
 
     fn upload_vdpau_readback(
@@ -279,6 +376,7 @@ impl VideoRenderer {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         lease: &FrameLease,
+        color: Option<VideoColorInfo>,
     ) -> Result<(), String> {
         let hardware = lease
             .as_hardware_video()
@@ -302,7 +400,7 @@ impl VideoRenderer {
             .map_err(|error| format!("VDPAU CPU readback failed: {error}"))?;
         let view = video_frame_yuv420p_view(&frame, width, height)
             .ok_or_else(|| "VDPAU readback produced invalid YUV420P planes".to_owned())?;
-        self.upload_yuv420p(device, queue, &view)?;
+        self.upload_yuv420p(device, queue, &view, color)?;
         if !self.readback_logged {
             log::info!(
                 "SanctuaryPlayer: VDPAU readback presentation active ({}x{}, hardware decode -> CPU I420 -> wgpu)",
@@ -319,6 +417,7 @@ impl VideoRenderer {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         view: &Yuv420pView<'_>,
+        color: Option<VideoColorInfo>,
     ) -> Result<(), String> {
         if view.width > self.max_texture_dimension_2d || view.height > self.max_texture_dimension_2d
         {
@@ -328,6 +427,12 @@ impl VideoRenderer {
             ));
         }
 
+        let conversion = YuvConversion::for_stream(color, view.width, view.height);
+        queue.write_buffer(
+            &self.uniform_buffer,
+            16,
+            bytemuck::cast_slice(&conversion.uniform_words()),
+        );
         self.ensure_textures(device, view.width, view.height);
         self.upload_plane(
             queue,
@@ -858,5 +963,49 @@ mod tests {
         let view = video_frame_yuv420p_view(&frame, 4, 2).unwrap();
         assert_eq!(view.y.as_ptr(), y_ptr);
         assert_eq!(view.y_stride, 4);
+    }
+
+    fn assert_rgb_close(actual: [f32; 3], expected: [f32; 3]) {
+        for (actual, expected) in actual.into_iter().zip(expected) {
+            assert!((actual - expected).abs() < 1.0e-5, "{actual} != {expected}");
+        }
+    }
+
+    #[test]
+    fn bt709_full_range_keeps_black_and_white_levels() {
+        let conversion = YuvConversion::for_stream(
+            Some(VideoColorInfo {
+                range: Some(VideoColorRange::Full),
+                matrix: Some(VideoMatrixCoefficients::Bt709),
+                ..Default::default()
+            }),
+            1280,
+            720,
+        );
+        let neutral = 128.0 / 255.0;
+        assert_rgb_close(conversion.apply(0.0, neutral, neutral), [0.0, 0.0, 0.0]);
+        assert_rgb_close(conversion.apply(1.0, neutral, neutral), [1.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn bt709_limited_range_expands_nominal_black_and_white() {
+        let conversion = YuvConversion::for_stream(
+            Some(VideoColorInfo {
+                range: Some(VideoColorRange::Limited),
+                matrix: Some(VideoMatrixCoefficients::Bt709),
+                ..Default::default()
+            }),
+            1280,
+            720,
+        );
+        let neutral = 128.0 / 255.0;
+        assert_rgb_close(
+            conversion.apply(16.0 / 255.0, neutral, neutral),
+            [0.0, 0.0, 0.0],
+        );
+        assert_rgb_close(
+            conversion.apply(235.0 / 255.0, neutral, neutral),
+            [1.0, 1.0, 1.0],
+        );
     }
 }

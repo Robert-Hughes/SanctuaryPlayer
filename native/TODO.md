@@ -58,7 +58,6 @@
 - Add hardware video decoding and efficient GPU presentation paths on Windows.
 - Add hardware video decoding and efficient GPU presentation paths on Android.
 - Finish evaluating whether the final GPU-local copy in the FreeBSD `vdpau-direct` presentation bridge can be removed safely.
-- Propagate video colour metadata through decode/presentation and select the correct YUV matrix and full/limited range instead of using one fixed conversion.
 - Add transfer-function/colour-primaries handling and HDR/tone-mapping/output support for HDR sources rather than treating all decoded video as SDR.
 
 ## Platform integration

@@ -382,9 +382,15 @@ mod android {
                 self.video_renderer.reset();
             }
             let decode_mode = state.decode_mode();
+            let color = state.video_color_info();
             if let Some(frame) = state.take_video_frame_lease() {
-                self.video_renderer
-                    .upload_lease(&self.device, &self.queue, &frame, decode_mode)?;
+                self.video_renderer.upload_lease(
+                    &self.device,
+                    &self.queue,
+                    &frame,
+                    decode_mode,
+                    color,
+                )?;
             }
             self.video_renderer.draw(
                 &self.queue,

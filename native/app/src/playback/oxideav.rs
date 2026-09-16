@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 
 use ::oxideav::core::{
     CancellationToken, Error, Frame, FrameLease, MediaType, Packet, Rounding, StreamInfo, TimeBase,
+    VideoColorInfo,
 };
 use ::oxideav::pipeline::{
     BarrierKind, ChannelCaps, CodecPreferences, Executor, ExecutorHandle, Job, JobSink, TrackSink,
@@ -1989,6 +1990,10 @@ impl PlaybackBackend for OxidePlayback {
 
     fn take_video_frame_lease(&mut self) -> Option<FrameLease> {
         self.take_due_frame()
+    }
+
+    fn video_color_info(&self) -> Option<VideoColorInfo> {
+        self.video_stream.params.video_color
     }
 }
 
