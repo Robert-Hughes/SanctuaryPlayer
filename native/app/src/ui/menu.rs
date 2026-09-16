@@ -195,7 +195,7 @@ fn render_saved_positions(
     let positions = state.saved_positions();
     if state.saved_positions_loading() {
         ui.horizontal(|ui| {
-            ui.spinner();
+            super::animated_spinner(ui);
             ui.label(if positions.is_empty() {
                 "Loading saved positions…"
             } else {

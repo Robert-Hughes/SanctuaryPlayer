@@ -181,7 +181,7 @@ pub fn render(ui: &mut egui::Ui, state: &mut AppState, commands: &mut Vec<AppCom
                 .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
                 .show(&ctx, |ui| {
                     ui.horizontal(|ui| {
-                        ui.spinner();
+                        super::animated_spinner(ui);
                         ui.label(format!("Resolving Twitch VOD {video_id}…"));
                     });
                 });
