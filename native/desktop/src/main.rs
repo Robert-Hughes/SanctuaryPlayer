@@ -1,3 +1,5 @@
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+
 use sanctuary_player_app::playback::DecodeMode;
 use sanctuary_player_app::video::VideoSource;
 use sanctuary_player_app::{AppEvent, SanctuaryPlayerApp};
