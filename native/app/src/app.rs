@@ -505,6 +505,14 @@ impl AppState {
         self.pending_video_open = None;
         match result {
             Ok(opened) => {
+                log::info!(
+                    "SanctuaryPlayer: Twitch video open complete video_id={}",
+                    opened
+                        .playback
+                        .source()
+                        .map(|source| source.id.as_str())
+                        .unwrap_or("?")
+                );
                 self.playback = opened.playback;
                 self.metadata = opened.metadata;
                 self.preferences.manually_selected_quality = false;
@@ -526,6 +534,7 @@ impl AppState {
                 self.ui.dialog = None;
             }
             Err(message) => {
+                log::error!("SanctuaryPlayer: Twitch video open failed: {message}");
                 self.play_when_opened = false;
                 self.ui.dialog = Some(DialogState::Message {
                     title: "Unable to open Twitch video".into(),
@@ -544,6 +553,7 @@ impl AppState {
         let decode_mode = self.decode_mode;
         let muted = self.muted;
         let video_id = source.id.clone();
+        log::info!("SanctuaryPlayer: Twitch video open begin video_id={video_id}");
         let worker_video_id = video_id.clone();
         let (sender, receiver) = mpsc::channel();
         thread::spawn(move || {

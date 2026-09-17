@@ -27,7 +27,6 @@
 - Add an independent playback test with deliberately slow video presentation.
 - Add an independent playback test with deliberately slow audio presentation.
 - Add a manual A/V sync test mode using a deterministic synthetic cue such as a simulated metronome, so presentation offset and drift can be observed and adjusted deliberately.
-- Logs to rotating files rather than console, so easier to inspect later
 
 ## Sources and streaming
 
