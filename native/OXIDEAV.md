@@ -344,12 +344,24 @@ limited range; when matrix metadata is absent/unspecified, presentation falls ba
 BT.709 for HD video and SMPTE 170M/BT.601 for SD video. Transfer-function/colour-
 primaries interpretation and HDR output remain separate future work.
 
-The application now exposes three explicit decode/presentation contracts through
-`--decode-mode`:
+The application now exposes four explicit decode/presentation contracts through
+`--decode-mode`. Platform defaults are `vdpau-direct` on FreeBSD,
+`mediacodec-readback` on Android, and `cpu` elsewhere:
 
-- `cpu` (default) sets `CodecPreferences::no_hardware`, so software H.264 is selected
-  even though VDPAU is compiled into the same runtime. Output must remain
+- `cpu` sets `CodecPreferences::no_hardware`, so software H.264 is selected even when a
+  hardware implementation is compiled into the same runtime. Output must remain
   `FrameLease::ArenaVideo`; the renderer refuses a silent materialisation fallback.
+- `mediacodec-readback` (Android) prefers `h264_mediacodec` and explicitly excludes
+  `h264_sw`. The Android backend feeds Annex-B access units to the platform MediaCodec
+  AVC decoder and configures an `AImageReader` YUV420 output surface. Each decoded
+  `AImage` travels through OxideAV as an opaque `HardwareVideo` lease which retains the
+  parent reader for the image lifetime. The renderer deliberately calls
+  `materialize()` at the compatibility boundary, respecting Android's per-plane row and
+  pixel strides to repack `YUV_420_888` into CPU I420 before the existing wgpu upload.
+  This first stage therefore removes software H.264 reconstruction while retaining one
+  explicit hardware-to-CPU readback plus the existing CPU-to-GPU upload. The opaque
+  lease is intentional: a later direct path can obtain the image's `AHardwareBuffer`
+  and import/sample it through Vulkan without changing decoder or pipeline ownership.
 - `vdpau-readback` prefers `h264_vdpau` and explicitly excludes `h264_sw`. This keeps
   video selection strict without imposing `require_hardware` on the AAC track in the
   same job. The renderer requires a VDPAU `HardwareVideo` lease, explicitly calls its
@@ -365,11 +377,11 @@ The application now exposes three explicit decode/presentation contracts through
   copy complete. If every slot is busy, the video frame is dropped rather than
   stalling or falling back to CPU.
 
-The two VDPAU modes are deliberately strict for H.264: failure to obtain VDPAU decode
-or to execute the selected presentation path is an error, not a request to silently
-switch the video track to software. The global `require_hardware` flag is deliberately
-not used now that one job also decodes AAC; excluding `h264_sw` leaves software audio
-codecs selectable. `7b9a06d` supplies the generic
+The MediaCodec and VDPAU hardware modes are deliberately strict for H.264: failure to
+obtain the selected hardware decode path or to execute its presentation contract is an
+error, not a request to silently switch the video track to software. The global
+`require_hardware` flag is deliberately not used now that one job also decodes AAC;
+excluding `h264_sw` leaves software audio codecs selectable. `7b9a06d` supplies the generic
 `Executor::with_codec_preferences()` plumbing that makes the per-session selection
 possible while all implementations stay registered. The direct path remains zero-CPU-copy rather than literal zero-copy: it
 still performs the GL YUV->RGBA render and one GPU-local Vulkan image copy. It also

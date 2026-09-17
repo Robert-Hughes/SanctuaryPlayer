@@ -341,6 +341,9 @@ impl VideoRenderer {
     ) -> Result<(), String> {
         match decode_mode {
             DecodeMode::Cpu => self.upload_cpu_lease(device, queue, lease, color),
+            DecodeMode::MediaCodecReadback => {
+                self.upload_mediacodec_readback(device, queue, lease, color)
+            }
             DecodeMode::VdpauReadback => self.upload_vdpau_readback(device, queue, lease, color),
             DecodeMode::VdpauDirect => {
                 #[cfg(target_os = "freebsd")]
@@ -369,6 +372,47 @@ impl VideoRenderer {
         let view = arena_yuv420p_view(arena)
             .ok_or_else(|| "unsupported arena video layout (expected native YUV420P)".to_owned())?;
         self.upload_yuv420p(device, queue, &view, color)
+    }
+
+    fn upload_mediacodec_readback(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        lease: &FrameLease,
+        color: Option<VideoColorInfo>,
+    ) -> Result<(), String> {
+        let hardware = lease.as_hardware_video().ok_or_else(|| {
+            "mediacodec-readback mode received a non-hardware video lease".to_owned()
+        })?;
+        if hardware.backend() != "mediacodec" {
+            return Err(format!(
+                "mediacodec-readback mode received hardware backend {:?}",
+                hardware.backend()
+            ));
+        }
+        if hardware.pixel_format() != PixelFormat::Yuv420P {
+            return Err(format!(
+                "mediacodec-readback mode received unsupported materialisation format {:?}",
+                hardware.pixel_format()
+            ));
+        }
+        let width = hardware.width();
+        let height = hardware.height();
+        let frame = hardware
+            .materialize()
+            .map_err(|error| format!("MediaCodec CPU readback failed: {error}"))?;
+        let view = video_frame_yuv420p_view(&frame, width, height)
+            .ok_or_else(|| "MediaCodec readback produced invalid YUV420P planes".to_owned())?;
+        self.upload_yuv420p(device, queue, &view, color)?;
+        if !self.readback_logged {
+            log::info!(
+                "SanctuaryPlayer: MediaCodec readback presentation active ({}x{}, hardware decode -> AImage CPU I420 -> wgpu)",
+                width,
+                height
+            );
+            self.readback_logged = true;
+        }
+        Ok(())
     }
 
     fn upload_vdpau_readback(

@@ -572,6 +572,8 @@ fn open_variant_session(
 
     let mut registries = ::oxideav::Registries::new();
     oxideav_meta::register_all(&mut registries);
+    #[cfg(target_os = "android")]
+    oxideav_mediacodec::register(&mut registries);
 
     let codec_preferences = codec_preferences(decode_mode);
     let (tx, rx) = mpsc::sync_channel(SESSION_CHANNEL_CAP);
@@ -2147,6 +2149,15 @@ fn codec_preferences(decode_mode: DecodeMode) -> CodecPreferences {
             no_hardware: true,
             ..Default::default()
         },
+        DecodeMode::MediaCodecReadback => CodecPreferences {
+            prefer: vec!["h264_mediacodec".into()],
+            // Keep the Android hardware-decode contract strict so a broken
+            // MediaCodec path cannot silently fall back to the CPU decoder and
+            // recreate the 720p60 starvation this mode exists to avoid.
+            exclude: vec!["h264_sw".into()],
+            boost: 100,
+            ..Default::default()
+        },
         DecodeMode::VdpauReadback | DecodeMode::VdpauDirect => CodecPreferences {
             prefer: vec!["h264_vdpau".into()],
             // Keep the VDPAU contract strict without requiring *audio* codecs
@@ -3198,6 +3209,14 @@ mod tests {
             .unwrap();
         assert_eq!(playback.state, PlaybackState::Paused);
         assert_eq!(playback.position, Duration::from_secs(7));
+    }
+
+    #[test]
+    fn mediacodec_selection_stays_strict_without_requiring_hardware_audio() {
+        let prefs = codec_preferences(DecodeMode::MediaCodecReadback);
+        assert!(prefs.prefer.iter().any(|name| name == "h264_mediacodec"));
+        assert!(prefs.exclude.iter().any(|name| name == "h264_sw"));
+        assert!(!prefs.require_hardware);
     }
 
     #[test]

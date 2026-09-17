@@ -37,6 +37,7 @@ oxideav-sysaudio = { workspace = true, features = ["alsa", "pulse", "pipewire", 
 
 [target.'cfg(target_os = "android")'.dependencies]
 oxideav-sysaudio = { workspace = true, features = ["aaudio"] }
+oxideav-mediacodec.workspace = true
 
 [target.'cfg(target_os = "freebsd")'.dependencies]
 ash = "0.38"

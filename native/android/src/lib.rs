@@ -817,7 +817,7 @@ mod android {
             repaint_callback.request(request.delay);
         });
 
-        let mut state = AppState::with_decode_mode(DecodeMode::Cpu);
+        let mut state = AppState::with_decode_mode(DecodeMode::platform_default());
         state.set_settings_path(internal_data_path.join("settings.json"));
         state.set_session_path(internal_data_path.join("session.json"));
         let playback_waker = android_app.create_waker();
