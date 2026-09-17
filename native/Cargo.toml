@@ -58,4 +58,5 @@ oxideav-aac = { git = "https://github.com/Robert-Hughes/oxideav-aac.git", branch
 oxideav-h264 = { git = "https://github.com/Robert-Hughes/oxideav-h264.git", branch = "dev" }
 oxideav-http = { git = "https://github.com/Robert-Hughes/oxideav-http.git", branch = "dev" }
 oxideav-hls = { git = "https://github.com/Robert-Hughes/oxideav-hls.git", branch = "dev" }
+oxideav-mediacodec = { git = "https://github.com/Robert-Hughes/oxideav-mediacodec.git", branch = "dev" }
 oxideav-vdpau = { git = "https://github.com/Robert-Hughes/oxideav-vdpau.git", branch = "dev" }

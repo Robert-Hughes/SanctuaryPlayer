@@ -2054,6 +2054,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "oxideav-mediacodec"
+version = "0.0.1"
+source = "git+https://github.com/Robert-Hughes/oxideav-mediacodec.git?branch=dev#804f1b4cc85e0b9ced9abd3148468f93cbfe2bc6"
+dependencies = [
+ "libc",
+ "log",
+ "ndk",
+ "ndk-sys",
+ "oxideav-core",
+ "oxideav-h264",
+]
+
+[[package]]
 name = "oxideav-meta"
 version = "0.0.1"
 source = "git+https://github.com/Robert-Hughes/oxideav-meta.git?branch=dev#f031cb27d3034cada3770f2460b235e383783c1e"
@@ -2648,6 +2661,7 @@ dependencies = [
  "egui-wgpu",
  "log",
  "ndk",
+ "oxideav-mediacodec",
  "pollster",
  "raw-window-handle",
  "sanctuary-player-app",
@@ -2670,6 +2684,7 @@ dependencies = [
  "oxideav",
  "oxideav-audio-filter",
  "oxideav-hls",
+ "oxideav-mediacodec",
  "oxideav-meta",
  "oxideav-pixfmt",
  "oxideav-sysaudio",
