@@ -344,50 +344,83 @@ limited range; when matrix metadata is absent/unspecified, presentation falls ba
 BT.709 for HD video and SMPTE 170M/BT.601 for SD video. Transfer-function/colour-
 primaries interpretation and HDR output remain separate future work.
 
-The application now exposes four explicit decode/presentation contracts through
-`--decode-mode`. Platform defaults are `vdpau-direct` on FreeBSD,
-`mediacodec-readback` on Android, and `cpu` elsewhere:
+The application now exposes an automatic policy plus explicit decode/presentation
+contracts through `--decode-mode`. `auto` is the platform default everywhere. It
+keeps all compatible implementations eligible and relies on their registration
+priority/factory failure semantics: fully hardware-resident presentation first,
+hardware decode with CPU readback second, and software H.264 last. On Android that
+means `h264_mediacodec_direct` -> `h264_mediacodec_readback` -> `h264_sw`; on
+FreeBSD the one VDPAU decoder is preferred to `h264_sw`, while the renderer prefers
+its direct bridge and can use its readback presentation path if direct interop is
+unavailable.
+
+Explicit modes are deliberately strict. If a caller supplies a particular
+`--decode-mode`, Sanctuary excludes alternative H.264 implementations rather than
+silently changing the requested contract:
 
 - `cpu` sets `CodecPreferences::no_hardware`, so software H.264 is selected even when a
   hardware implementation is compiled into the same runtime. Output must remain
   `FrameLease::ArenaVideo`; the renderer refuses a silent materialisation fallback.
-- `mediacodec-readback` (Android) prefers `h264_mediacodec` and explicitly excludes
-  `h264_sw`. The Android backend feeds Annex-B access units to the platform MediaCodec
-  AVC decoder and configures an `AImageReader` YUV420 output surface. Each decoded
-  `AImage` travels through OxideAV as an opaque `HardwareVideo` lease which retains the
-  parent reader for the image lifetime. The renderer deliberately calls
-  `materialize()` at the compatibility boundary, respecting Android's per-plane row and
-  pixel strides to repack `YUV_420_888` into CPU I420 before the existing wgpu upload.
-  This first stage therefore removes software H.264 reconstruction while retaining one
-  explicit hardware-to-CPU readback plus the existing CPU-to-GPU upload. The opaque
-  lease is intentional: a later direct path can obtain the image's `AHardwareBuffer`
-  and import/sample it through Vulkan without changing decoder or pipeline ownership.
+- `mediacodec-direct` (Android) selects only `h264_mediacodec_direct`. MediaCodec is
+  configured against a PRIVATE `AImageReader` created with GPU-sampled usage. Each
+  decoded `AImage` remains owned by its opaque `HardwareVideo` lease; Sanctuary imports
+  its `AHardwareBuffer` into Vulkan external memory, samples it through Vulkan
+  sampler-YCbCr conversion, and renders into a normal wgpu-owned `Rgba8Unorm` texture.
+  Four asynchronous bridge slots retain their frame leases and imported image/memory
+  until a non-blocking Vulkan fence proves sampling complete. No pixel data is read
+  back to CPU and the direct frame's `materialize()` deliberately returns an error.
+  The current synchronous `AImageReader_acquireNextImage` boundary may still wait for
+  producer completion on the CPU; eliminating that wait with acquire-fence import is a
+  separate latency optimisation, not a pixel-copy requirement.
+- `mediacodec-readback` (Android) selects only `h264_mediacodec_readback`. MediaCodec
+  is configured against a CPU-readable `YUV_420_888` `AImageReader`. The opaque frame
+  still retains its Android image/reader, but the renderer explicitly calls
+  `materialize()` and repacks the Android planes into canonical CPU I420 while
+  respecting crop, row stride and pixel stride, then uploads those planes through the
+  existing wgpu YUV path. This removes software H.264 reconstruction while retaining
+  one hardware-to-CPU readback and one CPU-to-GPU upload.
 - `vdpau-readback` prefers `h264_vdpau` and explicitly excludes `h264_sw`. This keeps
   video selection strict without imposing `require_hardware` on the AAC track in the
   same job. The renderer requires a VDPAU `HardwareVideo` lease, explicitly calls its
   `materialize()` implementation (`VdpVideoSurfaceGetBitsYCbCr` -> CPU I420), and
-  uploads those planes through the existing wgpu YUV path. This deliberately measures
-  hardware decode while retaining CPU readback before presentation.
-- `vdpau-direct` uses the same strict H.264 selection but never materialises the
-  hardware frame. Sanctuary owns a port of the proven reference bridge:
-  `GL_NV_vdpau_interop2` exposes full-frame Y plus interleaved UV textures, a GL
-  shader converts them to RGBA in Vulkan-exported external memory, and a raw Vulkan
-  GPU copy moves that image into a normal wgpu-owned texture. Four independent slots
-  retain their hardware leases until a non-blocking Vulkan fence proves the dependent
-  copy complete. If every slot is busy, the video frame is dropped rather than
-  stalling or falling back to CPU.
+  uploads those planes through the existing wgpu YUV path.
+- `vdpau-direct` selects that same `h264_vdpau` decoder but never materialises the
+  hardware frame. `GL_NV_vdpau_interop2` exposes full-frame Y plus interleaved UV
+  textures, a GL shader converts them to RGBA in Vulkan-exported external memory, and
+  a raw Vulkan GPU copy moves that image into a normal wgpu-owned texture. Four
+  independent slots retain their hardware leases until a non-blocking Vulkan fence
+  proves the dependent copy complete.
 
-The MediaCodec and VDPAU hardware modes are deliberately strict for H.264: failure to
-obtain the selected hardware decode path or to execute its presentation contract is an
-error, not a request to silently switch the video track to software. The global
-`require_hardware` flag is deliberately not used now that one job also decodes AAC;
-excluding `h264_sw` leaves software audio codecs selectable. `7b9a06d` supplies the generic
-`Executor::with_codec_preferences()` plumbing that makes the per-session selection
-possible while all implementations stay registered. The direct path remains zero-CPU-copy rather than literal zero-copy: it
-still performs the GL YUV->RGBA render and one GPU-local Vulkan image copy. It also
-retains the `e9f8acd` dedicated-memory requirement: because Vulkan allocates the
-shared image with `VkMemoryDedicatedAllocateInfo`, the GL memory object is marked
-`GL_DEDICATED_MEMORY_OBJECT_EXT` before `glImportMemoryFdEXT`.
+The difference in registry shape between Android and FreeBSD is intentional. VDPAU
+produces the same `VdpVideoSurface` regardless of how Sanctuary later presents it, so
+there is one `h264_vdpau` decoder implementation and readback/direct is a renderer
+choice. MediaCodec instead requires its output `ANativeWindow`/`AImageReader` to be
+chosen when the decoder is configured: CPU-readable `YUV_420_888` and PRIVATE
+GPU-sampled buffers are mutually exclusive output contracts. Consequently OxideAV
+registers `h264_mediacodec_direct` and `h264_mediacodec_readback` as two factories
+backed by the same H.264/MediaCodec decoder code. This also makes OxideAV's normal
+factory fallback useful to `auto`: failure to establish the direct API/GPU contract can
+advance to the readback factory before falling through to software, whereas an explicit
+MediaCodec mode excludes the other factory and errors instead.
+
+The direct Android bridge requires API-26 ImageReader/AHardwareBuffer entry points,
+`VK_ANDROID_external_memory_android_hardware_buffer`, sampler-YCbCr conversion and
+`VK_EXT_queue_family_foreign`. The API-26 symbols are resolved dynamically rather than
+linked as mandatory imports, preserving the application's API-24 readback/CPU
+compatibility. Sanctuary's local wgpu-hal patch enables the two Android Vulkan
+extensions when advertised and actually enables sampler-YCbCr when the application
+requests `TEXTURE_FORMAT_NV12`. Raw Vulkan rendering restores every wgpu-owned output
+image to the layout wgpu's resource tracker expects before handing it back to normal
+wgpu sampling.
+
+The MediaCodec and VDPAU explicit hardware modes remain strict for H.264: failure to
+obtain or execute the selected contract is an error, not a request to switch the video
+track silently. `require_hardware` is deliberately not used because the same job also
+decodes AAC; excluding unwanted H.264 implementations leaves software audio codecs
+selectable. The VDPAU direct path remains zero-CPU-copy rather than literal zero-copy:
+it still performs the GL YUV->RGBA render and one GPU-local Vulkan image copy. The
+MediaCodec direct path likewise performs a GPU YCbCr->RGBA render into a wgpu-owned
+texture, but does not perform a CPU pixel copy.
 
 The corrected post-`e9f8acd` reference-player benchmark used the local 10.03 s,
 1280x720/60 fps Twitch segment (600 frames, five muted paced runs per path).
@@ -592,9 +625,9 @@ ABR remain later work.
 
 The desktop launcher accepts
 `--video <URL-or-ID>` (or a positional video), `--play`/`--autoplay`,
-`--mute`, and `--decode-mode cpu|vdpau-readback|vdpau-direct`, using the same
+`--mute`, and `--decode-mode auto|cpu|vdpau-readback|vdpau-direct`, using the same
 `VideoSource::parse` rules as the in-app Change Video flow. The decode mode defaults
-to `cpu`. `--mute` sets sysaudio's per-stream software gain to zero while leaving
+to `auto`. `--mute` sets sysaudio's per-stream software gain to zero while leaving
 the audio callback and timestamp timeline active.
 
 Muted GhostBSD validation against Twitch VOD `2386400830` confirms the current
@@ -661,9 +694,10 @@ throughput limit rather than an AAudio failure.
 Switching the same release build and VOD (`2859508682`) to 480p30 was stable in the
 observed run. The player held roughly 500-518 ms of queued audio with
 `underrun_callbacks=0` and `underrun_samples=0`, while video remained aligned with the
-playback clock with zero dropped frames. Until Android hardware video decode or further
-CPU-decoder optimisation is available, 480p30 is therefore the demonstrated
-real-time-safe quality on this device; 720p60 CPU decode is not yet sustainable.
+playback clock with zero dropped frames. This remains the CPU-decoder baseline and the
+motivation for the MediaCodec work: 480p30 was demonstrated stable on this device,
+while 720p60 CPU decode was not sustainable. MediaCodec readback/direct paths require
+separate real-device validation before making a corresponding hardware-path claim.
 ### HLS successor-readahead validation
 
 After `df5c63c`, a muted real Twitch VOD regression using the native VDPAU path

@@ -2145,16 +2145,27 @@ fn hls_uri(url: &Url) -> String {
 
 fn codec_preferences(decode_mode: DecodeMode) -> CodecPreferences {
     match decode_mode {
+        DecodeMode::Auto => {
+            // Hardware implementations advertise better intrinsic priorities than
+            // software. Android ranks direct MediaCodec first, then MediaCodec
+            // readback, then h264_sw; FreeBSD ranks VDPAU before h264_sw. Factory
+            // failures therefore walk the same quality order without making the
+            // user's automatic request strict.
+            CodecPreferences::default()
+        }
         DecodeMode::Cpu => CodecPreferences {
             no_hardware: true,
             ..Default::default()
         },
+        DecodeMode::MediaCodecDirect => CodecPreferences {
+            prefer: vec!["h264_mediacodec_direct".into()],
+            exclude: vec!["h264_mediacodec_readback".into(), "h264_sw".into()],
+            boost: 100,
+            ..Default::default()
+        },
         DecodeMode::MediaCodecReadback => CodecPreferences {
-            prefer: vec!["h264_mediacodec".into()],
-            // Keep the Android hardware-decode contract strict so a broken
-            // MediaCodec path cannot silently fall back to the CPU decoder and
-            // recreate the 720p60 starvation this mode exists to avoid.
-            exclude: vec!["h264_sw".into()],
+            prefer: vec!["h264_mediacodec_readback".into()],
+            exclude: vec!["h264_mediacodec_direct".into(), "h264_sw".into()],
             boost: 100,
             ..Default::default()
         },
@@ -3212,11 +3223,37 @@ mod tests {
     }
 
     #[test]
-    fn mediacodec_selection_stays_strict_without_requiring_hardware_audio() {
-        let prefs = codec_preferences(DecodeMode::MediaCodecReadback);
-        assert!(prefs.prefer.iter().any(|name| name == "h264_mediacodec"));
-        assert!(prefs.exclude.iter().any(|name| name == "h264_sw"));
+    fn automatic_selection_keeps_ranked_hardware_and_software_fallbacks_eligible() {
+        let prefs = codec_preferences(DecodeMode::Auto);
+        assert!(prefs.prefer.is_empty());
+        assert!(prefs.exclude.is_empty());
+        assert!(!prefs.no_hardware);
         assert!(!prefs.require_hardware);
+    }
+
+    #[test]
+    fn mediacodec_selection_is_strict_per_requested_presentation_contract() {
+        let direct = codec_preferences(DecodeMode::MediaCodecDirect);
+        assert_eq!(direct.prefer, vec!["h264_mediacodec_direct"]);
+        assert!(
+            direct
+                .exclude
+                .iter()
+                .any(|name| name == "h264_mediacodec_readback")
+        );
+        assert!(direct.exclude.iter().any(|name| name == "h264_sw"));
+        assert!(!direct.require_hardware);
+
+        let readback = codec_preferences(DecodeMode::MediaCodecReadback);
+        assert_eq!(readback.prefer, vec!["h264_mediacodec_readback"]);
+        assert!(
+            readback
+                .exclude
+                .iter()
+                .any(|name| name == "h264_mediacodec_direct")
+        );
+        assert!(readback.exclude.iter().any(|name| name == "h264_sw"));
+        assert!(!readback.require_hardware);
     }
 
     #[test]

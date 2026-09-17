@@ -213,6 +213,26 @@ mod android {
         video_renderer: VideoRenderer,
     }
 
+    fn mediacodec_direct_gpu_available(device: &wgpu::Device) -> bool {
+        if !device
+            .features()
+            .contains(wgpu::Features::TEXTURE_FORMAT_NV12)
+        {
+            return false;
+        }
+        let Some(hal) = (unsafe { device.as_hal::<wgpu::hal::api::Vulkan>() }) else {
+            return false;
+        };
+        let extensions = hal.enabled_device_extensions();
+        let ahb = extensions
+            .iter()
+            .any(|name| name.to_bytes() == b"VK_ANDROID_external_memory_android_hardware_buffer");
+        let foreign = extensions
+            .iter()
+            .any(|name| name.to_bytes() == b"VK_EXT_queue_family_foreign");
+        ahb && foreign
+    }
+
     impl AndroidGpu {
         fn new(app: &AndroidApp) -> Result<Self, String> {
             let native_window = app
@@ -231,12 +251,29 @@ mod android {
                     compatible_surface: Some(&surface),
                 }))
                 .map_err(|error| format!("could not find Android GPU adapter: {error}"))?;
+            let mut required_features = wgpu::Features::empty();
+            if adapter
+                .features()
+                .contains(wgpu::Features::TEXTURE_FORMAT_NV12)
+            {
+                // wgpu-hal's Sanctuary patch maps this feature request to
+                // VkPhysicalDeviceSamplerYcbcrConversionFeatures. The ordinary
+                // renderer does not otherwise depend on it, so devices lacking
+                // the feature can still run the readback/CPU paths.
+                required_features |= wgpu::Features::TEXTURE_FORMAT_NV12;
+            }
             let (device, queue) =
                 pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
                     label: Some("sanctuary-player-android-device"),
+                    required_features,
                     ..Default::default()
                 }))
                 .map_err(|error| format!("could not create Android GPU device: {error}"))?;
+            let direct_media = mediacodec_direct_gpu_available(&device);
+            oxideav_mediacodec::set_direct_presentation_available(direct_media);
+            log::info!(
+                "SanctuaryPlayer: MediaCodec direct Vulkan presentation available={direct_media}"
+            );
             let mut config = surface
                 .get_default_config(&adapter, width, height)
                 .ok_or_else(|| {
@@ -824,9 +861,10 @@ mod android {
         state.set_playback_wake(PlaybackWake::new(move || {
             playback_waker.wake();
         }));
-        if let Some(source) = state.take_startup_session_source() {
-            let _ = state.apply(AppCommand::OpenVideo(source));
-        }
+        // Decoder auto-selection needs the active Vulkan device capability
+        // before choosing MediaCodec direct vs readback. Defer restored-session
+        // playback until InitWindow has established that renderer contract.
+        let mut startup_source = state.take_startup_session_source();
 
         let started = Instant::now();
         let mut last_update = started;
@@ -844,6 +882,7 @@ mod android {
                 PollEvent::Main(MainEvent::Destroy) => {
                     log::info!("SanctuaryPlayer: Android GameActivity destroyed");
                     state.flush_persistence_for_shutdown(SHUTDOWN_POSITION_FLUSH_BUDGET);
+                    oxideav_mediacodec::set_direct_presentation_available(false);
                     gpu = None;
                     running = false;
                 }
@@ -855,9 +894,12 @@ mod android {
                         }),
                     };
                     if let Err(error) = result {
+                        oxideav_mediacodec::set_direct_presentation_available(false);
                         log::error!(
                             "SanctuaryPlayer: could not attach Android render surface: {error}"
                         );
+                    } else if let Some(source) = startup_source.take() {
+                        let _ = state.apply(AppCommand::OpenVideo(source));
                     }
                     repaint.request(Duration::ZERO);
                 }

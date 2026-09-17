@@ -14,6 +14,8 @@ mod icon;
 #[cfg(not(target_os = "android"))]
 mod input;
 pub mod logging;
+#[cfg(target_os = "android")]
+mod mediacodec_vulkan_bridge;
 pub mod model;
 mod persistence;
 pub mod playback;

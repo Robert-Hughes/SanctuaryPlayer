@@ -3,21 +3,29 @@ use ::oxideav::core::{
     FrameLease, PixelFormat, VideoColorInfo, VideoColorRange, VideoFrame, VideoMatrixCoefficients,
 };
 
+#[cfg(target_os = "android")]
+use crate::mediacodec_vulkan_bridge::MediaCodecVulkanBridge;
 use crate::playback::DecodeMode;
 #[cfg(target_os = "freebsd")]
 use crate::vdpau_vulkan_bridge::VdpauVulkanBridge;
-#[cfg(target_os = "freebsd")]
+#[cfg(any(target_os = "freebsd", target_os = "android"))]
 use ::oxideav::core::HardwareVideoFrameStorage;
+#[cfg(target_os = "android")]
+use oxideav_mediacodec::{MediaCodecOutputMode, MediaCodecVideoFrameStorage};
 #[cfg(target_os = "freebsd")]
 use oxideav_vdpau::VdpauVideoFrameStorage;
 
 #[cfg(target_os = "freebsd")]
 const VDPAU_BRIDGE_SLOTS: usize = 4;
+#[cfg(target_os = "android")]
+const MEDIACODEC_BRIDGE_SLOTS: usize = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Presentation {
     None,
     Yuv,
+    #[cfg(target_os = "android")]
+    MediaCodecDirect(usize),
     #[cfg(target_os = "freebsd")]
     VdpauDirect(usize),
 }
@@ -25,14 +33,20 @@ enum Presentation {
 pub struct VideoRenderer {
     pipeline: wgpu::RenderPipeline,
     bind_group_layout: wgpu::BindGroupLayout,
-    #[cfg(target_os = "freebsd")]
+    #[cfg(any(target_os = "freebsd", target_os = "android"))]
     rgba_pipeline: wgpu::RenderPipeline,
-    #[cfg(target_os = "freebsd")]
+    #[cfg(any(target_os = "freebsd", target_os = "android"))]
     rgba_bind_group_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     uniform_buffer: wgpu::Buffer,
     textures: Option<YuvTextures>,
     bind_group: Option<wgpu::BindGroup>,
+    #[cfg(target_os = "android")]
+    mediacodec_bridge: Option<MediaCodecVulkanBridge>,
+    #[cfg(target_os = "android")]
+    mediacodec_bind_groups: Vec<wgpu::BindGroup>,
+    #[cfg(target_os = "android")]
+    mediacodec_busy_drops: u64,
     #[cfg(target_os = "freebsd")]
     vdpau_bridges: Vec<VdpauVulkanBridge>,
     #[cfg(target_os = "freebsd")]
@@ -210,12 +224,12 @@ impl VideoRenderer {
             cache: None,
         });
 
-        #[cfg(target_os = "freebsd")]
+        #[cfg(any(target_os = "freebsd", target_os = "android"))]
         let rgba_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("sanctuary-rgba-to-screen"),
             source: wgpu::ShaderSource::Wgsl(include_str!("rgba_to_screen.wgsl").into()),
         });
-        #[cfg(target_os = "freebsd")]
+        #[cfg(any(target_os = "freebsd", target_os = "android"))]
         let rgba_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("sanctuary-rgba-bgl"),
@@ -248,13 +262,13 @@ impl VideoRenderer {
                     },
                 ],
             });
-        #[cfg(target_os = "freebsd")]
+        #[cfg(any(target_os = "freebsd", target_os = "android"))]
         let rgba_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("sanctuary-rgba-pl"),
             bind_group_layouts: &[Some(&rgba_bind_group_layout)],
             immediate_size: 0,
         });
-        #[cfg(target_os = "freebsd")]
+        #[cfg(any(target_os = "freebsd", target_os = "android"))]
         let rgba_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("sanctuary-rgba-pipeline"),
             layout: Some(&rgba_pipeline_layout),
@@ -306,14 +320,20 @@ impl VideoRenderer {
         Self {
             pipeline,
             bind_group_layout,
-            #[cfg(target_os = "freebsd")]
+            #[cfg(any(target_os = "freebsd", target_os = "android"))]
             rgba_pipeline,
-            #[cfg(target_os = "freebsd")]
+            #[cfg(any(target_os = "freebsd", target_os = "android"))]
             rgba_bind_group_layout,
             sampler,
             uniform_buffer,
             textures: None,
             bind_group: None,
+            #[cfg(target_os = "android")]
+            mediacodec_bridge: None,
+            #[cfg(target_os = "android")]
+            mediacodec_bind_groups: Vec::new(),
+            #[cfg(target_os = "android")]
+            mediacodec_busy_drops: 0,
             #[cfg(target_os = "freebsd")]
             vdpau_bridges: Vec::new(),
             #[cfg(target_os = "freebsd")]
@@ -340,7 +360,19 @@ impl VideoRenderer {
         color: Option<VideoColorInfo>,
     ) -> Result<(), String> {
         match decode_mode {
+            DecodeMode::Auto => self.upload_auto(device, queue, lease, color),
             DecodeMode::Cpu => self.upload_cpu_lease(device, queue, lease, color),
+            DecodeMode::MediaCodecDirect => {
+                #[cfg(target_os = "android")]
+                {
+                    self.upload_mediacodec_direct(device, queue, lease, color)
+                }
+                #[cfg(not(target_os = "android"))]
+                {
+                    let _ = (device, queue, lease, color);
+                    Err("mediacodec-direct presentation is only available on Android".into())
+                }
+            }
             DecodeMode::MediaCodecReadback => {
                 self.upload_mediacodec_readback(device, queue, lease, color)
             }
@@ -356,6 +388,64 @@ impl VideoRenderer {
                     Err("vdpau-direct presentation is only available on FreeBSD".into())
                 }
             }
+        }
+    }
+
+    fn upload_auto(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        lease: &FrameLease,
+        color: Option<VideoColorInfo>,
+    ) -> Result<(), String> {
+        if lease.as_arena_video().is_some() {
+            return self.upload_cpu_lease(device, queue, lease, color);
+        }
+        let hardware = lease
+            .as_hardware_video()
+            .ok_or_else(|| "auto decode received an unknown frame lease kind".to_owned())?;
+        match hardware.backend() {
+            "mediacodec" => {
+                #[cfg(target_os = "android")]
+                {
+                    let storage = hardware
+                        .downcast_ref::<MediaCodecVideoFrameStorage>()
+                        .ok_or_else(|| "MediaCodec frame has unexpected storage".to_owned())?;
+                    match storage.output_mode() {
+                        MediaCodecOutputMode::Direct => {
+                            self.upload_mediacodec_direct(device, queue, lease, color)
+                        }
+                        MediaCodecOutputMode::Readback => {
+                            self.upload_mediacodec_readback(device, queue, lease, color)
+                        }
+                    }
+                }
+                #[cfg(not(target_os = "android"))]
+                {
+                    Err("MediaCodec frame reached a non-Android renderer".into())
+                }
+            }
+            "vdpau" => {
+                #[cfg(target_os = "freebsd")]
+                {
+                    match self.upload_vdpau_direct(device, queue, lease) {
+                        Ok(()) => Ok(()),
+                        Err(error) => {
+                            log::warn!(
+                                "SanctuaryPlayer: VDPAU direct presentation unavailable in auto mode ({error}); using hardware decode with CPU readback"
+                            );
+                            self.upload_vdpau_readback(device, queue, lease, color)
+                        }
+                    }
+                }
+                #[cfg(not(target_os = "freebsd"))]
+                {
+                    Err("VDPAU frame reached a non-FreeBSD renderer".into())
+                }
+            }
+            backend => Err(format!(
+                "auto decode received unsupported hardware backend {backend:?}"
+            )),
         }
     }
 
@@ -389,6 +479,15 @@ impl VideoRenderer {
                 "mediacodec-readback mode received hardware backend {:?}",
                 hardware.backend()
             ));
+        }
+        #[cfg(target_os = "android")]
+        {
+            let storage = hardware
+                .downcast_ref::<MediaCodecVideoFrameStorage>()
+                .ok_or_else(|| "mediacodec-readback mode received unexpected storage".to_owned())?;
+            if storage.output_mode() != MediaCodecOutputMode::Readback {
+                return Err("mediacodec-readback mode received a GPU-only direct frame".into());
+            }
         }
         if hardware.pixel_format() != PixelFormat::Yuv420P {
             return Err(format!(
@@ -503,6 +602,116 @@ impl VideoRenderer {
             view.v,
         );
         self.presentation = Presentation::Yuv;
+        Ok(())
+    }
+
+    #[cfg(target_os = "android")]
+    fn upload_mediacodec_direct(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        lease: &FrameLease,
+        color: Option<VideoColorInfo>,
+    ) -> Result<(), String> {
+        let hardware = lease.as_hardware_video().ok_or_else(|| {
+            "mediacodec-direct mode received a non-hardware video lease".to_owned()
+        })?;
+        if hardware.backend() != "mediacodec" {
+            return Err(format!(
+                "mediacodec-direct mode received hardware backend {:?}",
+                hardware.backend()
+            ));
+        }
+        let storage = hardware
+            .downcast_ref::<MediaCodecVideoFrameStorage>()
+            .ok_or_else(|| "mediacodec-direct mode received unexpected storage".to_owned())?;
+        if storage.output_mode() != MediaCodecOutputMode::Direct {
+            return Err("mediacodec-direct mode received a readback frame".into());
+        }
+        let width = storage.width();
+        let height = storage.height();
+        if width == 0
+            || height == 0
+            || width > self.max_texture_dimension_2d
+            || height > self.max_texture_dimension_2d
+        {
+            return Err(format!(
+                "invalid MediaCodec direct frame dimensions {width}x{height}"
+            ));
+        }
+
+        let rebuild = self
+            .mediacodec_bridge
+            .as_ref()
+            .is_none_or(|bridge| bridge.dimensions() != (width, height));
+        if rebuild {
+            self.mediacodec_bridge = None;
+            self.mediacodec_bind_groups.clear();
+            let bridge = MediaCodecVulkanBridge::new(
+                device,
+                queue,
+                hardware,
+                color,
+                MEDIACODEC_BRIDGE_SLOTS,
+            )
+            .map_err(|error| format!("MediaCodec direct bridge unavailable: {error}"))?;
+            for slot in 0..bridge.slot_count() {
+                let texture = bridge
+                    .output_texture(slot)
+                    .ok_or_else(|| "MediaCodec direct bridge omitted an output slot".to_owned())?;
+                let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+                let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("sanctuary-mediacodec-rgba-bg"),
+                    layout: &self.rgba_bind_group_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(&view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::Sampler(&self.sampler),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: self.uniform_buffer.as_entire_binding(),
+                        },
+                    ],
+                });
+                self.mediacodec_bind_groups.push(bind_group);
+            }
+            self.mediacodec_bridge = Some(bridge);
+            self.mediacodec_busy_drops = 0;
+            self.presentation = Presentation::None;
+            log::info!(
+                "SanctuaryPlayer: MediaCodec direct presentation active (PRIVATE AImage -> AHardwareBuffer -> Vulkan YCbCr -> wgpu RGBA, {}x{}, {} async slots, no CPU pixel readback)",
+                width,
+                height,
+                MEDIACODEC_BRIDGE_SLOTS
+            );
+        }
+
+        let bridge = self
+            .mediacodec_bridge
+            .as_mut()
+            .ok_or_else(|| "MediaCodec direct bridge was not initialised".to_owned())?;
+        let slot = bridge
+            .first_available_slot()
+            .map_err(|error| format!("MediaCodec direct slot poll failed: {error}"))?;
+        let Some(slot) = slot else {
+            self.mediacodec_busy_drops += 1;
+            if self.mediacodec_busy_drops == 1 || self.mediacodec_busy_drops.is_multiple_of(120) {
+                log::info!(
+                    "SanctuaryPlayer: all {MEDIACODEC_BRIDGE_SLOTS} MediaCodec direct slots are in flight; dropping video frame"
+                );
+            }
+            return Ok(());
+        };
+        bridge
+            .render_frame(slot, hardware.clone())
+            .map_err(|error| format!("MediaCodec direct render failed: {error}"))?;
+        self.dims = Some((width, height));
+        self.presentation = Presentation::MediaCodecDirect(slot);
         Ok(())
     }
 
@@ -623,6 +832,12 @@ impl VideoRenderer {
             surface_height,
         );
 
+        #[cfg(target_os = "android")]
+        let mediacodec_direct_slot = match self.presentation {
+            Presentation::MediaCodecDirect(slot) => Some(slot),
+            _ => None,
+        };
+
         #[cfg(target_os = "freebsd")]
         let direct_slot = match self.presentation {
             Presentation::VdpauDirect(slot) => Some(slot),
@@ -655,6 +870,15 @@ impl VideoRenderer {
                     pass.set_bind_group(0, bind_group, &[]);
                     pass.draw(0..3, 0..1);
                 }
+                #[cfg(target_os = "android")]
+                Presentation::MediaCodecDirect(slot) => {
+                    let Some(bind_group) = self.mediacodec_bind_groups.get(slot) else {
+                        return;
+                    };
+                    pass.set_pipeline(&self.rgba_pipeline);
+                    pass.set_bind_group(0, bind_group, &[]);
+                    pass.draw(0..3, 0..1);
+                }
                 #[cfg(target_os = "freebsd")]
                 Presentation::VdpauDirect(slot) => {
                     let Some(bind_group) = self.vdpau_bind_groups.get(slot) else {
@@ -666,6 +890,13 @@ impl VideoRenderer {
                 }
                 Presentation::None => {}
             }
+        }
+
+        #[cfg(target_os = "android")]
+        if let Some(slot) = mediacodec_direct_slot
+            && let Some(bridge) = self.mediacodec_bridge.as_mut()
+        {
+            bridge.mark_sampled(slot);
         }
 
         #[cfg(target_os = "freebsd")]

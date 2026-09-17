@@ -15,8 +15,12 @@ pub use dummy::DummyPlayback;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DecodeMode {
+    /// Prefer the platform's fully hardware-resident path, then hardware
+    /// decode with CPU readback, then software decode.
     #[default]
+    Auto,
     Cpu,
+    MediaCodecDirect,
     MediaCodecReadback,
     VdpauReadback,
     VdpauDirect,
@@ -24,13 +28,7 @@ pub enum DecodeMode {
 
 impl DecodeMode {
     pub const fn platform_default() -> Self {
-        if cfg!(target_os = "freebsd") {
-            Self::VdpauDirect
-        } else if cfg!(target_os = "android") {
-            Self::MediaCodecReadback
-        } else {
-            Self::Cpu
-        }
+        Self::Auto
     }
 
     const fn is_supported_with_backends(
@@ -39,8 +37,8 @@ impl DecodeMode {
         mediacodec_supported: bool,
     ) -> bool {
         match self {
-            Self::Cpu => true,
-            Self::MediaCodecReadback => mediacodec_supported,
+            Self::Auto | Self::Cpu => true,
+            Self::MediaCodecDirect | Self::MediaCodecReadback => mediacodec_supported,
             Self::VdpauReadback | Self::VdpauDirect => vdpau_supported,
         }
     }
@@ -59,10 +57,12 @@ impl DecodeMode {
             return Ok(());
         }
         let supported = match (vdpau_supported, mediacodec_supported) {
-            (true, false) => "cpu, vdpau-readback, vdpau-direct",
-            (false, true) => "cpu, mediacodec-readback",
-            (true, true) => "cpu, mediacodec-readback, vdpau-readback, vdpau-direct",
-            (false, false) => "cpu",
+            (true, false) => "auto, cpu, vdpau-readback, vdpau-direct",
+            (false, true) => "auto, cpu, mediacodec-readback, mediacodec-direct",
+            (true, true) => {
+                "auto, cpu, mediacodec-readback, mediacodec-direct, vdpau-readback, vdpau-direct"
+            }
+            (false, false) => "auto, cpu",
         };
         let noun = if supported.contains(',') {
             "modes"
@@ -85,7 +85,9 @@ impl DecodeMode {
 
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::Auto => "auto",
             Self::Cpu => "cpu",
+            Self::MediaCodecDirect => "mediacodec-direct",
             Self::MediaCodecReadback => "mediacodec-readback",
             Self::VdpauReadback => "vdpau-readback",
             Self::VdpauDirect => "vdpau-direct",
@@ -104,12 +106,14 @@ impl std::str::FromStr for DecodeMode {
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
+            "auto" => Ok(Self::Auto),
             "cpu" => Ok(Self::Cpu),
+            "mediacodec-direct" => Ok(Self::MediaCodecDirect),
             "mediacodec-readback" => Ok(Self::MediaCodecReadback),
             "vdpau-readback" => Ok(Self::VdpauReadback),
             "vdpau-direct" => Ok(Self::VdpauDirect),
             _ => Err(format!(
-                "invalid decode mode {value:?}; expected cpu, mediacodec-readback, vdpau-readback, or vdpau-direct"
+                "invalid decode mode {value:?}; expected auto, cpu, mediacodec-direct, mediacodec-readback, vdpau-readback, or vdpau-direct"
             )),
         }
     }
@@ -252,8 +256,9 @@ mod decode_mode_tests {
     use super::DecodeMode;
 
     #[test]
-    fn platform_default_is_supported() {
-        assert!(DecodeMode::platform_default().is_supported_on_current_platform());
+    fn platform_default_is_automatic() {
+        assert_eq!(DecodeMode::platform_default(), DecodeMode::Auto);
+        assert!(DecodeMode::Auto.is_supported_on_current_platform());
         assert!(DecodeMode::Cpu.is_supported_on_current_platform());
     }
 
@@ -264,36 +269,46 @@ mod decode_mode_tests {
             .unwrap_err();
         assert_eq!(
             error,
-            r#"decode mode "vdpau-direct" is not supported on windows; supported mode: cpu"#
+            r#"decode mode "vdpau-direct" is not supported on windows; supported modes: auto, cpu"#
         );
     }
 
     #[test]
-    fn mediacodec_request_is_supported_only_with_android_backend() {
-        assert!(
-            DecodeMode::MediaCodecReadback
-                .validate_for_platform(false, true, "android")
-                .is_ok()
-        );
-        let error = DecodeMode::MediaCodecReadback
-            .validate_for_platform(false, false, "windows")
-            .unwrap_err();
-        assert_eq!(
-            error,
-            r#"decode mode "mediacodec-readback" is not supported on windows; supported mode: cpu"#
-        );
+    fn mediacodec_modes_require_android_backend() {
+        for mode in [DecodeMode::MediaCodecDirect, DecodeMode::MediaCodecReadback] {
+            assert!(mode.validate_for_platform(false, true, "android").is_ok());
+            let error = mode
+                .validate_for_platform(false, false, "windows")
+                .unwrap_err();
+            assert!(error.contains("not supported on windows"));
+        }
+    }
+
+    #[test]
+    fn automatic_mode_is_valid_with_or_without_hardware_backends() {
+        for (vdpau, mediacodec) in [(false, false), (true, false), (false, true), (true, true)] {
+            assert!(
+                DecodeMode::Auto
+                    .validate_for_platform(vdpau, mediacodec, "test")
+                    .is_ok()
+            );
+        }
     }
 
     #[cfg(target_os = "freebsd")]
     #[test]
-    fn freebsd_defaults_to_vdpau_direct() {
-        assert_eq!(DecodeMode::platform_default(), DecodeMode::VdpauDirect);
+    fn freebsd_supports_only_vdpau_specific_hardware_modes() {
         assert!(
             DecodeMode::VdpauReadback
                 .validate_current_platform()
                 .is_ok()
         );
         assert!(DecodeMode::VdpauDirect.validate_current_platform().is_ok());
+        assert!(
+            DecodeMode::MediaCodecDirect
+                .validate_current_platform()
+                .is_err()
+        );
         assert!(
             DecodeMode::MediaCodecReadback
                 .validate_current_platform()
@@ -303,10 +318,11 @@ mod decode_mode_tests {
 
     #[cfg(target_os = "android")]
     #[test]
-    fn android_defaults_to_mediacodec_readback() {
-        assert_eq!(
-            DecodeMode::platform_default(),
-            DecodeMode::MediaCodecReadback
+    fn android_supports_only_mediacodec_specific_hardware_modes() {
+        assert!(
+            DecodeMode::MediaCodecDirect
+                .validate_current_platform()
+                .is_ok()
         );
         assert!(
             DecodeMode::MediaCodecReadback
@@ -323,18 +339,24 @@ mod decode_mode_tests {
 
     #[cfg(not(any(target_os = "freebsd", target_os = "android")))]
     #[test]
-    fn platforms_without_hardware_backend_default_to_cpu() {
-        assert_eq!(DecodeMode::platform_default(), DecodeMode::Cpu);
+    fn platforms_without_hardware_backend_support_auto_and_cpu_only() {
+        assert!(DecodeMode::Auto.validate_current_platform().is_ok());
+        assert!(DecodeMode::Cpu.validate_current_platform().is_ok());
+        assert!(
+            DecodeMode::MediaCodecDirect
+                .validate_current_platform()
+                .is_err()
+        );
+        assert!(
+            DecodeMode::MediaCodecReadback
+                .validate_current_platform()
+                .is_err()
+        );
         assert!(
             DecodeMode::VdpauReadback
                 .validate_current_platform()
                 .is_err()
         );
         assert!(DecodeMode::VdpauDirect.validate_current_platform().is_err());
-        assert!(
-            DecodeMode::MediaCodecReadback
-                .validate_current_platform()
-                .is_err()
-        );
     }
 }

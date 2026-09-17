@@ -56,7 +56,7 @@
 ## Video decode and presentation
 
 - Add hardware video decoding and efficient GPU presentation paths on Windows.
-- Add hardware video decoding and efficient GPU presentation paths on Android.
+- Complete real-device validation and hardening of Android MediaCodec readback/direct AHardwareBuffer presentation, including 720p60, seek/reset, colour, orientation and Vulkan validation.
 - Finish evaluating whether the final GPU-local copy in the FreeBSD `vdpau-direct` presentation bridge can be removed safely.
 - Add transfer-function/colour-primaries handling and HDR/tone-mapping/output support for HDR sources rather than treating all decoded video as SDR.
 

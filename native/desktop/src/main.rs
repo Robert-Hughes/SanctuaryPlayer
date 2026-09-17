@@ -4,7 +4,7 @@ use sanctuary_player_app::{AppEvent, SanctuaryPlayerApp};
 
 const USAGE: &str = "Usage: sanctuary-player [OPTIONS] [VIDEO]\n\n\
 VIDEO may be a YouTube/Twitch video ID or URL accepted by SanctuaryPlayer.\n\n\
-Options:\n  -v, --video <VIDEO>       Auto-load a video on startup\n      --play, --autoplay    Start playback after the video opens\n      --mute                Mute audio while keeping the audio playback clock active\n      --decode-mode <MODE>  cpu | vdpau-readback | vdpau-direct (VDPAU: FreeBSD only)\n  -h, --help                Show this help";
+Options:\n  -v, --video <VIDEO>       Auto-load a video on startup\n      --play, --autoplay    Start playback after the video opens\n      --mute                Mute audio while keeping the audio playback clock active\n      --decode-mode <MODE>  auto | cpu | vdpau-readback | vdpau-direct (VDPAU: FreeBSD only)\n  -h, --help                Show this help";
 
 enum CliAction {
     Run {

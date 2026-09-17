@@ -16,6 +16,7 @@ sanctuary-player-app = { path = "../app" }
 log.workspace = true
 
 [target.'cfg(target_os = "android")'.dependencies]
+oxideav-mediacodec.workspace = true
 android-activity = { version = "0.6.1", features = ["game-activity"] }
 egui.workspace = true
 egui-wgpu.workspace = true
