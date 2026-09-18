@@ -578,6 +578,65 @@ mod android {
             .max(1.0)
     }
 
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct AndroidSystemInsets {
+        left: i32,
+        top: i32,
+        right: i32,
+        bottom: i32,
+    }
+
+    #[allow(unsafe_code)]
+    fn android_system_window_insets(
+        app: &AndroidApp,
+    ) -> Result<Option<AndroidSystemInsets>, String> {
+        use jni::{JavaVM, jni_sig, jni_str, objects::JObject};
+
+        let vm = unsafe { JavaVM::from_raw(app.vm_as_ptr().cast()) };
+        let activity_raw = app.activity_as_ptr() as jni::sys::jobject;
+        vm.attach_current_thread(|env| -> jni::errors::Result<Option<AndroidSystemInsets>> {
+            let activity = unsafe { env.as_cast_raw::<JObject>(&activity_raw)? };
+            let window = env
+                .call_method(
+                    &activity,
+                    jni_str!("getWindow"),
+                    jni_sig!("()Landroid/view/Window;"),
+                    &[],
+                )?
+                .l()?;
+            let decor = env
+                .call_method(
+                    &window,
+                    jni_str!("getDecorView"),
+                    jni_sig!("()Landroid/view/View;"),
+                    &[],
+                )?
+                .l()?;
+            let insets = env
+                .call_method(
+                    &decor,
+                    jni_str!("getRootWindowInsets"),
+                    jni_sig!("()Landroid/view/WindowInsets;"),
+                    &[],
+                )?
+                .l()?;
+            if insets.is_null() {
+                return Ok(None);
+            }
+
+            let inset = |env: &mut jni::Env<'_>, name| -> jni::errors::Result<i32> {
+                env.call_method(&insets, name, jni_sig!("()I"), &[])?.i()
+            };
+            Ok(Some(AndroidSystemInsets {
+                left: inset(env, jni_str!("getSystemWindowInsetLeft"))?,
+                top: inset(env, jni_str!("getSystemWindowInsetTop"))?,
+                right: inset(env, jni_str!("getSystemWindowInsetRight"))?,
+                bottom: inset(env, jni_str!("getSystemWindowInsetBottom"))?,
+            }))
+        })
+        .map_err(|error| error.to_string())
+    }
+
     fn make_raw_input(
         app: &AndroidApp,
         ctx: &egui::Context,
@@ -595,18 +654,34 @@ mod android {
                 size_in_pixels[1] as f32 / pixels_per_point,
             ),
         );
-        let content = app.content_rect();
-        let right_inset = (size_in_pixels[0] as i32 - content.right).max(0);
-        let bottom_inset = (size_in_pixels[1] as i32 - content.bottom).max(0);
+        let safe_area_insets = android_system_window_insets(app)
+            .ok()
+            .flatten()
+            .map(|insets| {
+                egui::SafeAreaInsets(egui::epaint::MarginF32 {
+                    left: insets.left.max(0) as f32 / pixels_per_point,
+                    top: insets.top.max(0) as f32 / pixels_per_point,
+                    right: insets.right.max(0) as f32 / pixels_per_point,
+                    bottom: insets.bottom.max(0) as f32 / pixels_per_point,
+                })
+            })
+            .or_else(|| {
+                let content = app.content_rect();
+                (content.right > content.left && content.bottom > content.top).then(|| {
+                    egui::SafeAreaInsets(egui::epaint::MarginF32 {
+                        left: content.left.max(0) as f32 / pixels_per_point,
+                        top: content.top.max(0) as f32 / pixels_per_point,
+                        right: (size_in_pixels[0] as i32 - content.right).max(0) as f32
+                            / pixels_per_point,
+                        bottom: (size_in_pixels[1] as i32 - content.bottom).max(0) as f32
+                            / pixels_per_point,
+                    })
+                })
+            });
 
         let mut raw = RawInput {
             screen_rect: Some(screen_rect),
-            safe_area_insets: Some(egui::SafeAreaInsets(egui::epaint::MarginF32 {
-                left: content.left.max(0) as f32 / pixels_per_point,
-                top: content.top.max(0) as f32 / pixels_per_point,
-                right: right_inset as f32 / pixels_per_point,
-                bottom: bottom_inset as f32 / pixels_per_point,
-            })),
+            safe_area_insets,
             time: Some(started.elapsed().as_secs_f64()),
             focused,
             modifiers: input.modifiers,
@@ -851,6 +926,113 @@ mod android {
         }
     }
 
+    #[allow(unsafe_code)]
+    fn set_android_fullscreen(app: &AndroidApp, fullscreen: bool) -> Result<(), String> {
+        use jni::{
+            JavaVM, jni_sig, jni_str,
+            objects::{JObject, JValue},
+        };
+
+        let vm = unsafe { JavaVM::from_raw(app.vm_as_ptr().cast()) };
+        let activity_raw = app.activity_as_ptr() as jni::sys::jobject;
+        vm.attach_current_thread(|env| -> jni::errors::Result<()> {
+            let activity = unsafe { env.as_cast_raw::<JObject>(&activity_raw)? };
+            let window = env
+                .call_method(
+                    &activity,
+                    jni_str!("getWindow"),
+                    jni_sig!("()Landroid/view/Window;"),
+                    &[],
+                )?
+                .l()?;
+            let sdk_int = env
+                .get_static_field(
+                    jni_str!("android/os/Build$VERSION"),
+                    jni_str!("SDK_INT"),
+                    jni_sig!("I"),
+                )?
+                .i()?;
+
+            if sdk_int >= 30 {
+                let controller = env
+                    .call_method(
+                        &window,
+                        jni_str!("getInsetsController"),
+                        jni_sig!("()Landroid/view/WindowInsetsController;"),
+                        &[],
+                    )?
+                    .l()?;
+                if !controller.is_null() {
+                    const SYSTEM_BARS: i32 = 1 | 2;
+                    const LIGHT_BARS: i32 = 8 | 16;
+                    if fullscreen {
+                        // WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE.
+                        env.call_method(
+                            &controller,
+                            jni_str!("setSystemBarsBehavior"),
+                            jni_sig!("(I)V"),
+                            &[JValue::Int(2)],
+                        )?;
+                        env.call_method(
+                            &controller,
+                            jni_str!("hide"),
+                            jni_sig!("(I)V"),
+                            &[JValue::Int(SYSTEM_BARS)],
+                        )?;
+                    } else {
+                        env.call_method(
+                            &controller,
+                            jni_str!("show"),
+                            jni_sig!("(I)V"),
+                            &[JValue::Int(SYSTEM_BARS)],
+                        )?;
+                        // SanctuaryPlayer uses a light UI, so request Android's dark
+                        // status/navigation-bar foreground icons in normal mode.
+                        env.call_method(
+                            &controller,
+                            jni_str!("setSystemBarsAppearance"),
+                            jni_sig!("(II)V"),
+                            &[JValue::Int(LIGHT_BARS), JValue::Int(LIGHT_BARS)],
+                        )?;
+                    }
+                }
+            } else {
+                let decor = env
+                    .call_method(
+                        &window,
+                        jni_str!("getDecorView"),
+                        jni_sig!("()Landroid/view/View;"),
+                        &[],
+                    )?
+                    .l()?;
+                let flags = if fullscreen {
+                    // IMMERSIVE_STICKY | FULLSCREEN | HIDE_NAVIGATION plus layout
+                    // flags so the app can use the whole display while bars are hidden.
+                    0x0000_1000
+                        | 0x0000_0004
+                        | 0x0000_0002
+                        | 0x0000_0100
+                        | 0x0000_0200
+                        | 0x0000_0400
+                } else {
+                    let mut flags = 0x0000_2000; // LIGHT_STATUS_BAR
+                    if sdk_int >= 26 {
+                        flags |= 0x0000_0010; // LIGHT_NAVIGATION_BAR
+                    }
+                    flags
+                };
+                env.call_method(
+                    &decor,
+                    jni_str!("setSystemUiVisibility"),
+                    jni_sig!("(I)V"),
+                    &[JValue::Int(flags)],
+                )?;
+            }
+            Ok(())
+        })
+        .map_err(|error| error.to_string())
+    }
+
     fn state_timeout(state: &AppState, now: Instant) -> Option<Duration> {
         let mut timeout = state.needs_animation().then_some(ANIMATION_FRAME_INTERVAL);
         timeout = min_timeout(
@@ -877,10 +1059,22 @@ mod android {
                 .is_some_and(|deadline| deadline <= now)
     }
 
-    fn apply_commands(state: &mut AppState, commands: Vec<AppCommand>) {
+    fn apply_commands(
+        app: &AndroidApp,
+        state: &mut AppState,
+        commands: Vec<AppCommand>,
+        fullscreen: &mut bool,
+    ) {
         for command in commands {
             if matches!(state.apply(command), Some(AppEffect::ToggleFullscreen)) {
-                log::info!("SanctuaryPlayer: fullscreen command ignored on Android GameActivity");
+                *fullscreen = !*fullscreen;
+                match set_android_fullscreen(app, *fullscreen) {
+                    Ok(()) => log::info!("SanctuaryPlayer: Android fullscreen={}", *fullscreen),
+                    Err(error) => log::error!(
+                        "SanctuaryPlayer: could not set Android fullscreen={}: {error}",
+                        *fullscreen
+                    ),
+                }
             }
         }
     }
@@ -939,6 +1133,7 @@ mod android {
         let mut ime = AndroidIme::default();
         let mut focused = false;
         let mut input_available = false;
+        let mut fullscreen = false;
         let mut running = true;
 
         while running {
@@ -967,6 +1162,11 @@ mod android {
                     } else if let Some(source) = startup_source.take() {
                         let _ = state.apply(AppCommand::OpenVideo(source));
                     }
+                    if let Err(error) = set_android_fullscreen(&android_app, fullscreen) {
+                        log::error!(
+                            "SanctuaryPlayer: could not apply Android system-bar mode fullscreen={fullscreen}: {error}"
+                        );
+                    }
                     repaint.request(Duration::ZERO);
                 }
                 PollEvent::Main(MainEvent::TerminateWindow { .. }) => {
@@ -987,6 +1187,11 @@ mod android {
                 }
                 PollEvent::Main(MainEvent::GainedFocus) => {
                     focused = true;
+                    if let Err(error) = set_android_fullscreen(&android_app, fullscreen) {
+                        log::error!(
+                            "SanctuaryPlayer: could not restore Android system-bar mode fullscreen={fullscreen}: {error}"
+                        );
+                    }
                     repaint.request(Duration::ZERO);
                 }
                 PollEvent::Main(MainEvent::LostFocus) => {
@@ -1057,7 +1262,7 @@ mod android {
                             user_tapped,
                         );
                         if !commands.is_empty() {
-                            apply_commands(&mut state, commands);
+                            apply_commands(&android_app, &mut state, commands, &mut fullscreen);
                             repaint.request(Duration::ZERO);
                         }
                         if let Some(delay) = output
