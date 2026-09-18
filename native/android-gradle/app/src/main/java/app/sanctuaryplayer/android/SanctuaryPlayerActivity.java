@@ -8,6 +8,7 @@ import android.media.AudioAttributes;
 import android.media.AudioFocusRequest;
 import android.media.AudioManager;
 import android.os.Build;
+import android.os.Bundle;
 
 import com.google.androidgamesdk.GameActivity;
 
@@ -25,9 +26,37 @@ public final class SanctuaryPlayerActivity extends GameActivity {
     private BroadcastReceiver becomingNoisyReceiver;
     private boolean becomingNoisyReceiverRegistered;
     private boolean mediaIntegrationInitialised;
+    private String pendingDeepLink;
 
     private static native void nativeOnAudioFocusChange(int focusChange);
     private static native void nativeOnBecomingNoisy();
+    private static native void nativeOnDeepLinkAvailable();
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        Intent intent = getIntent();
+        if (intent != null && intent.getData() != null) {
+            pendingDeepLink = intent.getDataString();
+        }
+        super.onCreate(savedInstanceState);
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        pendingDeepLink = intent != null ? intent.getDataString() : null;
+        if (pendingDeepLink != null) {
+            nativeOnDeepLinkAvailable();
+        }
+    }
+
+    /** Return and clear the most recent deep link delivered to this Activity. */
+    public String takePendingDeepLink() {
+        String deepLink = pendingDeepLink;
+        pendingDeepLink = null;
+        return deepLink;
+    }
 
     /** Initialise audio-focus and output-routing listeners. Safe to call repeatedly. */
     public void initialiseMediaIntegration() {

@@ -43,10 +43,17 @@ impl VideoSource {
         }
 
         let url = Url::parse(input).map_err(|_| VideoSourceParseError::Unrecognised)?;
+        if url.scheme() == "sanctuaryplayer" {
+            return parse_sanctuary_link(&url);
+        }
+
         let host = url
             .host_str()
             .map(|host| host.to_ascii_lowercase())
             .ok_or(VideoSourceParseError::Unrecognised)?;
+        if host == "sanctuaryplayer.robdh.uk" {
+            return parse_sanctuary_link(&url);
+        }
 
         let (platform, id) = if host == "youtu.be" || host.ends_with(".youtu.be") {
             let id =
@@ -71,14 +78,7 @@ impl VideoSource {
             return Err(VideoSourceParseError::InvalidVideoId(id));
         }
 
-        let start_time = url
-            .query_pairs()
-            .find_map(|(key, value)| (key == "t").then(|| value.into_owned()))
-            .map(|value| {
-                parse_friendly_time(&value)
-                    .ok_or_else(|| VideoSourceParseError::InvalidStartTime(value.clone()))
-            })
-            .transpose()?;
+        let start_time = parse_start_time(&url, "t")?;
 
         Ok(Self {
             platform,
@@ -86,6 +86,36 @@ impl VideoSource {
             start_time,
         })
     }
+}
+
+fn parse_sanctuary_link(url: &Url) -> Result<VideoSource, VideoSourceParseError> {
+    if url.scheme() == "sanctuaryplayer" && url.host_str() != Some("open") {
+        return Err(VideoSourceParseError::Unrecognised);
+    }
+
+    let id = url
+        .query_pairs()
+        .find_map(|(key, value)| (key == "videoId").then(|| value.into_owned()))
+        .ok_or(VideoSourceParseError::MissingVideoId)?;
+    let platform =
+        platform_for_id(&id).ok_or_else(|| VideoSourceParseError::InvalidVideoId(id.clone()))?;
+    let start_time = parse_start_time(url, "time")?;
+
+    Ok(VideoSource {
+        platform,
+        id,
+        start_time,
+    })
+}
+
+fn parse_start_time(url: &Url, parameter: &str) -> Result<Option<Duration>, VideoSourceParseError> {
+    url.query_pairs()
+        .find_map(|(key, value)| (key == parameter).then(|| value.into_owned()))
+        .map(|value| {
+            parse_friendly_time(&value)
+                .ok_or_else(|| VideoSourceParseError::InvalidStartTime(value.clone()))
+        })
+        .transpose()
 }
 
 fn last_nonempty_path_segment(url: &Url) -> Option<String> {
@@ -191,6 +221,41 @@ mod tests {
         assert_eq!(parsed.platform, VideoPlatform::Twitch);
         assert_eq!(parsed.id, "2386400830");
         assert_eq!(parsed.start_time.unwrap().as_secs(), 5364);
+    }
+
+    #[test]
+    fn parses_sanctuary_web_and_custom_links() {
+        let cases = [
+            (
+                "https://sanctuaryplayer.robdh.uk/?videoId=2386400830&time=1h29m24s",
+                VideoPlatform::Twitch,
+                "2386400830",
+                Some(5364),
+            ),
+            (
+                "sanctuaryplayer://open?videoId=3fgD9k8Hkbc&time=54m39s",
+                VideoPlatform::YouTube,
+                "3fgD9k8Hkbc",
+                Some(3279),
+            ),
+            (
+                "sanctuaryplayer://open?videoId=2386400830",
+                VideoPlatform::Twitch,
+                "2386400830",
+                None,
+            ),
+        ];
+
+        for (input, platform, id, seconds) in cases {
+            let parsed = VideoSource::parse(input).unwrap();
+            assert_eq!(parsed.platform, platform, "{input}");
+            assert_eq!(parsed.id, id, "{input}");
+            assert_eq!(
+                parsed.start_time.map(|time| time.as_secs()),
+                seconds,
+                "{input}"
+            );
+        }
     }
 
     #[test]

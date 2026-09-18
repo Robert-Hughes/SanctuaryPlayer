@@ -74,10 +74,11 @@ mod android {
         }
     }
 
-    #[derive(Clone, Copy, Debug)]
+    #[derive(Clone, Debug)]
     enum AndroidMediaEvent {
         AudioFocusChange(i32),
         BecomingNoisy,
+        DeepLinkAvailable,
     }
 
     struct AndroidMediaEventBridge {
@@ -138,6 +139,15 @@ mod android {
     }
 
     #[allow(unsafe_code)]
+    #[unsafe(no_mangle)]
+    pub unsafe extern "system" fn Java_app_sanctuaryplayer_android_SanctuaryPlayerActivity_nativeOnDeepLinkAvailable(
+        _env: *mut jni::sys::JNIEnv,
+        _class: jni::sys::jclass,
+    ) {
+        enqueue_media_event(AndroidMediaEvent::DeepLinkAvailable);
+    }
+
+    #[allow(unsafe_code)]
     fn android_initialise_media_integration(app: &AndroidApp) -> Result<(), String> {
         use jni::{JavaVM, jni_sig, jni_str, objects::JObject};
 
@@ -154,6 +164,56 @@ mod android {
             Ok(())
         })
         .map_err(|error| error.to_string())
+    }
+
+    #[allow(unsafe_code)]
+    fn android_take_pending_deep_link(app: &AndroidApp) -> Result<Option<String>, String> {
+        use jni::{
+            JavaVM, jni_sig, jni_str,
+            objects::{JObject, JString},
+        };
+
+        let vm = unsafe { JavaVM::from_raw(app.vm_as_ptr().cast()) };
+        let activity_raw = app.activity_as_ptr() as jni::sys::jobject;
+        vm.attach_current_thread(|env| -> jni::errors::Result<Option<String>> {
+            let activity = unsafe { env.as_cast_raw::<JObject>(&activity_raw)? };
+            let value = env
+                .call_method(
+                    &activity,
+                    jni_str!("takePendingDeepLink"),
+                    jni_sig!("()Ljava/lang/String;"),
+                    &[],
+                )?
+                .l()?;
+            if value.is_null() {
+                return Ok(None);
+            }
+            let value = JString::cast_local(env, value)?;
+            Ok(Some(value.try_to_string(env)?))
+        })
+        .map_err(|error| error.to_string())
+    }
+
+    fn android_take_pending_deep_link_source(
+        app: &AndroidApp,
+    ) -> Option<sanctuary_player_app::video::VideoSource> {
+        let deep_link = match android_take_pending_deep_link(app) {
+            Ok(value) => value?,
+            Err(error) => {
+                log::error!("SanctuaryPlayer: could not read Android deep link: {error}");
+                return None;
+            }
+        };
+        match sanctuary_player_app::video::VideoSource::parse(&deep_link) {
+            Ok(source) => {
+                log::info!("SanctuaryPlayer: received Android deep link {deep_link}");
+                Some(source)
+            }
+            Err(error) => {
+                log::error!("SanctuaryPlayer: rejected Android deep link {deep_link:?}: {error}");
+                None
+            }
+        }
     }
 
     #[allow(unsafe_code)]
@@ -385,6 +445,10 @@ mod android {
                     log::info!("SanctuaryPlayer: Android audio route becoming noisy; pausing");
                     state.pause_for_platform_interruption();
                     self.abandon(app);
+                }
+                AndroidMediaEvent::DeepLinkAvailable => {
+                    // Deep-link events are handled by the outer event loop because
+                    // they replace the active video rather than media-focus state.
                 }
             }
         }
@@ -1584,7 +1648,9 @@ mod android {
         // Decoder auto-selection needs the active Vulkan device capability
         // before choosing MediaCodec direct vs readback. Defer restored-session
         // playback until InitWindow has established that renderer contract.
-        let mut startup_source = state.take_startup_session_source();
+        let restored_source = state.take_startup_session_source();
+        let mut startup_source =
+            android_take_pending_deep_link_source(&android_app).or(restored_source);
         let (media_event_tx, media_event_rx): (
             Sender<AndroidMediaEvent>,
             Receiver<AndroidMediaEvent>,
@@ -1698,7 +1764,17 @@ mod android {
                 PollEvent::Wake => {
                     let mut media_event_handled = false;
                     while let Ok(event) = media_event_rx.try_recv() {
-                        media_focus.handle_event(&android_app, &mut state, event);
+                        match event {
+                            AndroidMediaEvent::DeepLinkAvailable => {
+                                if let Some(source) =
+                                    android_take_pending_deep_link_source(&android_app)
+                                {
+                                    let _ = state.apply(AppCommand::OpenVideo(source));
+                                    media_focus.sync_playback_state(&android_app, &mut state);
+                                }
+                            }
+                            other => media_focus.handle_event(&android_app, &mut state, other),
+                        }
                         media_event_handled = true;
                     }
                     screen_on.sync(&android_app, &state);

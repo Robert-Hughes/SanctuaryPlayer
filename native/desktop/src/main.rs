@@ -5,8 +5,8 @@ use sanctuary_player_app::video::VideoSource;
 use sanctuary_player_app::{AppEvent, SanctuaryPlayerApp};
 
 const USAGE: &str = "Usage: sanctuary-player [OPTIONS] [VIDEO]\n\n\
-VIDEO may be a YouTube/Twitch video ID or URL accepted by SanctuaryPlayer.\n\n\
-Options:\n  -v, --video <VIDEO>       Auto-load a video on startup\n      --play, --autoplay    Start playback after the video opens\n      --mute                Mute audio while keeping the audio playback clock active\n      --decode-mode <MODE>  auto | cpu | vdpau-readback | vdpau-direct (VDPAU: FreeBSD only)\n  -h, --help                Show this help";
+VIDEO may be a YouTube/Twitch video ID or URL, or a sanctuaryplayer:// deep link.\n\n\
+Options:\n  -v, --video <VIDEO>       Auto-load a video on startup\n      --play, --autoplay    Start playback after the video opens\n      --mute                Mute audio while keeping the audio playback clock active\n      --decode-mode <MODE>  auto | cpu | vdpau-readback | vdpau-direct (VDPAU: FreeBSD only)\n      --register-uri-handler Register sanctuaryplayer:// for this executable\n  -h, --help                Show this help";
 
 enum CliAction {
     Run {
@@ -15,6 +15,7 @@ enum CliAction {
         muted: bool,
         decode_mode: DecodeMode,
     },
+    RegisterUriHandler,
     Help,
 }
 
@@ -26,6 +27,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::process::exit(2);
         }
     };
+
+    if matches!(action, CliAction::RegisterUriHandler) {
+        register_uri_handler()?;
+        return Ok(());
+    }
 
     let CliAction::Run {
         initial_video,
@@ -91,6 +97,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliAction, Strin
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "-h" | "--help" => return Ok(CliAction::Help),
+            "--register-uri-handler" => return Ok(CliAction::RegisterUriHandler),
             "--play" | "--autoplay" => autoplay = true,
             "--mute" => muted = true,
             "--decode-mode" => {
@@ -157,6 +164,108 @@ fn set_video_input(slot: &mut Option<String>, value: String) -> Result<(), Strin
     Ok(())
 }
 
+#[cfg(target_os = "freebsd")]
+fn register_uri_handler() -> Result<(), Box<dyn std::error::Error>> {
+    use std::fs;
+    use std::process::Command;
+
+    let executable = std::env::current_exe()?;
+    let data_dir = dirs::data_local_dir().ok_or("platform data directory is unavailable")?;
+    let applications_dir = data_dir.join("applications");
+    fs::create_dir_all(&applications_dir)?;
+    let desktop_path = applications_dir.join("sanctuary-player.desktop");
+
+    let quote = |value: &str| {
+        value
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"")
+            .replace('$', "\\$")
+            .replace('`', "\\`")
+    };
+    let executable = quote(&executable.to_string_lossy());
+    let icon_path = std::env::current_exe()?
+        .parent()
+        .and_then(|release| release.parent())
+        .and_then(|target| target.parent())
+        .map(|native| native.join("assets/app-icon.svg"))
+        .filter(|path| path.is_file());
+    let icon = icon_path
+        .as_ref()
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "sanctuary-player".to_owned());
+
+    let desktop_entry = format!(
+        "[Desktop Entry]\nType=Application\nVersion=1.0\nName=Sanctuary Player\nComment=Native Twitch and YouTube video player\nExec=\"{executable}\" %u\nIcon={icon}\nTerminal=false\nCategories=AudioVideo;Player;\nKeywords=Sanctuary;Player;Twitch;YouTube;Video;\nMimeType=x-scheme-handler/sanctuaryplayer;\nStartupNotify=false\n"
+    );
+    fs::write(&desktop_path, desktop_entry)?;
+
+    let status = Command::new("xdg-mime")
+        .args([
+            "default",
+            "sanctuary-player.desktop",
+            "x-scheme-handler/sanctuaryplayer",
+        ])
+        .status()?;
+    if !status.success() {
+        return Err(format!("xdg-mime failed with status {status}").into());
+    }
+
+    println!(
+        "Registered sanctuaryplayer:// with {}",
+        desktop_path.display()
+    );
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn register_uri_handler() -> Result<(), Box<dyn std::error::Error>> {
+    use std::process::Command;
+
+    fn reg_add(key: &str, value_name: Option<&str>, value: &str) -> Result<(), String> {
+        let mut command = Command::new("reg.exe");
+        command.args(["add", key]);
+        match value_name {
+            Some(name) => {
+                command.args(["/v", name]);
+            }
+            None => {
+                command.arg("/ve");
+            }
+        }
+        let output = command
+            .args(["/d", value, "/f"])
+            .output()
+            .map_err(|error| error.to_string())?;
+        if !output.status.success() {
+            return Err(String::from_utf8_lossy(&output.stderr).trim().to_owned());
+        }
+        Ok(())
+    }
+
+    let executable = std::env::current_exe()?;
+    let executable = executable.to_string_lossy();
+    let root = r"HKCU\Software\Classes\sanctuaryplayer";
+    reg_add(root, None, "URL:Sanctuary Player Protocol")?;
+    reg_add(root, Some("URL Protocol"), "")?;
+    reg_add(
+        &format!(r"{root}\DefaultIcon"),
+        None,
+        &format!("\"{executable}\",0"),
+    )?;
+    reg_add(
+        &format!(r"{root}\shell\open\command"),
+        None,
+        &format!("\"{executable}\" \"%1\""),
+    )?;
+    println!("Registered sanctuaryplayer:// for {executable}");
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "freebsd", target_os = "windows")))]
+fn register_uri_handler() -> Result<(), Box<dyn std::error::Error>> {
+    Err("URI-handler registration is not implemented for this desktop platform".into())
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
@@ -209,6 +318,29 @@ mod tests {
         assert_eq!(decode_mode, DecodeMode::platform_default());
         assert_eq!(source.platform, VideoPlatform::Twitch);
         assert_eq!(source.id, "2395077199");
+    }
+
+    #[test]
+    fn accepts_sanctuary_deep_link() {
+        let CliAction::Run {
+            initial_video: Some(source),
+            ..
+        } = parse(&["sanctuaryplayer://open?videoId=2386400830&time=1h29m24s"]).unwrap()
+        else {
+            panic!("expected initial video");
+        };
+
+        assert_eq!(source.platform, VideoPlatform::Twitch);
+        assert_eq!(source.id, "2386400830");
+        assert_eq!(source.start_time, Some(Duration::from_secs(5364)));
+    }
+
+    #[test]
+    fn accepts_uri_handler_registration_action() {
+        assert!(matches!(
+            parse(&["--register-uri-handler"]).unwrap(),
+            CliAction::RegisterUriHandler
+        ));
     }
 
     #[test]

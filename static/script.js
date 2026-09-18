@@ -560,6 +560,19 @@ function createSavedPositionTableRow(savedPosition, isHighlight) {
 }
 
 
+function openInNativeApp() {
+    const params = new URLSearchParams();
+    params.set("videoId", videoId);
+
+    const pageParams = new URLSearchParams(window.location.search);
+    if (pageParams.has("time")) {
+        params.set("time", pageParams.get("time"));
+    }
+
+    window.location.href = "sanctuaryplayer://open?" + params.toString();
+}
+
+
 function changeVideo() {
     var userValue = prompt("Please enter YouTube/Twitch video URL or video ID:");
     if (!userValue) {
@@ -1672,6 +1685,7 @@ function startup() {
     // Hookup event listeners
     document.getElementById("menu-button").addEventListener("click", onMenuButtonClick);
     document.getElementById("change-video-button").addEventListener("click", changeVideo);
+    document.getElementById("open-native-app-button").addEventListener("click", openInNativeApp);
     document.getElementById("set-favourite-qualities-button").addEventListener("click", onSetFavouriteQualitiesClick);
     document.getElementById("use-native-player-controls-button").addEventListener("click", useNativePlayerControlsClick);
     document.getElementById("restore-normal-controls-button").addEventListener("click", restoreNormalControlsClick);
