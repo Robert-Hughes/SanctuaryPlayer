@@ -213,6 +213,71 @@ mod android {
         .map_err(|error| error.to_string())
     }
 
+    #[allow(unsafe_code)]
+    fn android_set_playback_keeps_screen_on(
+        app: &AndroidApp,
+        keep_screen_on: bool,
+    ) -> Result<(), String> {
+        use jni::{
+            JavaVM, jni_sig, jni_str,
+            objects::{JObject, JValue},
+        };
+
+        let vm = unsafe { JavaVM::from_raw(app.vm_as_ptr().cast()) };
+        let activity_raw = app.activity_as_ptr() as jni::sys::jobject;
+        vm.attach_current_thread(|env| -> jni::errors::Result<()> {
+            let activity = unsafe { env.as_cast_raw::<JObject>(&activity_raw)? };
+            env.call_method(
+                &activity,
+                jni_str!("setPlaybackKeepsScreenOn"),
+                jni_sig!("(Z)V"),
+                &[JValue::Bool(keep_screen_on)],
+            )?;
+            Ok(())
+        })
+        .map_err(|error| error.to_string())
+    }
+
+    #[derive(Default)]
+    struct AndroidScreenOn {
+        enabled: bool,
+        foreground: bool,
+    }
+
+    impl AndroidScreenOn {
+        fn set_foreground(&mut self, app: &AndroidApp, state: &AppState, foreground: bool) {
+            self.foreground = foreground;
+            self.sync(app, state);
+        }
+
+        fn sync(&mut self, app: &AndroidApp, state: &AppState) {
+            let desired = self.foreground
+                && match state.playback_state() {
+                    PlaybackState::Playing => true,
+                    // Preserve the previous state across a seek: a seek that began
+                    // while playing should not briefly allow display sleep, while a
+                    // seek from a paused session should not acquire the inhibition.
+                    PlaybackState::Seeking => self.enabled,
+                    _ => false,
+                };
+            if desired == self.enabled {
+                return;
+            }
+
+            match android_set_playback_keeps_screen_on(app, desired) {
+                Ok(()) => {
+                    self.enabled = desired;
+                    log::info!("SanctuaryPlayer: Android keep-screen-on={desired}");
+                }
+                Err(error) => {
+                    log::error!(
+                        "SanctuaryPlayer: could not set Android keep-screen-on={desired}: {error}"
+                    );
+                }
+            }
+        }
+    }
+
     #[derive(Default)]
     struct AndroidMediaFocus {
         request_active: bool,
@@ -1506,6 +1571,7 @@ mod android {
             log::error!("SanctuaryPlayer: could not initialise Android media integration: {error}");
         }
         let mut media_focus = AndroidMediaFocus::default();
+        let mut screen_on = AndroidScreenOn::default();
 
         let started = Instant::now();
         let mut last_update = started;
@@ -1525,6 +1591,7 @@ mod android {
                     log::info!("SanctuaryPlayer: Android GameActivity destroyed");
                     state.flush_persistence_for_shutdown(SHUTDOWN_POSITION_FLUSH_BUDGET);
                     media_focus.abandon(&android_app);
+                    screen_on.set_foreground(&android_app, &state, false);
                     if let Err(error) = android_shutdown_media_integration(&android_app) {
                         log::error!(
                             "SanctuaryPlayer: could not shut down Android media integration: {error}"
@@ -1589,15 +1656,19 @@ mod android {
                 PollEvent::Main(MainEvent::Pause | MainEvent::Stop) => {
                     state.pause_for_background();
                     media_focus.abandon(&android_app);
+                    screen_on.set_foreground(&android_app, &state, false);
                 }
                 PollEvent::Main(MainEvent::SaveState { .. }) => {
                     state.flush_persistence_for_background();
+                }
+                PollEvent::Main(MainEvent::Resume { .. }) => {
+                    screen_on.set_foreground(&android_app, &state, true);
+                    repaint.request(Duration::ZERO);
                 }
                 PollEvent::Main(MainEvent::RedrawNeeded { .. })
                 | PollEvent::Main(MainEvent::ContentRectChanged { .. })
                 | PollEvent::Main(MainEvent::InsetsChanged { .. })
                 | PollEvent::Main(MainEvent::ConfigChanged { .. })
-                | PollEvent::Main(MainEvent::Resume { .. })
                 | PollEvent::Main(MainEvent::Start) => {
                     repaint.request(Duration::ZERO);
                 }
@@ -1607,6 +1678,7 @@ mod android {
                         media_focus.handle_event(&android_app, &mut state, event);
                         media_event_handled = true;
                     }
+                    screen_on.sync(&android_app, &state);
                     let playback_wakes = state.take_playback_wakes();
                     if media_event_handled || !playback_wakes.is_empty() {
                         repaint.request(Duration::ZERO);
@@ -1644,6 +1716,7 @@ mod android {
             {
                 state.update(now.saturating_duration_since(last_update));
                 media_focus.sync_playback_state(&android_app, &mut state);
+                screen_on.sync(&android_app, &state);
                 last_update = now;
                 let user_tapped = std::mem::take(&mut input.primary_pointer_pressed);
                 let raw_input = make_raw_input(
@@ -1672,6 +1745,7 @@ mod android {
                                 &mut fullscreen,
                                 &mut media_focus,
                             );
+                            screen_on.sync(&android_app, &state);
                             repaint.request(Duration::ZERO);
                         }
                         if let Some(delay) = output

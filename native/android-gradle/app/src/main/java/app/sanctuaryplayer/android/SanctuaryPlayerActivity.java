@@ -100,6 +100,17 @@ public final class SanctuaryPlayerActivity extends GameActivity {
         }
     }
 
+    /** Keep the display awake only while foreground video playback requests it. */
+    public void setPlaybackKeepsScreenOn(boolean keepScreenOn) {
+        runOnUiThread(() -> {
+            if (keepScreenOn) {
+                getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+            } else {
+                getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+            }
+        });
+    }
+
     /** Tear down listeners before the native activity exits. */
     public void shutdownMediaIntegration() {
         abandonPlaybackAudioFocus();
@@ -112,5 +123,6 @@ public final class SanctuaryPlayerActivity extends GameActivity {
         audioFocusChangeListener = null;
         audioManager = null;
         mediaIntegrationInitialised = false;
+        setPlaybackKeepsScreenOn(false);
     }
 }

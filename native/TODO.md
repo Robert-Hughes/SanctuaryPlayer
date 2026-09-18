@@ -63,5 +63,5 @@
 - Add platform media-session integration (lock-screen/system media controls and current media metadata) where available.
 - If intentional Android background playback is added, implement it as a supported media mode with a foreground media service and media notification rather than relying on Activity survival.
 - Add Android picture-in-picture support so video can remain visibly active when the user deliberately leaves the full Activity.
-- Prevent display sleep/screensaver activation while actively playing video, and release the inhibition when paused/stopped/backgrounded.
+- Add equivalent display sleep/screensaver inhibition on desktop platforms; Android keeps the display awake only during foreground playback.
 - Add native deep-link/share support for the current video and media time, equivalent to the web client's continuously updated `videoId`/`time` URL state.
