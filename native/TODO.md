@@ -17,7 +17,7 @@
 ## Playback resilience and lifecycle
 
 - Add playback-level retry/reopen recovery for transient playlist, segment, decoder and network failures without losing the current media position.
-- Make suspend/background/resume behaviour explicit: save position, pause/stop audio appropriately, release/recreate graphics/media resources as required, and resume into a consistent prior state.
+- Continue hardening suspend/background/resume behaviour beyond the current Android pause-on-background policy: release/recreate graphics/media resources as required and resume into a consistent prior state.
 - Ensure seeking and playback state remain recoverable when a seek target is unavailable, outside the live window, or fails after source/network changes.
 
 ## Testing and diagnostics
@@ -49,8 +49,7 @@
 - Add application volume and mute controls rather than relying solely on the operating-system/device volume.
 - Add audio channel-layout handling and explicit downmix/upmix policy instead of failing when the output device negotiates a different channel count.
 - Add audio output-device selection and robust handling of default-device changes, disconnects and reconnects.
-- Implement a real Android audio backend.
-- Implement Android audio-focus handling and react correctly to calls, alarms, headset/Bluetooth changes and other audio interruptions.
+- Implement Android audio-focus handling and react correctly to calls, alarms and other audio interruptions; also handle `ACTION_AUDIO_BECOMING_NOISY` so unplugging/rerouting headphones or Bluetooth cannot unexpectedly continue through speakers.
 
 ## Video decode and presentation
 
@@ -63,5 +62,7 @@
 
 - Add OS media-key handling for play/pause and other appropriate transport controls.
 - Add platform media-session integration (lock-screen/system media controls and current media metadata) where available.
+- If intentional Android background playback is added, implement it as a supported media mode with a foreground media service and media notification rather than relying on Activity survival.
+- Add Android picture-in-picture support so video can remain visibly active when the user deliberately leaves the full Activity.
 - Prevent display sleep/screensaver activation while actively playing video, and release the inhibition when paused/stopped/backgrounded.
 - Add native deep-link/share support for the current video and media time, equivalent to the web client's continuously updated `videoId`/`time` URL state.

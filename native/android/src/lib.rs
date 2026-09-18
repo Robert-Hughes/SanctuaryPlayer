@@ -1300,9 +1300,10 @@ mod android {
                     focused = false;
                     repaint.request(Duration::ZERO);
                 }
-                PollEvent::Main(
-                    MainEvent::Pause | MainEvent::Stop | MainEvent::SaveState { .. },
-                ) => {
+                PollEvent::Main(MainEvent::Pause | MainEvent::Stop) => {
+                    state.pause_for_background();
+                }
+                PollEvent::Main(MainEvent::SaveState { .. }) => {
                     state.flush_persistence_for_background();
                 }
                 PollEvent::Main(MainEvent::RedrawNeeded { .. })

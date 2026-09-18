@@ -982,6 +982,19 @@ impl AppState {
         self.force_remote_position_save();
     }
 
+    pub fn pause_for_background(&mut self) {
+        if matches!(
+            self.playback.state(),
+            PlaybackState::Playing | PlaybackState::Seeking
+        ) {
+            self.playback.pause();
+            self.refresh_safe_session();
+            self.persist_session(true);
+            self.schedule_paused_position_save();
+        }
+        self.flush_persistence_for_background();
+    }
+
     pub fn persistence_wake_deadline(&self, now: Instant) -> Option<Instant> {
         let pause_deadline = self.pause_position_save_due;
         let retry_deadline = (self.pending_position_save.is_none()
@@ -1800,6 +1813,31 @@ mod tests {
         state.apply(AppCommand::Play);
         assert!(matches!(state.playback_state(), PlaybackState::Playing));
         assert!(!state.needs_animation());
+    }
+
+    #[test]
+    fn backgrounding_pauses_active_playback_and_does_not_auto_resume() {
+        let mut state = loaded_state();
+        state.apply(AppCommand::Play);
+        assert_eq!(state.playback_state(), &PlaybackState::Playing);
+
+        state.pause_for_background();
+        assert_eq!(state.playback_state(), &PlaybackState::Paused);
+
+        state.update(Duration::from_secs(5));
+        assert_eq!(state.playback_state(), &PlaybackState::Paused);
+    }
+
+    #[test]
+    fn backgrounding_during_seek_clears_resume_intent() {
+        let mut state = loaded_state();
+        state.apply(AppCommand::Play);
+        state.apply(AppCommand::SeekAbsolute(Duration::from_secs(30)));
+        assert_eq!(state.playback_state(), &PlaybackState::Seeking);
+
+        state.pause_for_background();
+        state.update(Duration::from_secs(1));
+        assert_eq!(state.playback_state(), &PlaybackState::Paused);
     }
 
     #[test]
