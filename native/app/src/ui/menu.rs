@@ -217,19 +217,8 @@ fn intrinsic_menu_width(
         );
     } else {
         let positions = state.saved_positions();
-        if state.saved_positions_loading() {
-            let loading = if positions.is_empty() {
-                "Loading saved positions…"
-            } else {
-                "Refreshing saved positions…"
-            };
-            width = width.max(
-                content_horizontal_padding
-                    + ui.style().spacing.interact_size.y
-                    + ui.spacing().item_spacing.x
-                    + menu_text_width(ui, egui::RichText::new(loading).size(font_size)),
-            );
-        }
+        let loading = state.saved_positions_loading();
+
         if let Some(error) = state.saved_positions_error() {
             width = width.max(
                 content_horizontal_padding
@@ -240,21 +229,20 @@ fn intrinsic_menu_width(
                     ),
             );
         }
-        if positions.is_empty() {
-            if !state.saved_positions_loading() {
-                width = width.max(
-                    content_horizontal_padding
-                        + menu_text_width(
-                            ui,
-                            egui::RichText::new("No saved positions").size(font_size),
-                        ),
-                );
-            }
-        } else {
+
+        if loading || !positions.is_empty() {
             let rows = saved_position_rows(state);
             width = width.max(
                 content_horizontal_padding
                     + saved_positions_table_intrinsic_width(ui, &rows, vmin, font_size),
+            );
+        } else {
+            width = width.max(
+                content_horizontal_padding
+                    + menu_text_width(
+                        ui,
+                        egui::RichText::new("No saved positions").size(font_size),
+                    ),
             );
         }
     }
@@ -487,26 +475,22 @@ fn render_saved_positions(
     }
 
     let positions = state.saved_positions();
-    if state.saved_positions_loading() {
-        ui.horizontal(|ui| {
-            super::animated_spinner(ui);
-            ui.label(if positions.is_empty() {
-                "Loading saved positions…"
-            } else {
-                "Refreshing saved positions…"
-            });
-        });
-    }
+    let loading_status = state.saved_positions_loading().then(|| {
+        if positions.is_empty() {
+            "Loading saved positions…"
+        } else {
+            "Refreshing saved positions…"
+        }
+    });
+
     if let Some(error) = state.saved_positions_error() {
         ui.label(
             egui::RichText::new(format!("Unable to refresh saved positions: {error}"))
                 .color(egui::Color32::DARK_RED),
         );
     }
-    if positions.is_empty() {
-        if !state.saved_positions_loading() {
-            ui.label("No saved positions");
-        }
+    if positions.is_empty() && loading_status.is_none() {
+        ui.label("No saved positions");
         return;
     }
 
@@ -522,11 +506,11 @@ fn render_saved_positions(
     let table_width = saved_positions_table_intrinsic_width(ui, &rows, vmin, font_size);
 
     let clicked = if table_width <= ui.available_width() {
-        render_saved_positions_table(ui, &rows, highlight, vmin, font_size)
+        render_saved_positions_table(ui, &rows, highlight, loading_status, vmin, font_size)
     } else {
         egui::ScrollArea::horizontal()
             .show(ui, |ui| {
-                render_saved_positions_table(ui, &rows, highlight, vmin, font_size)
+                render_saved_positions_table(ui, &rows, highlight, loading_status, vmin, font_size)
             })
             .inner
     };
@@ -549,6 +533,7 @@ fn render_saved_positions_table(
     ui: &mut egui::Ui,
     rows: &[Vec<String>],
     highlight: Option<usize>,
+    loading_status: Option<&str>,
     vmin: f32,
     font_size: f32,
 ) -> Option<usize> {
@@ -617,11 +602,11 @@ fn render_saved_positions_table(
     }
 
     let row_height = text_height + 2.0 * cell_padding;
+    let header_height = text_height.max(ui.style().spacing.interact_size.y) + 2.0 * cell_padding;
     let table_width =
         column_widths.iter().sum::<f32>() + grid_gap * column_widths.len().saturating_sub(1) as f32;
-    let table_rows = rows.len() + 1;
     let table_height =
-        row_height * table_rows as f32 + grid_gap * table_rows.saturating_sub(1) as f32;
+        header_height + rows.len() as f32 * row_height + grid_gap * rows.len() as f32;
     let (table_rect, _) =
         ui.allocate_exact_size(egui::vec2(table_width, table_height), egui::Sense::hover());
     let painter = ui.painter().clone();
@@ -629,13 +614,14 @@ fn render_saved_positions_table(
 
     let paint_row = |painter: &egui::Painter,
                      y: f32,
+                     height: f32,
                      galleys: &[std::sync::Arc<egui::Galley>],
                      fill: egui::Color32| {
         let mut x = table_rect.left();
         for (column, galley) in galleys.iter().enumerate() {
             let cell_rect = egui::Rect::from_min_size(
                 egui::pos2(x, y),
-                egui::vec2(column_widths[column], row_height),
+                egui::vec2(column_widths[column], height),
             );
             painter.rect_filled(cell_rect, 0.0, fill);
             painter.galley(
@@ -650,11 +636,40 @@ fn render_saved_positions_table(
         }
     };
 
-    paint_row(&painter, table_rect.top(), &heading_galleys, theme::WHITE);
+    let header_rect =
+        egui::Rect::from_min_size(table_rect.min, egui::vec2(table_width, header_height));
+    if let Some(status) = loading_status {
+        painter.rect_filled(header_rect, 0.0, theme::WHITE);
+        let status_rect = header_rect.shrink2(egui::vec2(cell_padding, cell_padding));
+        ui.scope_builder(
+            egui::UiBuilder::new()
+                .max_rect(status_rect)
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+            |ui| {
+                ui.set_clip_rect(header_rect);
+                ui.spacing_mut().item_spacing.x = cell_padding;
+                super::animated_spinner(ui);
+                ui.label(
+                    egui::RichText::new(status)
+                        .size(font_size)
+                        .color(egui::Color32::BLACK),
+                );
+            },
+        );
+    } else {
+        paint_row(
+            &painter,
+            table_rect.top(),
+            header_height,
+            &heading_galleys,
+            theme::WHITE,
+        );
+    }
 
     let mut clicked = None;
     for (index, galleys) in row_galleys.iter().enumerate() {
-        let y = table_rect.top() + (index + 1) as f32 * (row_height + grid_gap);
+        let y =
+            table_rect.top() + header_height + grid_gap + index as f32 * (row_height + grid_gap);
         let row_rect = egui::Rect::from_min_size(
             egui::pos2(table_rect.left(), y),
             egui::vec2(table_width, row_height),
@@ -671,7 +686,7 @@ fn render_saved_positions_table(
         } else {
             theme::WHITE
         };
-        paint_row(&painter, y, galleys, fill);
+        paint_row(&painter, y, row_height, galleys, fill);
         if response.clicked() {
             clicked = Some(index);
         }
