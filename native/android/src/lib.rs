@@ -1401,19 +1401,29 @@ mod android {
                             &[JValue::Int(SYSTEM_BARS)],
                         )?;
                     } else {
-                        env.call_method(
-                            &controller,
-                            jni_str!("show"),
-                            jni_sig!("(I)V"),
-                            &[JValue::Int(SYSTEM_BARS)],
-                        )?;
-                        // SanctuaryPlayer uses a light UI, so request Android's dark
-                        // status/navigation-bar foreground icons in normal mode.
+                        // Restore normal light-system-bar appearance before making the
+                        // bars visible again. Some Samsung builds otherwise keep
+                        // SystemUI (including the notification shade) in fullscreen's
+                        // light-foreground mode until a later appearance update.
                         env.call_method(
                             &controller,
                             jni_str!("setSystemBarsAppearance"),
                             jni_sig!("(II)V"),
                             &[JValue::Int(LIGHT_BARS), JValue::Int(LIGHT_BARS)],
+                        )?;
+                        // Fullscreen enables transient bars. Restore normal bar
+                        // behaviour as part of the same transition back to windowed UI.
+                        env.call_method(
+                            &controller,
+                            jni_str!("setSystemBarsBehavior"),
+                            jni_sig!("(I)V"),
+                            &[JValue::Int(1)],
+                        )?;
+                        env.call_method(
+                            &controller,
+                            jni_str!("show"),
+                            jni_sig!("(I)V"),
+                            &[JValue::Int(SYSTEM_BARS)],
                         )?;
                     }
                 }
