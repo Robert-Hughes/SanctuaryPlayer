@@ -58,6 +58,221 @@ pub fn render_button(ui: &mut egui::Ui, state: &mut AppState) -> egui::Rect {
     area.response.rect
 }
 
+fn menu_text_width(ui: &egui::Ui, text: egui::RichText) -> f32 {
+    egui::WidgetText::from(text)
+        .into_galley(
+            ui,
+            Some(egui::TextWrapMode::Extend),
+            f32::INFINITY,
+            egui::TextStyle::Body,
+        )
+        .size()
+        .x
+}
+
+fn saved_position_rows(state: &AppState) -> Vec<Vec<String>> {
+    let current_id = state.source().map(|source| source.id.clone());
+    let current_position = state.position();
+
+    state
+        .saved_positions()
+        .iter()
+        .map(|entry| {
+            let is_current = current_id.as_deref() == Some(entry.source.id.as_str());
+            let mut position_text = format_colon_time(entry.position);
+            if is_current {
+                position_text.push_str(" (");
+                position_text.push_str(&format_relative_position(entry.position, current_position));
+                position_text.push(')');
+            }
+            let title = entry
+                .title
+                .as_deref()
+                .map(sanitise_title)
+                .unwrap_or_else(|| entry.source.id.clone());
+            let release = entry
+                .release_age
+                .map(format_age)
+                .unwrap_or_else(|| "?".into());
+            vec![
+                format_age(entry.modified_age),
+                entry.device_id.clone(),
+                position_text,
+                title,
+                release,
+            ]
+        })
+        .collect()
+}
+
+fn saved_positions_table_intrinsic_width(
+    ui: &egui::Ui,
+    rows: &[Vec<String>],
+    vmin: f32,
+    font_size: f32,
+) -> f32 {
+    let headings = [
+        "Last Watched",
+        "Device",
+        "Position",
+        "Video",
+        "Release Date",
+    ];
+    let cell_padding = (0.25 * vmin).max(1.0);
+    let grid_gap = 1.0;
+    let mut column_widths = vec![0.0_f32; headings.len()];
+
+    for (column, heading) in headings.iter().enumerate() {
+        column_widths[column] = menu_text_width(
+            ui,
+            egui::RichText::new(*heading)
+                .size(font_size)
+                .strong()
+                .color(egui::Color32::BLACK),
+        );
+    }
+    for row in rows {
+        for (column, cell) in row.iter().enumerate() {
+            column_widths[column] = column_widths[column].max(menu_text_width(
+                ui,
+                egui::RichText::new(cell)
+                    .size(font_size)
+                    .color(egui::Color32::BLACK),
+            ));
+        }
+    }
+
+    column_widths
+        .iter()
+        .map(|width| width + 2.0 * cell_padding)
+        .sum::<f32>()
+        + grid_gap * column_widths.len().saturating_sub(1) as f32
+}
+
+fn intrinsic_menu_width(
+    ui: &egui::Ui,
+    state: &AppState,
+    vmin: f32,
+    font_size: f32,
+    max_width: f32,
+) -> f32 {
+    let row_horizontal_padding = 2.0 * vmin;
+    let content_horizontal_padding = 2.0 * f32::from(vmin.round() as i8);
+    let mut width = 30.0 * vmin;
+
+    let action_width = |label: &str| {
+        menu_text_width(
+            ui,
+            egui::RichText::new(label)
+                .size(font_size)
+                .strong()
+                .color(theme::PURPLE),
+        ) + row_horizontal_padding
+    };
+    width = width.max(action_width("Change Video…"));
+
+    if state.has_video() {
+        let quality_label = menu_text_width(
+            ui,
+            egui::RichText::new("Quality:")
+                .size(font_size)
+                .strong()
+                .color(theme::PURPLE),
+        );
+        let selected_quality = state
+            .quality()
+            .map(|quality| quality.label.as_str())
+            .unwrap_or("Unknown");
+        let selected_width =
+            menu_text_width(ui, egui::RichText::new(selected_quality).size(font_size));
+        let spacing = ui.spacing();
+        let combo_width = spacing.combo_width.max(
+            selected_width
+                + spacing.icon_spacing
+                + spacing.icon_width
+                + 2.0 * spacing.button_padding.x,
+        );
+        let favourites_width = menu_text_width(
+            ui,
+            egui::RichText::new("Set favourites…")
+                .size(font_size * 0.75)
+                .color(theme::PURPLE),
+        );
+        width = width.max(
+            content_horizontal_padding
+                + quality_label
+                + combo_width
+                + favourites_width
+                + 2.0 * spacing.item_spacing.x,
+        );
+    }
+
+    if !state.signed_in() {
+        width = width.max(
+            content_horizontal_padding
+                + menu_text_width(
+                    ui,
+                    egui::RichText::new("Sign in to show synced positions.").size(font_size),
+                ),
+        );
+    } else {
+        let positions = state.saved_positions();
+        if state.saved_positions_loading() {
+            let loading = if positions.is_empty() {
+                "Loading saved positions…"
+            } else {
+                "Refreshing saved positions…"
+            };
+            width = width.max(
+                content_horizontal_padding
+                    + ui.style().spacing.interact_size.y
+                    + ui.spacing().item_spacing.x
+                    + menu_text_width(ui, egui::RichText::new(loading).size(font_size)),
+            );
+        }
+        if let Some(error) = state.saved_positions_error() {
+            width = width.max(
+                content_horizontal_padding
+                    + menu_text_width(
+                        ui,
+                        egui::RichText::new(format!("Unable to refresh saved positions: {error}"))
+                            .size(font_size),
+                    ),
+            );
+        }
+        if positions.is_empty() {
+            if !state.saved_positions_loading() {
+                width = width.max(
+                    content_horizontal_padding
+                        + menu_text_width(
+                            ui,
+                            egui::RichText::new("No saved positions").size(font_size),
+                        ),
+                );
+            }
+        } else {
+            let rows = saved_position_rows(state);
+            width = width.max(
+                content_horizontal_padding
+                    + saved_positions_table_intrinsic_width(ui, &rows, vmin, font_size),
+            );
+        }
+    }
+
+    let account_label = if state.signed_in() {
+        format!(
+            "Sign out ({}/{})…",
+            state.user_id().unwrap_or("?"),
+            state.device_id().unwrap_or("?")
+        )
+    } else {
+        "Sign in…".to_owned()
+    };
+    width = width.max(action_width(&account_label));
+
+    width.min(max_width)
+}
+
 pub fn render(
     ui: &mut egui::Ui,
     state: &mut AppState,
@@ -71,10 +286,10 @@ pub fn render(
 
     let screen = ctx.content_rect();
     let vmin = theme::vmin(ui);
-    let width = (72.0 * vmin).min(screen.width()).max(30.0 * vmin);
+    let font_size = (2.0 * vmin).max(16.0);
+    let width = intrinsic_menu_width(ui, state, vmin, font_size, screen.width());
     let top = screen.top() + 12.0 * vmin;
     let pos = egui::pos2(screen.right() - width, top - (1.0 - openness) * 2.0 * vmin);
-    let font_size = (2.0 * vmin).max(16.0);
 
     let area = egui::Area::new(egui::Id::new("player-menu"))
         .fixed_pos(pos)
@@ -296,7 +511,6 @@ fn render_saved_positions(
     }
 
     let current_id = state.source().map(|source| source.id.clone());
-    let current_position = state.position();
     let highlight = positions
         .iter()
         .enumerate()
@@ -304,34 +518,7 @@ fn render_saved_positions(
         .max_by_key(|(_, entry)| entry.position)
         .map(|(index, _)| index);
 
-    let rows: Vec<Vec<String>> = positions
-        .iter()
-        .map(|entry| {
-            let is_current = current_id.as_deref() == Some(entry.source.id.as_str());
-            let mut position_text = format_colon_time(entry.position);
-            if is_current {
-                position_text.push_str(" (");
-                position_text.push_str(&format_relative_position(entry.position, current_position));
-                position_text.push(')');
-            }
-            let title = entry
-                .title
-                .as_deref()
-                .map(sanitise_title)
-                .unwrap_or_else(|| entry.source.id.clone());
-            let release = entry
-                .release_age
-                .map(format_age)
-                .unwrap_or_else(|| "?".into());
-            vec![
-                format_age(entry.modified_age),
-                entry.device_id.clone(),
-                position_text,
-                title,
-                release,
-            ]
-        })
-        .collect();
+    let rows = saved_position_rows(state);
 
     let clicked = egui::ScrollArea::horizontal()
         .show(ui, |ui| {
