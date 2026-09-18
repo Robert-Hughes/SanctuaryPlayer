@@ -1242,13 +1242,8 @@ impl AppState {
             return;
         }
         self.ui.menu_open = !self.ui.menu_open;
-        if self.ui.menu_open {
-            if self.signed_in() {
-                self.positions_refresh_requested = true;
-            }
-            if self.has_video() {
-                self.playback.pause();
-            }
+        if self.ui.menu_open && self.signed_in() {
+            self.positions_refresh_requested = true;
         }
         self.note_interaction();
     }
@@ -1914,6 +1909,24 @@ mod tests {
         state.apply(AppCommand::ToggleControlsLock);
         state.apply(AppCommand::ToggleControlsVisibility);
         assert!(!state.ui.controls_visible);
+    }
+
+    #[test]
+    fn opening_menu_preserves_playback_state() {
+        let mut state = loaded_state();
+
+        state.apply(AppCommand::Play);
+        assert_eq!(state.playback_state(), &PlaybackState::Playing);
+        state.toggle_menu();
+        assert!(state.ui.menu_open);
+        assert_eq!(state.playback_state(), &PlaybackState::Playing);
+
+        state.toggle_menu();
+        state.apply(AppCommand::Pause);
+        assert_eq!(state.playback_state(), &PlaybackState::Paused);
+        state.toggle_menu();
+        assert!(state.ui.menu_open);
+        assert_eq!(state.playback_state(), &PlaybackState::Paused);
     }
 
     #[test]
