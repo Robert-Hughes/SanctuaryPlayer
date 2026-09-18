@@ -29,7 +29,17 @@ pub fn render_button(ui: &mut egui::Ui, state: &mut AppState) -> egui::Rect {
             };
             ui.painter().rect_filled(rect, vmin, fill);
             let icon_rect = rect.shrink(1.5 * vmin);
-            let stroke = egui::Stroke::new((0.9 * vmin).max(2.0), theme::ICON_PURPLE);
+            let icon_colour = if enabled {
+                theme::ICON_PURPLE
+            } else {
+                egui::Color32::from_rgba_unmultiplied(
+                    theme::ICON_PURPLE.r(),
+                    theme::ICON_PURPLE.g(),
+                    theme::ICON_PURPLE.b(),
+                    128,
+                )
+            };
+            let stroke = egui::Stroke::new((0.9 * vmin).max(2.0), icon_colour);
             for y in [0.15_f32, 0.5, 0.85] {
                 let yy = egui::lerp(icon_rect.top()..=icon_rect.bottom(), y);
                 ui.painter().line_segment(
