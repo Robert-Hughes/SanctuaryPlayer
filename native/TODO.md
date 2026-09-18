@@ -49,7 +49,6 @@
 - Add application volume and mute controls rather than relying solely on the operating-system/device volume.
 - Add audio channel-layout handling and explicit downmix/upmix policy instead of failing when the output device negotiates a different channel count.
 - Add audio output-device selection and robust handling of default-device changes, disconnects and reconnects.
-- Implement Android audio-focus handling and react correctly to calls, alarms and other audio interruptions; also handle `ACTION_AUDIO_BECOMING_NOISY` so unplugging/rerouting headphones or Bluetooth cannot unexpectedly continue through speakers.
 
 ## Video decode and presentation
 

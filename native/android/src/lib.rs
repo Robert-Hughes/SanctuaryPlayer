@@ -3,7 +3,10 @@
 #[cfg(target_os = "android")]
 mod android {
     use std::path::PathBuf;
-    use std::sync::{Arc, Mutex, OnceLock};
+    use std::sync::{
+        Arc, Mutex, OnceLock,
+        mpsc::{self, Receiver, Sender},
+    };
     use std::time::{Duration, Instant};
 
     use android_activity::{
@@ -21,7 +24,7 @@ mod android {
     use sanctuary_player_app::app::{
         AndroidTextField, AndroidTextInputSnapshot, AppEffect, AppState,
     };
-    use sanctuary_player_app::model::AppCommand;
+    use sanctuary_player_app::model::{AppCommand, PlaybackState};
     use sanctuary_player_app::playback::{DecodeMode, PlaybackWake};
     use sanctuary_player_app::video_renderer::VideoRenderer;
 
@@ -67,6 +70,257 @@ mod android {
                 true
             } else {
                 false
+            }
+        }
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum AndroidMediaEvent {
+        AudioFocusChange(i32),
+        BecomingNoisy,
+    }
+
+    struct AndroidMediaEventBridge {
+        sender: Sender<AndroidMediaEvent>,
+        waker: android_activity::AndroidAppWaker,
+    }
+
+    static MEDIA_EVENT_BRIDGE: OnceLock<Mutex<Option<AndroidMediaEventBridge>>> = OnceLock::new();
+
+    fn media_event_bridge() -> &'static Mutex<Option<AndroidMediaEventBridge>> {
+        MEDIA_EVENT_BRIDGE.get_or_init(|| Mutex::new(None))
+    }
+
+    fn install_media_event_bridge(sender: Sender<AndroidMediaEvent>, app: &AndroidApp) {
+        *media_event_bridge()
+            .lock()
+            .expect("Android media event bridge poisoned") = Some(AndroidMediaEventBridge {
+            sender,
+            waker: app.create_waker(),
+        });
+    }
+
+    fn uninstall_media_event_bridge() {
+        *media_event_bridge()
+            .lock()
+            .expect("Android media event bridge poisoned") = None;
+    }
+
+    fn enqueue_media_event(event: AndroidMediaEvent) {
+        let bridge = media_event_bridge()
+            .lock()
+            .expect("Android media event bridge poisoned");
+        let Some(bridge) = bridge.as_ref() else {
+            return;
+        };
+        if bridge.sender.send(event).is_ok() {
+            bridge.waker.wake();
+        }
+    }
+
+    #[allow(unsafe_code)]
+    #[unsafe(no_mangle)]
+    pub unsafe extern "system" fn Java_app_sanctuaryplayer_android_SanctuaryPlayerActivity_nativeOnAudioFocusChange(
+        _env: *mut jni::sys::JNIEnv,
+        _class: jni::sys::jclass,
+        focus_change: jni::sys::jint,
+    ) {
+        enqueue_media_event(AndroidMediaEvent::AudioFocusChange(focus_change));
+    }
+
+    #[allow(unsafe_code)]
+    #[unsafe(no_mangle)]
+    pub unsafe extern "system" fn Java_app_sanctuaryplayer_android_SanctuaryPlayerActivity_nativeOnBecomingNoisy(
+        _env: *mut jni::sys::JNIEnv,
+        _class: jni::sys::jclass,
+    ) {
+        enqueue_media_event(AndroidMediaEvent::BecomingNoisy);
+    }
+
+    #[allow(unsafe_code)]
+    fn android_initialise_media_integration(app: &AndroidApp) -> Result<(), String> {
+        use jni::{JavaVM, jni_sig, jni_str, objects::JObject};
+
+        let vm = unsafe { JavaVM::from_raw(app.vm_as_ptr().cast()) };
+        let activity_raw = app.activity_as_ptr() as jni::sys::jobject;
+        vm.attach_current_thread(|env| -> jni::errors::Result<()> {
+            let activity = unsafe { env.as_cast_raw::<JObject>(&activity_raw)? };
+            env.call_method(
+                &activity,
+                jni_str!("initialiseMediaIntegration"),
+                jni_sig!("()V"),
+                &[],
+            )?;
+            Ok(())
+        })
+        .map_err(|error| error.to_string())
+    }
+
+    #[allow(unsafe_code)]
+    fn android_request_audio_focus(app: &AndroidApp) -> Result<bool, String> {
+        use jni::{JavaVM, jni_sig, jni_str, objects::JObject};
+
+        let vm = unsafe { JavaVM::from_raw(app.vm_as_ptr().cast()) };
+        let activity_raw = app.activity_as_ptr() as jni::sys::jobject;
+        vm.attach_current_thread(|env| -> jni::errors::Result<bool> {
+            let activity = unsafe { env.as_cast_raw::<JObject>(&activity_raw)? };
+            env.call_method(
+                &activity,
+                jni_str!("requestPlaybackAudioFocus"),
+                jni_sig!("()Z"),
+                &[],
+            )?
+            .z()
+        })
+        .map_err(|error| error.to_string())
+    }
+
+    #[allow(unsafe_code)]
+    fn android_abandon_audio_focus(app: &AndroidApp) -> Result<(), String> {
+        use jni::{JavaVM, jni_sig, jni_str, objects::JObject};
+
+        let vm = unsafe { JavaVM::from_raw(app.vm_as_ptr().cast()) };
+        let activity_raw = app.activity_as_ptr() as jni::sys::jobject;
+        vm.attach_current_thread(|env| -> jni::errors::Result<()> {
+            let activity = unsafe { env.as_cast_raw::<JObject>(&activity_raw)? };
+            env.call_method(
+                &activity,
+                jni_str!("abandonPlaybackAudioFocus"),
+                jni_sig!("()V"),
+                &[],
+            )?;
+            Ok(())
+        })
+        .map_err(|error| error.to_string())
+    }
+
+    #[allow(unsafe_code)]
+    fn android_shutdown_media_integration(app: &AndroidApp) -> Result<(), String> {
+        use jni::{JavaVM, jni_sig, jni_str, objects::JObject};
+
+        let vm = unsafe { JavaVM::from_raw(app.vm_as_ptr().cast()) };
+        let activity_raw = app.activity_as_ptr() as jni::sys::jobject;
+        vm.attach_current_thread(|env| -> jni::errors::Result<()> {
+            let activity = unsafe { env.as_cast_raw::<JObject>(&activity_raw)? };
+            env.call_method(
+                &activity,
+                jni_str!("shutdownMediaIntegration"),
+                jni_sig!("()V"),
+                &[],
+            )?;
+            Ok(())
+        })
+        .map_err(|error| error.to_string())
+    }
+
+    #[derive(Default)]
+    struct AndroidMediaFocus {
+        request_active: bool,
+        has_focus: bool,
+        resume_after_transient_loss: bool,
+    }
+
+    impl AndroidMediaFocus {
+        fn ensure_focus(&mut self, app: &AndroidApp) -> bool {
+            if self.request_active {
+                return self.has_focus;
+            }
+            match android_request_audio_focus(app) {
+                Ok(true) => {
+                    self.request_active = true;
+                    self.has_focus = true;
+                    log::info!("SanctuaryPlayer: Android audio focus granted");
+                    true
+                }
+                Ok(false) => {
+                    log::warn!("SanctuaryPlayer: Android audio focus request denied");
+                    false
+                }
+                Err(error) => {
+                    log::error!("SanctuaryPlayer: Android audio focus request failed: {error}");
+                    false
+                }
+            }
+        }
+
+        fn abandon(&mut self, app: &AndroidApp) {
+            if self.request_active
+                && let Err(error) = android_abandon_audio_focus(app)
+            {
+                log::error!("SanctuaryPlayer: could not abandon Android audio focus: {error}");
+            }
+            self.request_active = false;
+            self.has_focus = false;
+            self.resume_after_transient_loss = false;
+        }
+
+        fn sync_playback_state(&mut self, app: &AndroidApp, state: &mut AppState) {
+            match state.playback_state() {
+                PlaybackState::Playing => {
+                    if !self.ensure_focus(app) {
+                        state.pause_for_platform_interruption();
+                    }
+                }
+                PlaybackState::Seeking if self.request_active => {}
+                PlaybackState::Paused if self.resume_after_transient_loss => {}
+                _ => self.abandon(app),
+            }
+        }
+
+        fn handle_event(
+            &mut self,
+            app: &AndroidApp,
+            state: &mut AppState,
+            event: AndroidMediaEvent,
+        ) {
+            const AUDIOFOCUS_GAIN: i32 = 1;
+            const AUDIOFOCUS_LOSS: i32 = -1;
+            const AUDIOFOCUS_LOSS_TRANSIENT: i32 = -2;
+            const AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK: i32 = -3;
+
+            match event {
+                AndroidMediaEvent::AudioFocusChange(AUDIOFOCUS_GAIN) => {
+                    if !self.request_active {
+                        log::info!("SanctuaryPlayer: ignoring stale Android audio-focus gain");
+                        return;
+                    }
+                    log::info!("SanctuaryPlayer: Android audio focus gained");
+                    self.has_focus = true;
+                    if std::mem::take(&mut self.resume_after_transient_loss) {
+                        state.resume_after_platform_interruption();
+                    }
+                }
+                AndroidMediaEvent::AudioFocusChange(AUDIOFOCUS_LOSS) => {
+                    if !self.request_active {
+                        log::info!("SanctuaryPlayer: ignoring stale Android audio-focus loss");
+                        return;
+                    }
+                    log::info!("SanctuaryPlayer: Android audio focus lost permanently");
+                    state.pause_for_platform_interruption();
+                    self.abandon(app);
+                }
+                AndroidMediaEvent::AudioFocusChange(
+                    AUDIOFOCUS_LOSS_TRANSIENT | AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK,
+                ) => {
+                    if !self.request_active {
+                        log::info!(
+                            "SanctuaryPlayer: ignoring stale transient Android audio-focus loss"
+                        );
+                        return;
+                    }
+                    log::info!("SanctuaryPlayer: Android audio focus lost transiently; pausing");
+                    let was_active = state.pause_for_platform_interruption();
+                    self.resume_after_transient_loss |= was_active;
+                    self.has_focus = false;
+                }
+                AndroidMediaEvent::AudioFocusChange(other) => {
+                    log::warn!("SanctuaryPlayer: unrecognised Android audio focus change {other}");
+                }
+                AndroidMediaEvent::BecomingNoisy => {
+                    log::info!("SanctuaryPlayer: Android audio route becoming noisy; pausing");
+                    state.pause_for_platform_interruption();
+                    self.abandon(app);
+                }
             }
         }
     }
@@ -1166,8 +1420,23 @@ mod android {
         state: &mut AppState,
         commands: Vec<AppCommand>,
         fullscreen: &mut bool,
+        media_focus: &mut AndroidMediaFocus,
     ) {
         for command in commands {
+            let starts_playback = match &command {
+                AppCommand::Play => matches!(
+                    state.playback_state(),
+                    PlaybackState::Paused | PlaybackState::Seeking
+                ),
+                AppCommand::TogglePlayback => {
+                    matches!(state.playback_state(), PlaybackState::Paused)
+                }
+                _ => false,
+            };
+            if starts_playback && !media_focus.ensure_focus(app) {
+                continue;
+            }
+
             if matches!(state.apply(command), Some(AppEffect::ToggleFullscreen)) {
                 *fullscreen = !*fullscreen;
                 match set_android_fullscreen(app, *fullscreen) {
@@ -1178,6 +1447,7 @@ mod android {
                     ),
                 }
             }
+            media_focus.sync_playback_state(app, state);
         }
     }
 
@@ -1227,6 +1497,15 @@ mod android {
         // before choosing MediaCodec direct vs readback. Defer restored-session
         // playback until InitWindow has established that renderer contract.
         let mut startup_source = state.take_startup_session_source();
+        let (media_event_tx, media_event_rx): (
+            Sender<AndroidMediaEvent>,
+            Receiver<AndroidMediaEvent>,
+        ) = mpsc::channel();
+        install_media_event_bridge(media_event_tx, &android_app);
+        if let Err(error) = android_initialise_media_integration(&android_app) {
+            log::error!("SanctuaryPlayer: could not initialise Android media integration: {error}");
+        }
+        let mut media_focus = AndroidMediaFocus::default();
 
         let started = Instant::now();
         let mut last_update = started;
@@ -1245,6 +1524,13 @@ mod android {
                 PollEvent::Main(MainEvent::Destroy) => {
                     log::info!("SanctuaryPlayer: Android GameActivity destroyed");
                     state.flush_persistence_for_shutdown(SHUTDOWN_POSITION_FLUSH_BUDGET);
+                    media_focus.abandon(&android_app);
+                    if let Err(error) = android_shutdown_media_integration(&android_app) {
+                        log::error!(
+                            "SanctuaryPlayer: could not shut down Android media integration: {error}"
+                        );
+                    }
+                    uninstall_media_event_bridge();
                     oxideav_mediacodec::set_direct_presentation_available(false);
                     gpu = None;
                     running = false;
@@ -1302,6 +1588,7 @@ mod android {
                 }
                 PollEvent::Main(MainEvent::Pause | MainEvent::Stop) => {
                     state.pause_for_background();
+                    media_focus.abandon(&android_app);
                 }
                 PollEvent::Main(MainEvent::SaveState { .. }) => {
                     state.flush_persistence_for_background();
@@ -1315,8 +1602,13 @@ mod android {
                     repaint.request(Duration::ZERO);
                 }
                 PollEvent::Wake => {
+                    let mut media_event_handled = false;
+                    while let Ok(event) = media_event_rx.try_recv() {
+                        media_focus.handle_event(&android_app, &mut state, event);
+                        media_event_handled = true;
+                    }
                     let playback_wakes = state.take_playback_wakes();
-                    if !playback_wakes.is_empty() {
+                    if media_event_handled || !playback_wakes.is_empty() {
                         repaint.request(Duration::ZERO);
                     }
                 }
@@ -1351,6 +1643,7 @@ mod android {
                 && let Some(size) = gpu.dimensions()
             {
                 state.update(now.saturating_duration_since(last_update));
+                media_focus.sync_playback_state(&android_app, &mut state);
                 last_update = now;
                 let user_tapped = std::mem::take(&mut input.primary_pointer_pressed);
                 let raw_input = make_raw_input(
@@ -1372,7 +1665,13 @@ mod android {
                             user_tapped,
                         );
                         if !commands.is_empty() {
-                            apply_commands(&android_app, &mut state, commands, &mut fullscreen);
+                            apply_commands(
+                                &android_app,
+                                &mut state,
+                                commands,
+                                &mut fullscreen,
+                                &mut media_focus,
+                            );
                             repaint.request(Duration::ZERO);
                         }
                         if let Some(delay) = output

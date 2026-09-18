@@ -1837,6 +1837,13 @@ impl PlaybackBackend for OxidePlayback {
     }
 
     fn play(&mut self) {
+        if matches!(self.state, PlaybackState::Seeking) {
+            if let Some(pending) = self.seek_pending.as_mut() {
+                pending.resume_playing = true;
+            }
+            log::info!("SanctuaryPlayer: playback seek will resume after completion");
+            return;
+        }
         if !matches!(self.state, PlaybackState::Paused) {
             return;
         }
@@ -2742,6 +2749,32 @@ mod tests {
                 .as_ref()
                 .map(|pending| pending.resume_playing),
             Some(false)
+        );
+    }
+
+    #[test]
+    fn playing_during_seek_restores_resume_playing_intent() {
+        let (mut playback, _tx) = clock_test_playback();
+        playback.state = PlaybackState::Seeking;
+        playback.seek_pending = Some(PendingSeek {
+            generation: 1,
+            requested: Duration::from_secs(10),
+            prior_position: Duration::from_secs(5),
+            resume_playing: false,
+            barriers_remaining: 1,
+            landing: None,
+            rejected: false,
+        });
+
+        playback.play();
+
+        assert_eq!(playback.state, PlaybackState::Seeking);
+        assert_eq!(
+            playback
+                .seek_pending
+                .as_ref()
+                .map(|pending| pending.resume_playing),
+            Some(true)
         );
     }
 

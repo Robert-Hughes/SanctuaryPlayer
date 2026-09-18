@@ -982,16 +982,27 @@ impl AppState {
         self.force_remote_position_save();
     }
 
-    pub fn pause_for_background(&mut self) {
-        if matches!(
+    pub fn pause_for_platform_interruption(&mut self) -> bool {
+        let was_active = matches!(
             self.playback.state(),
             PlaybackState::Playing | PlaybackState::Seeking
-        ) {
+        );
+        if was_active {
             self.playback.pause();
             self.refresh_safe_session();
             self.persist_session(true);
             self.schedule_paused_position_save();
         }
+        was_active
+    }
+
+    pub fn resume_after_platform_interruption(&mut self) {
+        self.cancel_paused_position_save();
+        self.playback.play();
+    }
+
+    pub fn pause_for_background(&mut self) {
+        self.pause_for_platform_interruption();
         self.flush_persistence_for_background();
     }
 
@@ -1826,6 +1837,19 @@ mod tests {
 
         state.update(Duration::from_secs(5));
         assert_eq!(state.playback_state(), &PlaybackState::Paused);
+    }
+
+    #[test]
+    fn platform_interruption_can_resume_only_after_active_playback() {
+        let mut state = loaded_state();
+        assert!(!state.pause_for_platform_interruption());
+
+        state.apply(AppCommand::Play);
+        assert!(state.pause_for_platform_interruption());
+        assert_eq!(state.playback_state(), &PlaybackState::Paused);
+
+        state.resume_after_platform_interruption();
+        assert_eq!(state.playback_state(), &PlaybackState::Playing);
     }
 
     #[test]
