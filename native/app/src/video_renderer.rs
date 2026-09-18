@@ -21,6 +21,48 @@ const VDPAU_BRIDGE_SLOTS: usize = 4;
 const MEDIACODEC_BRIDGE_SLOTS: usize = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VideoTargetRect {
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+}
+
+impl VideoTargetRect {
+    pub fn full(surface_width: u32, surface_height: u32) -> Self {
+        Self {
+            x: 0,
+            y: 0,
+            width: surface_width.max(1),
+            height: surface_height.max(1),
+        }
+    }
+
+    pub fn from_insets(
+        surface_width: u32,
+        surface_height: u32,
+        left: u32,
+        top: u32,
+        right: u32,
+        bottom: u32,
+    ) -> Self {
+        let surface_width = surface_width.max(1);
+        let surface_height = surface_height.max(1);
+        let x = left.min(surface_width - 1);
+        let y = top.min(surface_height - 1);
+        let right = right.min(surface_width - x - 1);
+        let bottom = bottom.min(surface_height - y - 1);
+
+        Self {
+            x,
+            y,
+            width: surface_width - x - right,
+            height: surface_height - y - bottom,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Presentation {
     None,
     Yuv,
@@ -814,6 +856,25 @@ impl VideoRenderer {
         surface_width: u32,
         surface_height: u32,
     ) {
+        self.draw_in_rect(
+            queue,
+            encoder,
+            target,
+            surface_width,
+            surface_height,
+            VideoTargetRect::full(surface_width, surface_height),
+        );
+    }
+
+    pub fn draw_in_rect(
+        &mut self,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        target: &wgpu::TextureView,
+        surface_width: u32,
+        surface_height: u32,
+        target_rect: VideoTargetRect,
+    ) {
         let Some((content_width, content_height)) = self.dims else {
             clear_black(encoder, target);
             return;
@@ -830,6 +891,7 @@ impl VideoRenderer {
             content_height,
             surface_width,
             surface_height,
+            target_rect,
         );
 
         #[cfg(target_os = "android")]
@@ -1007,22 +1069,46 @@ fn write_aspect_uniform(
     content_height: u32,
     surface_width: u32,
     surface_height: u32,
+    target_rect: VideoTargetRect,
 ) {
-    let surface_aspect = surface_width as f32 / surface_height.max(1) as f32;
+    let uniform = aspect_uniform(
+        content_width,
+        content_height,
+        surface_width,
+        surface_height,
+        target_rect,
+    );
+    queue.write_buffer(uniform_buffer, 0, bytemuck::cast_slice(&uniform));
+}
+
+fn aspect_uniform(
+    content_width: u32,
+    content_height: u32,
+    surface_width: u32,
+    surface_height: u32,
+    target_rect: VideoTargetRect,
+) -> [f32; 4] {
+    let surface_width = surface_width.max(1) as f32;
+    let surface_height = surface_height.max(1) as f32;
+    let target_width = target_rect.width.max(1) as f32;
+    let target_height = target_rect.height.max(1) as f32;
     let content_aspect = content_width as f32 / content_height.max(1) as f32;
-    let (sx, sy, ox, oy) = if content_aspect > surface_aspect {
-        let height_fraction = surface_aspect / content_aspect;
-        (
-            1.0,
-            1.0 / height_fraction,
-            0.0,
-            (1.0 - height_fraction) * 0.5,
-        )
+    let target_aspect = target_width / target_height;
+
+    let (video_width, video_height) = if content_aspect > target_aspect {
+        (target_width, target_width / content_aspect)
     } else {
-        let width_fraction = content_aspect / surface_aspect;
-        (1.0 / width_fraction, 1.0, (1.0 - width_fraction) * 0.5, 0.0)
+        (target_height * content_aspect, target_height)
     };
-    queue.write_buffer(uniform_buffer, 0, bytemuck::cast_slice(&[sx, sy, ox, oy]));
+    let video_x = target_rect.x as f32 + (target_width - video_width) * 0.5;
+    let video_y = target_rect.y as f32 + (target_height - video_height) * 0.5;
+
+    [
+        surface_width / video_width.max(f32::EPSILON),
+        surface_height / video_height.max(f32::EPSILON),
+        video_x / surface_width,
+        video_y / surface_height,
+    ]
 }
 
 fn texture_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
@@ -1238,6 +1324,33 @@ mod tests {
         let view = video_frame_yuv420p_view(&frame, 4, 2).unwrap();
         assert_eq!(view.y.as_ptr(), y_ptr);
         assert_eq!(view.y_stride, 4);
+    }
+
+    fn assert_uniform_close(actual: [f32; 4], expected: [f32; 4]) {
+        for (actual, expected) in actual.into_iter().zip(expected) {
+            assert!((actual - expected).abs() < 1.0e-5, "{actual} != {expected}");
+        }
+    }
+
+    #[test]
+    fn full_surface_aspect_fit_matches_existing_centre() {
+        let uniform = aspect_uniform(1920, 1080, 2400, 1080, VideoTargetRect::full(2400, 1080));
+        assert_uniform_close(uniform, [1.25, 1.0, 0.1, 0.0]);
+    }
+
+    #[test]
+    fn aspect_fit_centres_video_inside_asymmetric_safe_area() {
+        let uniform = aspect_uniform(
+            1920,
+            1080,
+            2400,
+            1080,
+            VideoTargetRect::from_insets(2400, 1080, 100, 0, 300, 0),
+        );
+
+        assert_uniform_close(uniform, [1.25, 1.0, 140.0 / 2400.0, 0.0]);
+        let video_centre_x = uniform[2] + 0.5 / uniform[0];
+        assert!((video_centre_x - 1100.0 / 2400.0).abs() < 1.0e-5);
     }
 
     fn assert_rgb_close(actual: [f32; 3], expected: [f32; 3]) {

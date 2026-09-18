@@ -26,7 +26,7 @@ mod android {
     };
     use sanctuary_player_app::model::{AppCommand, PlaybackState};
     use sanctuary_player_app::playback::{DecodeMode, PlaybackWake};
-    use sanctuary_player_app::video_renderer::VideoRenderer;
+    use sanctuary_player_app::video_renderer::{VideoRenderer, VideoTargetRect};
 
     const APP_NAME: &str = "Sanctuary Player";
     const ANIMATION_FRAME_INTERVAL: Duration = Duration::from_millis(16);
@@ -763,6 +763,7 @@ mod android {
             ctx: &egui::Context,
             state: &mut AppState,
             raw_input: RawInput,
+            video_target_rect: VideoTargetRect,
         ) -> Result<Option<(egui::FullOutput, Vec<AppCommand>)>, String> {
             let Some(surface) = self.surface.as_ref() else {
                 return Ok(None);
@@ -807,12 +808,13 @@ mod android {
                     color,
                 )?;
             }
-            self.video_renderer.draw(
+            self.video_renderer.draw_in_rect(
                 &self.queue,
                 &mut encoder,
                 &target,
                 config.width,
                 config.height,
+                video_target_rect,
             );
 
             let mut commands = Vec::new();
@@ -1057,7 +1059,7 @@ mod android {
         size_in_pixels: [u32; 2],
         started: Instant,
         fullscreen: bool,
-    ) -> RawInput {
+    ) -> (RawInput, VideoTargetRect) {
         let native_ppp = native_pixels_per_point(app);
         let pixels_per_point = native_ppp * ctx.zoom_factor();
         let screen_rect = egui::Rect::from_min_size(
@@ -1067,30 +1069,41 @@ mod android {
                 size_in_pixels[1] as f32 / pixels_per_point,
             ),
         );
-        let safe_area_insets = android_system_window_insets(app, fullscreen)
+        let system_insets = android_system_window_insets(app, fullscreen)
             .ok()
             .flatten()
-            .map(|insets| {
-                egui::SafeAreaInsets(egui::epaint::MarginF32 {
-                    left: insets.left.max(0) as f32 / pixels_per_point,
-                    top: insets.top.max(0) as f32 / pixels_per_point,
-                    right: insets.right.max(0) as f32 / pixels_per_point,
-                    bottom: insets.bottom.max(0) as f32 / pixels_per_point,
-                })
-            })
             .or_else(|| {
                 let content = app.content_rect();
                 (content.right > content.left && content.bottom > content.top).then(|| {
-                    egui::SafeAreaInsets(egui::epaint::MarginF32 {
-                        left: content.left.max(0) as f32 / pixels_per_point,
-                        top: content.top.max(0) as f32 / pixels_per_point,
-                        right: (size_in_pixels[0] as i32 - content.right).max(0) as f32
-                            / pixels_per_point,
-                        bottom: (size_in_pixels[1] as i32 - content.bottom).max(0) as f32
-                            / pixels_per_point,
-                    })
+                    AndroidSystemInsets {
+                        left: content.left.max(0),
+                        top: content.top.max(0),
+                        right: (size_in_pixels[0] as i32 - content.right).max(0),
+                        bottom: (size_in_pixels[1] as i32 - content.bottom).max(0),
+                    }
                 })
             });
+        let video_target_rect = system_insets.map_or_else(
+            || VideoTargetRect::full(size_in_pixels[0], size_in_pixels[1]),
+            |insets| {
+                VideoTargetRect::from_insets(
+                    size_in_pixels[0],
+                    size_in_pixels[1],
+                    insets.left.max(0) as u32,
+                    insets.top.max(0) as u32,
+                    insets.right.max(0) as u32,
+                    insets.bottom.max(0) as u32,
+                )
+            },
+        );
+        let safe_area_insets = system_insets.map(|insets| {
+            egui::SafeAreaInsets(egui::epaint::MarginF32 {
+                left: insets.left.max(0) as f32 / pixels_per_point,
+                top: insets.top.max(0) as f32 / pixels_per_point,
+                right: insets.right.max(0) as f32 / pixels_per_point,
+                bottom: insets.bottom.max(0) as f32 / pixels_per_point,
+            })
+        });
 
         let mut raw = RawInput {
             screen_rect: Some(screen_rect),
@@ -1107,7 +1120,7 @@ mod android {
             viewport.inner_rect = Some(screen_rect);
             viewport.focused = Some(focused);
         }
-        raw
+        (raw, video_target_rect)
     }
 
     fn modifiers(meta: android_activity::input::MetaState) -> Modifiers {
@@ -1729,7 +1742,7 @@ mod android {
                 screen_on.sync(&android_app, &state);
                 last_update = now;
                 let user_tapped = std::mem::take(&mut input.primary_pointer_pressed);
-                let raw_input = make_raw_input(
+                let (raw_input, video_target_rect) = make_raw_input(
                     &android_app,
                     &ctx,
                     &mut input,
@@ -1738,7 +1751,7 @@ mod android {
                     started,
                     fullscreen,
                 );
-                match gpu.paint(&android_app, &ctx, &mut state, raw_input) {
+                match gpu.paint(&android_app, &ctx, &mut state, raw_input, video_target_rect) {
                     Ok(Some((output, commands))) => {
                         handle_platform_output(
                             &android_app,
