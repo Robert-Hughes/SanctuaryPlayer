@@ -367,72 +367,123 @@ fn render_saved_positions_table(
         "Video",
         "Release Date",
     ];
-    let cell_margin = ((0.25 * vmin).max(1.0)).round() as i8;
-    let table_background = ui.painter().add(egui::Shape::Noop);
+    let heading_galleys: Vec<_> = headings
+        .iter()
+        .map(|heading| {
+            egui::WidgetText::from(
+                egui::RichText::new(*heading)
+                    .size(font_size)
+                    .strong()
+                    .color(egui::Color32::BLACK),
+            )
+            .into_galley(
+                ui,
+                Some(egui::TextWrapMode::Extend),
+                f32::INFINITY,
+                egui::TextStyle::Body,
+            )
+        })
+        .collect();
+    let row_galleys: Vec<Vec<_>> = rows
+        .iter()
+        .map(|cells| {
+            cells
+                .iter()
+                .map(|cell| {
+                    egui::WidgetText::from(
+                        egui::RichText::new(cell)
+                            .size(font_size)
+                            .color(egui::Color32::BLACK),
+                    )
+                    .into_galley(
+                        ui,
+                        Some(egui::TextWrapMode::Extend),
+                        f32::INFINITY,
+                        egui::TextStyle::Body,
+                    )
+                })
+                .collect()
+        })
+        .collect();
+
+    let cell_padding = (0.25 * vmin).max(1.0);
+    let grid_gap = 1.0;
+    let mut column_widths = vec![0.0_f32; headings.len()];
+    let mut text_height = 0.0_f32;
+    for (column, galley) in heading_galleys.iter().enumerate() {
+        column_widths[column] = column_widths[column].max(galley.size().x);
+        text_height = text_height.max(galley.size().y);
+    }
+    for row in &row_galleys {
+        for (column, galley) in row.iter().enumerate() {
+            column_widths[column] = column_widths[column].max(galley.size().x);
+            text_height = text_height.max(galley.size().y);
+        }
+    }
+    for width in &mut column_widths {
+        *width += 2.0 * cell_padding;
+    }
+
+    let row_height = text_height + 2.0 * cell_padding;
+    let table_width =
+        column_widths.iter().sum::<f32>() + grid_gap * column_widths.len().saturating_sub(1) as f32;
+    let table_rows = rows.len() + 1;
+    let table_height =
+        row_height * table_rows as f32 + grid_gap * table_rows.saturating_sub(1) as f32;
+    let (table_rect, _) =
+        ui.allocate_exact_size(egui::vec2(table_width, table_height), egui::Sense::hover());
+    let painter = ui.painter().clone();
+    painter.rect_filled(table_rect, 0.0, theme::LIGHT_PURPLE);
+
+    let paint_row = |painter: &egui::Painter,
+                     y: f32,
+                     galleys: &[std::sync::Arc<egui::Galley>],
+                     fill: egui::Color32| {
+        let mut x = table_rect.left();
+        for (column, galley) in galleys.iter().enumerate() {
+            let cell_rect = egui::Rect::from_min_size(
+                egui::pos2(x, y),
+                egui::vec2(column_widths[column], row_height),
+            );
+            painter.rect_filled(cell_rect, 0.0, fill);
+            painter.galley(
+                egui::pos2(
+                    cell_rect.left() + cell_padding,
+                    cell_rect.center().y - galley.size().y * 0.5,
+                ),
+                galley.clone(),
+                egui::Color32::BLACK,
+            );
+            x += column_widths[column] + grid_gap;
+        }
+    };
+
+    paint_row(&painter, table_rect.top(), &heading_galleys, theme::WHITE);
+
     let mut clicked = None;
+    for (index, galleys) in row_galleys.iter().enumerate() {
+        let y = table_rect.top() + (index + 1) as f32 * (row_height + grid_gap);
+        let row_rect = egui::Rect::from_min_size(
+            egui::pos2(table_rect.left(), y),
+            egui::vec2(table_width, row_height),
+        );
+        let response = ui.interact(
+            row_rect,
+            ui.id().with(("saved-position-row", index)),
+            egui::Sense::click(),
+        );
+        let fill = if !cfg!(target_os = "android") && response.hovered() {
+            theme::LIGHT_PURPLE
+        } else if highlight == Some(index) {
+            egui::Color32::from_rgb(247, 161, 218)
+        } else {
+            theme::WHITE
+        };
+        paint_row(&painter, y, galleys, fill);
+        if response.clicked() {
+            clicked = Some(index);
+        }
+    }
 
-    let grid = egui::Grid::new("saved-positions-grid")
-        .spacing(egui::vec2(1.0, 1.0))
-        .show(ui, |ui| {
-            for heading in headings {
-                egui::Frame::new()
-                    .fill(theme::WHITE)
-                    .inner_margin(egui::Margin::same(cell_margin))
-                    .show(ui, |ui| {
-                        ui.label(
-                            egui::RichText::new(heading)
-                                .size(font_size)
-                                .strong()
-                                .color(egui::Color32::BLACK),
-                        );
-                    });
-            }
-            ui.end_row();
-
-            for (index, cells) in rows.iter().enumerate() {
-                let mut backgrounds = Vec::with_capacity(cells.len());
-                let mut row_rect = egui::Rect::NOTHING;
-                for cell in cells {
-                    let background = ui.painter().add(egui::Shape::Noop);
-                    let cell = egui::Frame::new()
-                        .inner_margin(egui::Margin::same(cell_margin))
-                        .show(ui, |ui| {
-                            ui.label(
-                                egui::RichText::new(cell)
-                                    .size(font_size)
-                                    .color(egui::Color32::BLACK),
-                            );
-                        });
-                    row_rect = row_rect.union(cell.response.rect);
-                    backgrounds.push((background, cell.response.rect));
-                }
-                ui.end_row();
-
-                let response = ui.interact(
-                    row_rect,
-                    ui.id().with(("saved-position-row", index)),
-                    egui::Sense::click(),
-                );
-                let fill = if !cfg!(target_os = "android") && response.hovered() {
-                    theme::LIGHT_PURPLE
-                } else if highlight == Some(index) {
-                    egui::Color32::from_rgb(247, 161, 218)
-                } else {
-                    theme::WHITE
-                };
-                for (background, rect) in backgrounds {
-                    ui.painter()
-                        .set(background, egui::Shape::rect_filled(rect, 0.0, fill));
-                }
-                if response.clicked() {
-                    clicked = Some(index);
-                }
-            }
-        });
-
-    ui.painter().set(
-        table_background,
-        egui::Shape::rect_filled(grid.response.rect, 0.0, theme::LIGHT_PURPLE),
-    );
     clicked
 }
