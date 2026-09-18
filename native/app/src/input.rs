@@ -4,6 +4,9 @@ use crate::app::AppState;
 use crate::model::AppCommand;
 
 pub(crate) fn command_for_key(code: KeyCode, state: &AppState) -> Option<AppCommand> {
+    if state.ui.dialog.is_some() {
+        return None;
+    }
     match code {
         KeyCode::Space => Some(AppCommand::TogglePlayback),
         KeyCode::ArrowLeft => Some(AppCommand::SeekRelative(-5)),
@@ -30,6 +33,7 @@ mod tests {
         state.apply(AppCommand::OpenVideo(
             VideoSource::parse("2386400830").unwrap(),
         ));
+        state.close_dialog();
         state
     }
 
@@ -61,5 +65,22 @@ mod tests {
             Some(AppCommand::ToggleFullscreen)
         );
         assert_eq!(command_for_key(KeyCode::KeyA, &state), None);
+    }
+
+    #[test]
+    fn keyboard_shortcuts_are_blocked_while_dialog_is_open() {
+        let mut state = state();
+        state.open_seek_dialog();
+
+        for key in [
+            KeyCode::Space,
+            KeyCode::ArrowLeft,
+            KeyCode::ArrowRight,
+            KeyCode::ArrowUp,
+            KeyCode::ArrowDown,
+            KeyCode::KeyF,
+        ] {
+            assert_eq!(command_for_key(key, &state), None);
+        }
     }
 }
