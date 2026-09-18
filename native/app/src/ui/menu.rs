@@ -71,14 +71,9 @@ pub fn render(
 
     let screen = ctx.content_rect();
     let vmin = theme::vmin(ui);
-    let width = (72.0 * vmin)
-        .min(screen.width() - 2.0 * vmin)
-        .max(30.0 * vmin);
+    let width = (72.0 * vmin).min(screen.width()).max(30.0 * vmin);
     let top = screen.top() + 12.0 * vmin;
-    let pos = egui::pos2(
-        screen.right() - width - vmin,
-        top - (1.0 - openness) * 2.0 * vmin,
-    );
+    let pos = egui::pos2(screen.right() - width, top - (1.0 - openness) * 2.0 * vmin);
     let font_size = (2.0 * vmin).max(16.0);
 
     let area = egui::Area::new(egui::Id::new("player-menu"))
@@ -89,70 +84,68 @@ pub fn render(
                 ui.disable();
             }
             ui.style_mut().override_font_id = Some(egui::FontId::proportional(font_size));
-            ui.spacing_mut().item_spacing.y = 0.5 * vmin;
+            ui.spacing_mut().item_spacing.y = 0.0;
             let frame = egui::Frame::new()
                 .fill(theme::WHITE)
                 .stroke(egui::Stroke::new((0.1 * vmin).max(1.0), theme::PURPLE))
                 .corner_radius(vmin.round() as u8)
-                .inner_margin(egui::Margin::same(vmin.round() as i8));
+                .inner_margin(egui::Margin::same(0));
             frame.show(ui, |ui| {
-                ui.set_width(width - 2.0 * vmin);
-                ui.set_max_height((screen.bottom() - top - vmin).max(20.0 * vmin));
+                ui.set_width(width);
+                ui.set_max_height((screen.bottom() - top).max(20.0 * vmin));
                 egui::ScrollArea::vertical().show(ui, |ui| {
-                    if ui
-                        .add(theme::rounded_button(
-                            egui::RichText::new("Change Video…").color(theme::PURPLE),
-                            vmin,
-                        ))
-                        .clicked()
-                    {
+                    if menu_action_row(ui, "Change Video…", vmin, font_size).clicked() {
                         state.open_change_video_dialog();
                         state.close_menu();
                     }
 
                     if state.has_video() {
-                        ui.separator();
-                        let qualities = state.available_qualities().to_vec();
-                        let current = state.quality().map(|quality| quality.id.clone());
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                egui::RichText::new("Quality:")
-                                    .strong()
-                                    .color(theme::PURPLE),
-                            );
-                            let mut selected = current.clone().unwrap_or_default();
-                            egui::ComboBox::from_id_salt("quality-select")
-                                .selected_text(
-                                    state
-                                        .quality()
-                                        .map(|quality| quality.label.as_str())
-                                        .unwrap_or("Unknown"),
-                                )
-                                .show_ui(ui, |ui| {
-                                    for quality in &qualities {
-                                        if ui
-                                            .selectable_value(
-                                                &mut selected,
-                                                quality.id.clone(),
-                                                &quality.label,
-                                            )
-                                            .changed()
-                                        {
-                                            commands
-                                                .push(AppCommand::SetQuality(quality.id.clone()));
+                        menu_content_row(ui, vmin, |ui| {
+                            let qualities = state.available_qualities().to_vec();
+                            let current = state.quality().map(|quality| quality.id.clone());
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label(
+                                    egui::RichText::new("Quality:")
+                                        .strong()
+                                        .color(theme::PURPLE),
+                                );
+                                let mut selected = current.clone().unwrap_or_default();
+                                egui::ComboBox::from_id_salt("quality-select")
+                                    .selected_text(
+                                        state
+                                            .quality()
+                                            .map(|quality| quality.label.as_str())
+                                            .unwrap_or("Unknown"),
+                                    )
+                                    .show_ui(ui, |ui| {
+                                        for quality in &qualities {
+                                            if ui
+                                                .selectable_value(
+                                                    &mut selected,
+                                                    quality.id.clone(),
+                                                    &quality.label,
+                                                )
+                                                .changed()
+                                            {
+                                                commands.push(AppCommand::SetQuality(
+                                                    quality.id.clone(),
+                                                ));
+                                            }
                                         }
-                                    }
-                                });
-                            if ui.small_button("Set favourites…").clicked() {
-                                state.open_favourites_dialog();
-                                state.close_menu();
-                            }
+                                    });
+                                if inline_menu_action(ui, "Set favourites…", font_size * 0.75)
+                                    .clicked()
+                                {
+                                    state.open_favourites_dialog();
+                                    state.close_menu();
+                                }
+                            });
                         });
                     }
 
-                    ui.separator();
-                    render_saved_positions(ui, state, commands, vmin);
-                    ui.separator();
+                    menu_content_row(ui, vmin, |ui| {
+                        render_saved_positions(ui, state, commands, vmin, font_size);
+                    });
 
                     if state.signed_in() {
                         let label = format!(
@@ -160,23 +153,11 @@ pub fn render(
                             state.user_id().unwrap_or("?"),
                             state.device_id().unwrap_or("?")
                         );
-                        if ui
-                            .add(theme::rounded_button(
-                                egui::RichText::new(label).color(theme::PURPLE),
-                                vmin,
-                            ))
-                            .clicked()
-                        {
+                        if menu_action_row(ui, &label, vmin, font_size).clicked() {
                             state.open_sign_out_dialog();
                             state.close_menu();
                         }
-                    } else if ui
-                        .add(theme::rounded_button(
-                            egui::RichText::new("Sign in…").color(theme::PURPLE),
-                            vmin,
-                        ))
-                        .clicked()
-                    {
+                    } else if menu_action_row(ui, "Sign in…", vmin, font_size).clicked() {
                         state.open_sign_in_dialog();
                         state.close_menu();
                     }
@@ -186,17 +167,105 @@ pub fn render(
     Some(area.response.rect)
 }
 
+fn menu_row_stroke(vmin: f32) -> egui::Stroke {
+    egui::Stroke::new((0.1 * vmin).max(1.0), theme::PURPLE)
+}
+
+fn paint_menu_row_borders(ui: &egui::Ui, rect: egui::Rect, vmin: f32) {
+    let stroke = menu_row_stroke(vmin);
+    ui.painter().hline(rect.x_range(), rect.top(), stroke);
+    ui.painter().hline(rect.x_range(), rect.bottom(), stroke);
+}
+
+fn menu_action_row(ui: &mut egui::Ui, label: &str, vmin: f32, font_size: f32) -> egui::Response {
+    let text = egui::WidgetText::from(
+        egui::RichText::new(label)
+            .size(font_size)
+            .strong()
+            .color(theme::PURPLE),
+    );
+    let galley = text.into_galley(
+        ui,
+        Some(egui::TextWrapMode::Extend),
+        f32::INFINITY,
+        egui::TextStyle::Body,
+    );
+    let horizontal_padding = vmin;
+    let vertical_padding = 0.5 * vmin;
+    let desired_size = egui::vec2(
+        ui.available_width(),
+        galley.size().y + 2.0 * vertical_padding,
+    );
+    let (rect, response) = ui.allocate_exact_size(desired_size, egui::Sense::click());
+    let hovered = !cfg!(target_os = "android") && response.hovered();
+    ui.painter().rect_filled(
+        rect,
+        0.0,
+        if hovered {
+            theme::LIGHT_PURPLE
+        } else {
+            theme::WHITE
+        },
+    );
+    paint_menu_row_borders(ui, rect, vmin);
+    ui.painter().galley(
+        egui::pos2(
+            rect.left() + horizontal_padding,
+            rect.center().y - galley.size().y * 0.5,
+        ),
+        galley,
+        theme::PURPLE,
+    );
+    response
+}
+
+fn menu_content_row<R>(
+    ui: &mut egui::Ui,
+    vmin: f32,
+    add_contents: impl FnOnce(&mut egui::Ui) -> R,
+) -> egui::InnerResponse<R> {
+    let horizontal_margin = vmin.round() as i8;
+    let available_width = ui.available_width();
+    let row = egui::Frame::new()
+        .fill(theme::WHITE)
+        .inner_margin(egui::Margin::symmetric(
+            horizontal_margin,
+            (0.5 * vmin).round() as i8,
+        ))
+        .show(ui, |ui| {
+            ui.set_min_width((available_width - 2.0 * f32::from(horizontal_margin)).max(0.0));
+            add_contents(ui)
+        });
+    paint_menu_row_borders(ui, row.response.rect, vmin);
+    row
+}
+
+fn inline_menu_action(ui: &mut egui::Ui, label: &str, font_size: f32) -> egui::Response {
+    let background = ui.painter().add(egui::Shape::Noop);
+    let response = ui.add(
+        egui::Label::new(
+            egui::RichText::new(label)
+                .size(font_size)
+                .color(theme::PURPLE),
+        )
+        .sense(egui::Sense::click()),
+    );
+    if !cfg!(target_os = "android") && response.hovered() {
+        ui.painter().set(
+            background,
+            egui::Shape::rect_filled(response.rect, 0.0, theme::LIGHT_PURPLE),
+        );
+    }
+    response
+}
+
 fn render_saved_positions(
     ui: &mut egui::Ui,
     state: &mut AppState,
     commands: &mut Vec<AppCommand>,
     vmin: f32,
+    font_size: f32,
 ) {
-    ui.label(
-        egui::RichText::new("Saved Positions")
-            .strong()
-            .color(theme::PURPLE),
-    );
     if !state.signed_in() {
         ui.label("Sign in to show synced positions.");
         return;
@@ -225,6 +294,7 @@ fn render_saved_positions(
         }
         return;
     }
+
     let current_id = state.source().map(|source| source.id.clone());
     let current_position = state.position();
     let highlight = positions
@@ -234,78 +304,186 @@ fn render_saved_positions(
         .max_by_key(|(_, entry)| entry.position)
         .map(|(index, _)| index);
 
-    egui::ScrollArea::horizontal().show(ui, |ui| {
-        egui::Grid::new("saved-positions-grid")
-            .spacing(egui::vec2(1.5 * vmin, 0.5 * vmin))
-            .show(ui, |ui| {
-                for heading in [
-                    "Last Watched",
-                    "Device",
-                    "Position",
-                    "Video",
-                    "Release Date",
-                ] {
-                    ui.label(
-                        egui::RichText::new(heading)
-                            .strong()
-                            .color(egui::Color32::BLACK),
-                    );
-                }
-                ui.end_row();
+    let rows: Vec<Vec<String>> = positions
+        .iter()
+        .map(|entry| {
+            let is_current = current_id.as_deref() == Some(entry.source.id.as_str());
+            let mut position_text = format_colon_time(entry.position);
+            if is_current {
+                position_text.push_str(" (");
+                position_text.push_str(&format_relative_position(entry.position, current_position));
+                position_text.push(')');
+            }
+            let title = entry
+                .title
+                .as_deref()
+                .map(sanitise_title)
+                .unwrap_or_else(|| entry.source.id.clone());
+            let release = entry
+                .release_age
+                .map(format_age)
+                .unwrap_or_else(|| "?".into());
+            vec![
+                format_age(entry.modified_age),
+                entry.device_id.clone(),
+                position_text,
+                title,
+                release,
+            ]
+        })
+        .collect();
 
-                for (index, entry) in positions.iter().enumerate() {
-                    let is_current = current_id.as_deref() == Some(entry.source.id.as_str());
-                    let mut position_text = format_colon_time(entry.position);
-                    if is_current {
-                        position_text.push_str(" (");
-                        position_text
-                            .push_str(&format_relative_position(entry.position, current_position));
-                        position_text.push(')');
-                    }
-                    let title = entry
-                        .title
-                        .as_deref()
-                        .map(sanitise_title)
-                        .unwrap_or_else(|| entry.source.id.clone());
-                    let release = entry
-                        .release_age
-                        .map(format_age)
-                        .unwrap_or_else(|| "?".into());
-                    let cells = [
-                        format_age(entry.modified_age),
-                        entry.device_id.clone(),
-                        position_text,
-                        title,
-                        release,
-                    ];
-                    let fill = if highlight == Some(index) {
-                        egui::Color32::from_rgb(247, 161, 218)
-                    } else {
-                        theme::WHITE
-                    };
-                    let mut clicked = false;
-                    for cell in cells {
-                        let response = ui.add(
-                            egui::Button::new(
-                                egui::RichText::new(cell).color(egui::Color32::BLACK),
-                            )
-                            .fill(fill)
-                            .frame(true),
-                        );
-                        clicked |= response.clicked();
-                    }
-                    ui.end_row();
-                    if clicked {
-                        if is_current {
-                            commands.push(AppCommand::SeekAbsolute(entry.position));
-                        } else {
-                            let mut source = entry.source.clone();
-                            source.start_time = Some(entry.position);
-                            commands.push(AppCommand::OpenVideo(source));
-                        }
-                        state.close_menu();
-                    }
-                }
-            });
-    });
+    let clicked = egui::ScrollArea::horizontal()
+        .show(ui, |ui| {
+            render_saved_positions_table(ui, &rows, highlight, vmin, font_size)
+        })
+        .inner;
+
+    if let Some(index) = clicked {
+        let entry = &positions[index];
+        let is_current = current_id.as_deref() == Some(entry.source.id.as_str());
+        if is_current {
+            commands.push(AppCommand::SeekAbsolute(entry.position));
+        } else {
+            let mut source = entry.source.clone();
+            source.start_time = Some(entry.position);
+            commands.push(AppCommand::OpenVideo(source));
+        }
+        state.close_menu();
+    }
+}
+
+fn render_saved_positions_table(
+    ui: &mut egui::Ui,
+    rows: &[Vec<String>],
+    highlight: Option<usize>,
+    vmin: f32,
+    font_size: f32,
+) -> Option<usize> {
+    let headings = [
+        "Last Watched",
+        "Device",
+        "Position",
+        "Video",
+        "Release Date",
+    ];
+    let heading_galleys: Vec<_> = headings
+        .iter()
+        .map(|heading| {
+            egui::WidgetText::from(
+                egui::RichText::new(*heading)
+                    .size(font_size)
+                    .strong()
+                    .color(egui::Color32::BLACK),
+            )
+            .into_galley(
+                ui,
+                Some(egui::TextWrapMode::Extend),
+                f32::INFINITY,
+                egui::TextStyle::Body,
+            )
+        })
+        .collect();
+    let row_galleys: Vec<Vec<_>> = rows
+        .iter()
+        .map(|cells| {
+            cells
+                .iter()
+                .map(|cell| {
+                    egui::WidgetText::from(
+                        egui::RichText::new(cell)
+                            .size(font_size)
+                            .color(egui::Color32::BLACK),
+                    )
+                    .into_galley(
+                        ui,
+                        Some(egui::TextWrapMode::Extend),
+                        f32::INFINITY,
+                        egui::TextStyle::Body,
+                    )
+                })
+                .collect()
+        })
+        .collect();
+
+    let cell_padding = (0.25 * vmin).max(1.0);
+    let grid_gap = 1.0;
+    let mut column_widths = vec![0.0_f32; headings.len()];
+    let mut text_height = 0.0_f32;
+    for (column, galley) in heading_galleys.iter().enumerate() {
+        column_widths[column] = column_widths[column].max(galley.size().x);
+        text_height = text_height.max(galley.size().y);
+    }
+    for row in &row_galleys {
+        for (column, galley) in row.iter().enumerate() {
+            column_widths[column] = column_widths[column].max(galley.size().x);
+            text_height = text_height.max(galley.size().y);
+        }
+    }
+    for width in &mut column_widths {
+        *width += 2.0 * cell_padding;
+    }
+
+    let row_height = text_height + 2.0 * cell_padding;
+    let table_width =
+        column_widths.iter().sum::<f32>() + grid_gap * column_widths.len().saturating_sub(1) as f32;
+    let table_rows = rows.len() + 1;
+    let table_height =
+        row_height * table_rows as f32 + grid_gap * table_rows.saturating_sub(1) as f32;
+    let (table_rect, _) =
+        ui.allocate_exact_size(egui::vec2(table_width, table_height), egui::Sense::hover());
+    let painter = ui.painter().clone();
+    painter.rect_filled(table_rect, 0.0, theme::LIGHT_PURPLE);
+
+    let paint_row = |painter: &egui::Painter,
+                     y: f32,
+                     galleys: &[std::sync::Arc<egui::Galley>],
+                     fill: egui::Color32| {
+        let mut x = table_rect.left();
+        for (column, galley) in galleys.iter().enumerate() {
+            let cell_rect = egui::Rect::from_min_size(
+                egui::pos2(x, y),
+                egui::vec2(column_widths[column], row_height),
+            );
+            painter.rect_filled(cell_rect, 0.0, fill);
+            painter.galley(
+                egui::pos2(
+                    cell_rect.left() + cell_padding,
+                    cell_rect.center().y - galley.size().y * 0.5,
+                ),
+                galley.clone(),
+                egui::Color32::BLACK,
+            );
+            x += column_widths[column] + grid_gap;
+        }
+    };
+
+    paint_row(&painter, table_rect.top(), &heading_galleys, theme::WHITE);
+
+    let mut clicked = None;
+    for (index, galleys) in row_galleys.iter().enumerate() {
+        let y = table_rect.top() + (index + 1) as f32 * (row_height + grid_gap);
+        let row_rect = egui::Rect::from_min_size(
+            egui::pos2(table_rect.left(), y),
+            egui::vec2(table_width, row_height),
+        );
+        let response = ui.interact(
+            row_rect,
+            ui.id().with(("saved-position-row", index)),
+            egui::Sense::click(),
+        );
+        let fill = if !cfg!(target_os = "android") && response.hovered() {
+            theme::LIGHT_PURPLE
+        } else if highlight == Some(index) {
+            egui::Color32::from_rgb(247, 161, 218)
+        } else {
+            theme::WHITE
+        };
+        paint_row(&painter, y, galleys, fill);
+        if response.clicked() {
+            clicked = Some(index);
+        }
+    }
+
+    clicked
 }
