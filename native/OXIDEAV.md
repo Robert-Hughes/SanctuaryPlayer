@@ -649,7 +649,7 @@ underflow, stale-buffer discard, future-ring silence, stereo sample-frame accoun
 audio-local head-of-line back-pressure. Playback regressions additionally pin independent
 audio/video TrackSink progress, cancellation of a blocked TrackSink, two-frame video
 back-pressure, authoritative late audio format discovery and multi-track seek barriers.
-The Sanctuary app suite currently passes **117 tests**.
+The Sanctuary app suite currently passes **149 tests**.
 
 This Twitch web-player GraphQL/Usher protocol is not a stable public playback API,
 so all Twitch-specific request shape, client ID and token handling remain isolated
@@ -694,10 +694,37 @@ throughput limit rather than an AAudio failure.
 Switching the same release build and VOD (`2859508682`) to 480p30 was stable in the
 observed run. The player held roughly 500-518 ms of queued audio with
 `underrun_callbacks=0` and `underrun_samples=0`, while video remained aligned with the
-playback clock with zero dropped frames. This remains the CPU-decoder baseline and the
-motivation for the MediaCodec work: 480p30 was demonstrated stable on this device,
-while 720p60 CPU decode was not sustainable. MediaCodec readback/direct paths require
-separate real-device validation before making a corresponding hardware-path claim.
+playback clock with zero dropped frames. This remains the CPU-decoder baseline: 480p30
+was demonstrated stable on this device, while 720p60 CPU decode was not sustainable.
+
+### Android MediaCodec validation
+
+Real-device validation on the Samsung SM-F946B / Adreno 740 used Twitch VOD
+`2865765192` at the selected 720p60 variant. Strict `mediacodec-direct` selected
+`c2.qti.avc.decoder`, activated the PRIVATE AImage -> AHardwareBuffer -> Vulkan
+sampler-YCbCr -> wgpu RGBA path, and logged that no CPU pixel readback occurred. In
+steady playback it presented about 60 frames/s, kept roughly 500-519 ms of queued
+audio, held video within milliseconds of the audio clock and recorded zero AAudio
+underrun callbacks/samples. Decoder recreation around the restored-position seek also
+completed successfully without Vulkan/wgpu validation or device-loss errors.
+
+Strict `mediacodec-readback` initially exposed a device-specific surface-format issue:
+an unconstrained CPU ImageReader received Qualcomm UBWC `0x7fa30c06`; its U/V row and
+pixel strides were zero, so interpreting it as ordinary `YUV_420_888` was rejected.
+Requesting Android flexible YUV420 output together with CPU-read usage changed the
+codec output to Qualcomm NV12/VENUS `0x7fa30c04`, with Y stride 1280/pixel stride 1 and
+U/V stride 1280/pixel stride 2. The stride-aware materialisation path then presented
+720p60 successfully, again holding about 500-520 ms queued audio with zero underruns
+and video tracking the audio clock.
+
+Auto mode selected direct when the Vulkan contract was available. A validation build
+that deliberately disabled the direct capability fell back to MediaCodec readback; a
+separate build that disabled MediaCodec registration fell back to the software H.264
+decoder. Explicit direct/readback modes were also tested with their required backend
+made unavailable and failed playback startup rather than silently falling back. Codec
+metadata for the test stream reported full 1280x720 crop, rotation 0, colour-standard
+1, colour-range 2 and colour-transfer 3. Visual colour/orientation inspection remains a
+manual device check rather than something inferred solely from those metadata fields.
 ### HLS successor-readahead validation
 
 After `df5c63c`, a muted real Twitch VOD regression using the native VDPAU path

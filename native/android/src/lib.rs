@@ -269,10 +269,16 @@ mod android {
                     ..Default::default()
                 }))
                 .map_err(|error| format!("could not create Android GPU device: {error}"))?;
-            let direct_media = mediacodec_direct_gpu_available(&device);
+            let direct_media = mediacodec_direct_gpu_available(&device)
+                && option_env!("SANCTUARY_ANDROID_DISABLE_MEDIACODEC_DIRECT").is_none();
             oxideav_mediacodec::set_direct_presentation_available(direct_media);
             log::info!(
-                "SanctuaryPlayer: MediaCodec direct Vulkan presentation available={direct_media}"
+                "SanctuaryPlayer: MediaCodec direct Vulkan presentation available={direct_media}{}",
+                if option_env!("SANCTUARY_ANDROID_DISABLE_MEDIACODEC_DIRECT").is_some() {
+                    " (disabled by validation build)"
+                } else {
+                    ""
+                }
             );
             let mut config = surface
                 .get_default_config(&adapter, width, height)
@@ -854,7 +860,14 @@ mod android {
             repaint_callback.request(request.delay);
         });
 
-        let mut state = AppState::with_decode_mode(DecodeMode::platform_default());
+        let decode_mode = match option_env!("SANCTUARY_ANDROID_DECODE_MODE") {
+            Some(value) => value.parse::<DecodeMode>().unwrap_or_else(|error| {
+                panic!("invalid SANCTUARY_ANDROID_DECODE_MODE={value:?}: {error}")
+            }),
+            None => DecodeMode::platform_default(),
+        };
+        log::info!("SanctuaryPlayer: Android decode mode = {decode_mode}");
+        let mut state = AppState::with_decode_mode(decode_mode);
         state.set_settings_path(internal_data_path.join("settings.json"));
         state.set_session_path(internal_data_path.join("session.json"));
         let playback_waker = android_app.create_waker();

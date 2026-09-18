@@ -573,7 +573,11 @@ fn open_variant_session(
     let mut registries = ::oxideav::Registries::new();
     oxideav_meta::register_all(&mut registries);
     #[cfg(target_os = "android")]
-    oxideav_mediacodec::register(&mut registries);
+    if option_env!("SANCTUARY_ANDROID_DISABLE_MEDIACODEC").is_none() {
+        oxideav_mediacodec::register(&mut registries);
+    } else {
+        log::info!("SanctuaryPlayer: MediaCodec registration disabled by validation build");
+    }
 
     let codec_preferences = codec_preferences(decode_mode);
     let (tx, rx) = mpsc::sync_channel(SESSION_CHANNEL_CAP);
