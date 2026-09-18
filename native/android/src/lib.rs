@@ -256,19 +256,72 @@ mod android {
                 .features()
                 .contains(wgpu::Features::TEXTURE_FORMAT_NV12)
             {
-                // wgpu-hal's Sanctuary patch maps this feature request to
-                // VkPhysicalDeviceSamplerYcbcrConversionFeatures. The ordinary
-                // renderer does not otherwise depend on it, so devices lacking
-                // the feature can still run the readback/CPU paths.
                 required_features |= wgpu::Features::TEXTURE_FORMAT_NV12;
             }
-            let (device, queue) =
-                pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-                    label: Some("sanctuary-player-android-device"),
-                    required_features,
-                    ..Default::default()
-                }))
-                .map_err(|error| format!("could not create Android GPU device: {error}"))?;
+            let device_descriptor = wgpu::DeviceDescriptor {
+                label: Some("sanctuary-player-android-device"),
+                required_features,
+                ..Default::default()
+            };
+
+            // MediaCodec direct presentation needs two Android-specific Vulkan device
+            // extensions plus sampler-YCbCr conversion. Keep those application-specific
+            // requirements out of wgpu-hal: its Vulkan adapter exposes a device-creation
+            // callback precisely so native interop users can extend VkDeviceCreateInfo
+            // before wrapping the resulting HAL device back into an ordinary wgpu
+            // Device/Queue.
+            let mut sampler_ycbcr =
+                ash::vk::PhysicalDeviceSamplerYcbcrConversionFeatures::default()
+                    .sampler_ycbcr_conversion(true);
+            let custom_open = if required_features.contains(wgpu::Features::TEXTURE_FORMAT_NV12) {
+                let hal_adapter = unsafe { adapter.as_hal::<wgpu::hal::api::Vulkan>() };
+                hal_adapter.and_then(|hal_adapter| {
+                    let caps = hal_adapter.physical_device_capabilities();
+                    let ahb = c"VK_ANDROID_external_memory_android_hardware_buffer";
+                    let foreign = c"VK_EXT_queue_family_foreign";
+                    if !caps.supports_extension(ahb) || !caps.supports_extension(foreign) {
+                        return None;
+                    }
+                    Some(unsafe {
+                        hal_adapter.open_with_callback(
+                            device_descriptor.required_features,
+                            &device_descriptor.required_limits,
+                            &device_descriptor.memory_hints,
+                            Some(Box::new(|args| {
+                                args.extensions.push(ahb);
+                                args.extensions.push(foreign);
+                                *args.create_info = args.create_info.push_next(&mut sampler_ycbcr);
+                            })),
+                        )
+                    })
+                })
+            } else {
+                None
+            };
+
+            let (device, queue) = match custom_open {
+                Some(Ok(open)) => {
+                    log::info!(
+                        "SanctuaryPlayer: Android Vulkan device created with MediaCodec interop extensions"
+                    );
+                    unsafe {
+                        adapter
+                            .create_device_from_hal(open, &device_descriptor)
+                            .map_err(|error| {
+                                format!("could not wrap Android Vulkan device: {error}")
+                            })?
+                    }
+                }
+                Some(Err(error)) => {
+                    log::warn!(
+                        "SanctuaryPlayer: custom Android Vulkan device creation failed ({error}); using ordinary wgpu device"
+                    );
+                    pollster::block_on(adapter.request_device(&device_descriptor))
+                        .map_err(|error| format!("could not create Android GPU device: {error}"))?
+                }
+                None => pollster::block_on(adapter.request_device(&device_descriptor))
+                    .map_err(|error| format!("could not create Android GPU device: {error}"))?,
+            };
             let direct_media = mediacodec_direct_gpu_available(&device)
                 && option_env!("SANCTUARY_ANDROID_DISABLE_MEDIACODEC_DIRECT").is_none();
             oxideav_mediacodec::set_direct_presentation_available(direct_media);

@@ -407,11 +407,12 @@ The direct Android bridge requires API-26 ImageReader/AHardwareBuffer entry poin
 `VK_ANDROID_external_memory_android_hardware_buffer`, sampler-YCbCr conversion and
 `VK_EXT_queue_family_foreign`. The API-26 symbols are resolved dynamically rather than
 linked as mandatory imports, preserving the application's API-24 readback/CPU
-compatibility. Sanctuary's local wgpu-hal patch enables the two Android Vulkan
-extensions when advertised and actually enables sampler-YCbCr when the application
-requests `TEXTURE_FORMAT_NV12`. Raw Vulkan rendering restores every wgpu-owned output
-image to the layout wgpu's resource tracker expects before handing it back to normal
-wgpu sampling.
+compatibility. Sanctuary uses upstream wgpu-hal's Vulkan `open_with_callback` hook to
+add the two supported Android device extensions and enable
+`VkPhysicalDeviceSamplerYcbcrConversionFeatures` before wrapping the HAL device back
+into an ordinary wgpu `Device`/`Queue`; no wgpu-hal source patch is required. Raw Vulkan
+rendering restores every wgpu-owned output image to the layout wgpu's resource tracker
+expects before handing it back to normal wgpu sampling.
 
 The MediaCodec and VDPAU explicit hardware modes remain strict for H.264: failure to
 obtain or execute the selected contract is an error, not a request to switch the video
@@ -707,6 +708,14 @@ steady playback it presented about 60 frames/s, kept roughly 500-519 ms of queue
 audio, held video within milliseconds of the audio clock and recorded zero AAudio
 underrun callbacks/samples. Decoder recreation around the restored-position seek also
 completed successfully without Vulkan/wgpu validation or device-loss errors.
+
+The direct path was subsequently revalidated after removing Sanctuary's local wgpu-hal
+fork. Upstream wgpu-hal 29.0.4 `open_with_callback` successfully created the Vulkan
+device with the Android AHardwareBuffer/foreign-queue extensions and an explicit
+sampler-YCbCr feature in the `VkDeviceCreateInfo` chain; `create_device_from_hal` then
+returned the normal wgpu `Device`/`Queue`. Strict direct playback again reached the
+PRIVATE AImage -> AHardwareBuffer -> Vulkan YCbCr presentation path with no wgpu/device
+errors, confirming that no wgpu-hal source modification is required.
 
 Strict `mediacodec-readback` initially exposed a device-specific surface-format issue:
 an unconstrained CPU ImageReader received Qualcomm UBWC `0x7fa30c06`; its U/V row and

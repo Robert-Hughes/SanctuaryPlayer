@@ -17,6 +17,7 @@ log.workspace = true
 
 [target.'cfg(target_os = "android")'.dependencies]
 oxideav-mediacodec.workspace = true
+ash = "0.38"
 android-activity = { version = "0.6.1", features = ["game-activity"] }
 egui.workspace = true
 egui-wgpu.workspace = true
