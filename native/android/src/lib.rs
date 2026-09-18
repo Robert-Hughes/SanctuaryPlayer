@@ -498,7 +498,44 @@ mod android {
 
             let mut commands = Vec::new();
             let full_output = ctx.run_ui(raw_input, |root_ui| {
-                commands = sanctuary_player_app::ui::render(root_ui, state);
+                let viewport = ctx.viewport_rect();
+                let content = ctx.content_rect();
+                let fill = root_ui.visuals().panel_fill;
+                let painter = egui::Painter::new(
+                    ctx.clone(),
+                    egui::LayerId::new(
+                        egui::Order::Foreground,
+                        egui::Id::new("android-system-chrome-background"),
+                    ),
+                    viewport,
+                );
+                let system_chrome_rects = [
+                    egui::Rect::from_min_max(
+                        viewport.min,
+                        egui::pos2(viewport.max.x, content.min.y),
+                    ),
+                    egui::Rect::from_min_max(
+                        egui::pos2(viewport.min.x, content.max.y),
+                        viewport.max,
+                    ),
+                    egui::Rect::from_min_max(
+                        egui::pos2(viewport.min.x, content.min.y),
+                        egui::pos2(content.min.x, content.max.y),
+                    ),
+                    egui::Rect::from_min_max(
+                        egui::pos2(content.max.x, content.min.y),
+                        egui::pos2(viewport.max.x, content.max.y),
+                    ),
+                ];
+                for rect in system_chrome_rects {
+                    if rect.width() > 0.0 && rect.height() > 0.0 {
+                        painter.rect_filled(rect, 0.0, fill);
+                    }
+                }
+
+                root_ui.scope_builder(egui::UiBuilder::new().max_rect(content), |ui| {
+                    commands = sanctuary_player_app::ui::render(ui, state);
+                });
             });
             for (texture_id, image_delta) in &full_output.textures_delta.set {
                 self.egui_renderer.update_texture(
@@ -589,8 +626,21 @@ mod android {
     #[allow(unsafe_code)]
     fn android_system_window_insets(
         app: &AndroidApp,
+        fullscreen: bool,
     ) -> Result<Option<AndroidSystemInsets>, String> {
-        use jni::{JavaVM, jni_sig, jni_str, objects::JObject};
+        use jni::{
+            JavaVM, jni_sig, jni_str,
+            objects::{JObject, JValue},
+        };
+
+        if fullscreen {
+            return Ok(Some(AndroidSystemInsets {
+                left: 0,
+                top: 0,
+                right: 0,
+                bottom: 0,
+            }));
+        }
 
         let vm = unsafe { JavaVM::from_raw(app.vm_as_ptr().cast()) };
         let activity_raw = app.activity_as_ptr() as jni::sys::jobject;
@@ -624,6 +674,49 @@ mod android {
                 return Ok(None);
             }
 
+            let sdk_int = env
+                .get_static_field(
+                    jni_str!("android/os/Build$VERSION"),
+                    jni_str!("SDK_INT"),
+                    jni_sig!("I"),
+                )?
+                .i()?;
+            if sdk_int >= 30 {
+                let system_bars = env
+                    .call_static_method(
+                        jni_str!("android/view/WindowInsets$Type"),
+                        jni_str!("systemBars"),
+                        jni_sig!("()I"),
+                        &[],
+                    )?
+                    .i()?;
+                let stable = env
+                    .call_method(
+                        &insets,
+                        jni_str!("getInsetsIgnoringVisibility"),
+                        jni_sig!("(I)Landroid/graphics/Insets;"),
+                        &[JValue::Int(system_bars)],
+                    )?
+                    .l()?;
+                if stable.is_null() {
+                    return Ok(None);
+                }
+                return Ok(Some(AndroidSystemInsets {
+                    left: env
+                        .get_field(&stable, jni_str!("left"), jni_sig!("I"))?
+                        .i()?,
+                    top: env
+                        .get_field(&stable, jni_str!("top"), jni_sig!("I"))?
+                        .i()?,
+                    right: env
+                        .get_field(&stable, jni_str!("right"), jni_sig!("I"))?
+                        .i()?,
+                    bottom: env
+                        .get_field(&stable, jni_str!("bottom"), jni_sig!("I"))?
+                        .i()?,
+                }));
+            }
+
             let inset = |env: &mut jni::Env<'_>, name| -> jni::errors::Result<i32> {
                 env.call_method(&insets, name, jni_sig!("()I"), &[])?.i()
             };
@@ -644,6 +737,7 @@ mod android {
         focused: bool,
         size_in_pixels: [u32; 2],
         started: Instant,
+        fullscreen: bool,
     ) -> RawInput {
         let native_ppp = native_pixels_per_point(app);
         let pixels_per_point = native_ppp * ctx.zoom_factor();
@@ -654,7 +748,7 @@ mod android {
                 size_in_pixels[1] as f32 / pixels_per_point,
             ),
         );
-        let safe_area_insets = android_system_window_insets(app)
+        let safe_area_insets = android_system_window_insets(app, fullscreen)
             .ok()
             .flatten()
             .map(|insets| {
@@ -973,6 +1067,14 @@ mod android {
                             jni_sig!("(I)V"),
                             &[JValue::Int(2)],
                         )?;
+                        // Transient bars shown over fullscreen video should use light
+                        // foreground icons rather than inheriting normal mode's dark ones.
+                        env.call_method(
+                            &controller,
+                            jni_str!("setSystemBarsAppearance"),
+                            jni_sig!("(II)V"),
+                            &[JValue::Int(0), JValue::Int(LIGHT_BARS)],
+                        )?;
                         env.call_method(
                             &controller,
                             jni_str!("hide"),
@@ -1250,8 +1352,15 @@ mod android {
                 state.update(now.saturating_duration_since(last_update));
                 last_update = now;
                 let user_tapped = std::mem::take(&mut input.primary_pointer_pressed);
-                let raw_input =
-                    make_raw_input(&android_app, &ctx, &mut input, focused, size, started);
+                let raw_input = make_raw_input(
+                    &android_app,
+                    &ctx,
+                    &mut input,
+                    focused,
+                    size,
+                    started,
+                    fullscreen,
+                );
                 match gpu.paint(&android_app, &ctx, &mut state, raw_input) {
                     Ok(Some((output, commands))) => {
                         handle_platform_output(

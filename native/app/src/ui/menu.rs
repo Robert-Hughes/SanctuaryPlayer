@@ -12,7 +12,7 @@ pub fn render_button(ui: &mut egui::Ui, state: &mut AppState) -> egui::Rect {
     // CSS: 9vmin content + 1.5vmin padding on each side.
     let size = 12.0 * vmin;
     let area = egui::Area::new(egui::Id::new("menu-button"))
-        .fixed_pos(egui::pos2(screen.right() - size, 0.0))
+        .fixed_pos(egui::pos2(screen.right() - size, screen.top()))
         .order(egui::Order::Foreground)
         .show(&ctx, |ui| {
             let enabled = !state.ui.controls_locked;
@@ -64,7 +64,7 @@ pub fn render(
     let width = (72.0 * vmin)
         .min(screen.width() - 2.0 * vmin)
         .max(30.0 * vmin);
-    let top = 12.0 * vmin;
+    let top = screen.top() + 12.0 * vmin;
     let pos = egui::pos2(
         screen.right() - width - vmin,
         top - (1.0 - openness) * 2.0 * vmin,
@@ -87,7 +87,7 @@ pub fn render(
                 .inner_margin(egui::Margin::same(vmin.round() as i8));
             frame.show(ui, |ui| {
                 ui.set_width(width - 2.0 * vmin);
-                ui.set_max_height((screen.height() - top - vmin).max(20.0 * vmin));
+                ui.set_max_height((screen.bottom() - top - vmin).max(20.0 * vmin));
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     if ui
                         .add(theme::rounded_button(

@@ -31,11 +31,12 @@ pub fn render(ui: &mut egui::Ui, state: &mut AppState) -> Vec<AppCommand> {
 
 fn paint_top_info(ui: &mut egui::Ui, state: &AppState) -> egui::Rect {
     let ctx = ui.ctx().clone();
+    let screen = ctx.content_rect();
     let vmin = theme::vmin(ui);
     let area = egui::Area::new(egui::Id::new("player-top-info"))
-        .fixed_pos(egui::pos2(vmin, 0.5 * vmin))
+        .fixed_pos(egui::pos2(screen.left() + vmin, screen.top() + 0.5 * vmin))
         .show(&ctx, |ui| {
-            ui.set_max_width((ui.ctx().content_rect().width() - 14.0 * vmin).max(10.0 * vmin));
+            ui.set_max_width((screen.width() - 14.0 * vmin).max(10.0 * vmin));
             let font_size = 5.0 * vmin;
             if let Some(title) = state.safe_title() {
                 ui.label(
@@ -118,12 +119,15 @@ fn paint_centre_controls(
     commands: &mut Vec<AppCommand>,
 ) -> egui::Rect {
     let ctx = ui.ctx().clone();
+    let viewport = ctx.viewport_rect();
+    let screen = ctx.content_rect();
     let vmin = theme::vmin(ui);
     let size = 20.0 * vmin;
     let gap = 1.0 * vmin;
     let radius = 1.0 * vmin;
+    let offset = screen.center() - viewport.center();
     let area = egui::Area::new(egui::Id::new("centre-controls"))
-        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+        .anchor(egui::Align2::CENTER_CENTER, offset)
         .show(&ctx, |ui| {
             ui.spacing_mut().item_spacing.x = gap;
             ui.horizontal(|ui| {
@@ -366,7 +370,7 @@ fn paint_lock_slider(
     let vmin = theme::vmin(ui);
     let travel = screen.width() * 0.25;
     let size = 7.0 * vmin;
-    let x = state.ui.lock_drag_fraction * travel;
+    let x = screen.left() + state.ui.lock_drag_fraction * travel;
 
     let area = egui::Area::new(egui::Id::new("control-lock-slider"))
         .fixed_pos(egui::pos2(x, screen.center().y - size * 0.5))
