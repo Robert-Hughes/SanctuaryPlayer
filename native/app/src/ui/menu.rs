@@ -519,12 +519,17 @@ fn render_saved_positions(
         .map(|(index, _)| index);
 
     let rows = saved_position_rows(state);
+    let table_width = saved_positions_table_intrinsic_width(ui, &rows, vmin, font_size);
 
-    let clicked = egui::ScrollArea::horizontal()
-        .show(ui, |ui| {
-            render_saved_positions_table(ui, &rows, highlight, vmin, font_size)
-        })
-        .inner;
+    let clicked = if table_width <= ui.available_width() {
+        render_saved_positions_table(ui, &rows, highlight, vmin, font_size)
+    } else {
+        egui::ScrollArea::horizontal()
+            .show(ui, |ui| {
+                render_saved_positions_table(ui, &rows, highlight, vmin, font_size)
+            })
+            .inner
+    };
 
     if let Some(index) = clicked {
         let entry = &positions[index];
