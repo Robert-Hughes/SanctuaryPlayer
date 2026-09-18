@@ -280,11 +280,17 @@ impl MediaCodecVulkanBridge {
         ];
         let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
             .topology(vk::PrimitiveTopology::TRIANGLE_LIST);
+        // This raw Vulkan pass renders into a texture that wgpu samples later. Match
+        // wgpu-hal's Vulkan framebuffer convention here: WebGPU/wgpu render passes
+        // use a negative-height Vulkan viewport to account for Vulkan's opposite
+        // framebuffer Y convention. Using a normal positive-height viewport would
+        // therefore store the intermediate RGBA image upside-down relative to every
+        // texture produced through wgpu itself.
         let viewports = [vk::Viewport {
             x: 0.0,
-            y: 0.0,
+            y: height as f32,
             width: width as f32,
-            height: height as f32,
+            height: -(height as f32),
             min_depth: 0.0,
             max_depth: 1.0,
         }];
