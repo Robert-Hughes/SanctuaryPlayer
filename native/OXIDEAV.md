@@ -120,6 +120,11 @@ The local OxideAV workspace provides the pieces needed for native playback:
   `8d2a3e5`).
 - FreeBSD VDPAU H.264 streaming decode (`a1a2463`) with explicit unsupported-case
   fallback rather than silent approximation (`2869584`).
+- Windows Vulkan Video H.264 hardware decode through `oxideav-vulkan-video` 0.0.2.
+  Sanctuary currently consumes the crate's GPU decode plus host-visible NV12 staging
+  readback, converts that readback to packed CPU I420, and then uses the existing wgpu
+  YUV upload path. Direct Vulkan-image presentation is intentionally left for the next
+  zero-copy stage.
 - Retainable decoded-frame ownership through `FrameLease` (`c6e6f02`, `4c7099a`).
 - Native pooled software-H.264 arena output (`46f8433`, `94b6372`, `fda3143`),
   including arena-backed PAFF/SCP assembly and hard pool-exhaustion semantics
@@ -352,7 +357,9 @@ hardware decode with CPU readback second, and software H.264 last. On Android th
 means `h264_mediacodec_direct` -> `h264_mediacodec_readback` -> `h264_sw`; on
 FreeBSD the one VDPAU decoder is preferred to `h264_sw`, while the renderer prefers
 its direct bridge and can use its readback presentation path if direct interop is
-unavailable.
+unavailable. On Windows, `h264_vulkan` is registered above `h264_sw`, so automatic
+selection uses Vulkan Video H.264 decode when the selected Vulkan device advertises
+the required capability and otherwise retains the software fallback.
 
 Explicit modes are deliberately strict. If a caller supplies a particular
 `--decode-mode`, Sanctuary excludes alternative H.264 implementations rather than
@@ -361,6 +368,14 @@ silently changing the requested contract:
 - `cpu` sets `CodecPreferences::no_hardware`, so software H.264 is selected even when a
   hardware implementation is compiled into the same runtime. Output must remain
   `FrameLease::ArenaVideo`; the renderer refuses a silent materialisation fallback.
+- `vulkan-readback` (Windows) selects only `h264_vulkan`. OxideAV performs H.264
+  reconstruction on the Vulkan Video queue, copies the decoded NV12 image into
+  host-visible staging memory, and de-interleaves that staging image to packed CPU I420.
+  Sanctuary then uploads those three planes through its existing wgpu YUV path. This
+  first stage therefore removes software H.264 reconstruction while retaining one
+  GPU-to-CPU readback and one CPU-to-GPU upload. Sanctuary's small registration adapter
+  also preserves packet PTS on the current OxideAV Vulkan Video frames, whose 0.0.2
+  decoder otherwise emits the readback `VideoFrame` without a PTS.
 - `mediacodec-direct` (Android) selects only `h264_mediacodec_direct`. MediaCodec is
   configured against a PRIVATE `AImageReader` created with GPU-sampled usage. Each
   decoded `AImage` remains owned by its opaque `HardwareVideo` lease; Sanctuary imports
@@ -414,14 +429,15 @@ into an ordinary wgpu `Device`/`Queue`; no wgpu-hal source patch is required. Ra
 rendering restores every wgpu-owned output image to the layout wgpu's resource tracker
 expects before handing it back to normal wgpu sampling.
 
-The MediaCodec and VDPAU explicit hardware modes remain strict for H.264: failure to
-obtain or execute the selected contract is an error, not a request to switch the video
-track silently. `require_hardware` is deliberately not used because the same job also
-decodes AAC; excluding unwanted H.264 implementations leaves software audio codecs
-selectable. The VDPAU direct path remains zero-CPU-copy rather than literal zero-copy:
-it still performs the GL YUV->RGBA render and one GPU-local Vulkan image copy. The
-MediaCodec direct path likewise performs a GPU YCbCr->RGBA render into a wgpu-owned
-texture, but does not perform a CPU pixel copy.
+The Vulkan Video, MediaCodec and VDPAU explicit hardware modes remain strict for
+H.264: failure to obtain or execute the selected contract is an error, not a request to
+switch the video track silently. `require_hardware` is deliberately not used because
+the same job also decodes AAC; excluding unwanted H.264 implementations leaves software
+audio codecs selectable. The current Windows Vulkan mode is intentionally a readback
+path rather than zero-copy. The VDPAU direct path remains zero-CPU-copy rather than
+literal zero-copy: it still performs the GL YUV->RGBA render and one GPU-local Vulkan
+image copy. The MediaCodec direct path likewise performs a GPU YCbCr->RGBA render into
+a wgpu-owned texture, but does not perform a CPU pixel copy.
 
 The corrected post-`e9f8acd` reference-player benchmark used the local 10.03 s,
 1280x720/60 fps Twitch segment (600 frames, five muted paced runs per path).
@@ -626,10 +642,12 @@ ABR remain later work.
 
 The desktop launcher accepts
 `--video <URL-or-ID>` (or a positional video), `--play`/`--autoplay`,
-`--mute`, and `--decode-mode auto|cpu|vdpau-readback|vdpau-direct`, using the same
-`VideoSource::parse` rules as the in-app Change Video flow. The decode mode defaults
-to `auto`. `--mute` sets sysaudio's per-stream software gain to zero while leaving
-the audio callback and timestamp timeline active.
+`--mute`, and the platform-valid `--decode-mode` values. Windows adds
+`vulkan-readback`; FreeBSD adds `vdpau-readback` and `vdpau-direct`; `auto` and
+`cpu` are portable desktop choices. `VideoSource::parse` rules are shared with the
+in-app Change Video flow. The decode mode defaults to `auto`. `--mute` sets
+sysaudio's per-stream software gain to zero while leaving the audio callback and
+timestamp timeline active.
 
 Muted GhostBSD validation against Twitch VOD `2386400830` confirms the current
 independent-track architecture without producing sound. The initial MPEG-TS AAC stream

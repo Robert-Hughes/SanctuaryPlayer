@@ -15,11 +15,14 @@ pub use dummy::DummyPlayback;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DecodeMode {
-    /// Prefer the platform's fully hardware-resident path, then hardware
-    /// decode with CPU readback, then software decode.
+    /// Prefer the platform's hardware path, then software decode.
+    ///
+    /// Windows currently uses Vulkan Video with CPU readback; Android prefers
+    /// direct MediaCodec then MediaCodec readback; FreeBSD prefers VDPAU.
     #[default]
     Auto,
     Cpu,
+    VulkanReadback,
     MediaCodecDirect,
     MediaCodecReadback,
     VdpauReadback,
@@ -35,43 +38,50 @@ impl DecodeMode {
         self,
         vdpau_supported: bool,
         mediacodec_supported: bool,
+        vulkan_supported: bool,
     ) -> bool {
         match self {
             Self::Auto | Self::Cpu => true,
+            Self::VulkanReadback => vulkan_supported,
             Self::MediaCodecDirect | Self::MediaCodecReadback => mediacodec_supported,
             Self::VdpauReadback | Self::VdpauDirect => vdpau_supported,
         }
     }
 
     pub const fn is_supported_on_current_platform(self) -> bool {
-        self.is_supported_with_backends(cfg!(target_os = "freebsd"), cfg!(target_os = "android"))
+        self.is_supported_with_backends(
+            cfg!(target_os = "freebsd"),
+            cfg!(target_os = "android"),
+            cfg!(target_os = "windows"),
+        )
     }
 
     fn validate_for_platform(
         self,
         vdpau_supported: bool,
         mediacodec_supported: bool,
+        vulkan_supported: bool,
         platform: &str,
     ) -> Result<(), String> {
-        if self.is_supported_with_backends(vdpau_supported, mediacodec_supported) {
+        if self.is_supported_with_backends(vdpau_supported, mediacodec_supported, vulkan_supported)
+        {
             return Ok(());
         }
-        let supported = match (vdpau_supported, mediacodec_supported) {
-            (true, false) => "auto, cpu, vdpau-readback, vdpau-direct",
-            (false, true) => "auto, cpu, mediacodec-readback, mediacodec-direct",
-            (true, true) => {
-                "auto, cpu, mediacodec-readback, mediacodec-direct, vdpau-readback, vdpau-direct"
-            }
-            (false, false) => "auto, cpu",
-        };
-        let noun = if supported.contains(',') {
-            "modes"
-        } else {
-            "mode"
-        };
+
+        let mut supported = vec!["auto", "cpu"];
+        if vulkan_supported {
+            supported.push("vulkan-readback");
+        }
+        if mediacodec_supported {
+            supported.extend(["mediacodec-readback", "mediacodec-direct"]);
+        }
+        if vdpau_supported {
+            supported.extend(["vdpau-readback", "vdpau-direct"]);
+        }
         Err(format!(
-            "decode mode {:?} is not supported on {platform}; supported {noun}: {supported}",
-            self.as_str()
+            "decode mode {:?} is not supported on {platform}; supported modes: {}",
+            self.as_str(),
+            supported.join(", ")
         ))
     }
 
@@ -79,6 +89,7 @@ impl DecodeMode {
         self.validate_for_platform(
             cfg!(target_os = "freebsd"),
             cfg!(target_os = "android"),
+            cfg!(target_os = "windows"),
             std::env::consts::OS,
         )
     }
@@ -87,6 +98,7 @@ impl DecodeMode {
         match self {
             Self::Auto => "auto",
             Self::Cpu => "cpu",
+            Self::VulkanReadback => "vulkan-readback",
             Self::MediaCodecDirect => "mediacodec-direct",
             Self::MediaCodecReadback => "mediacodec-readback",
             Self::VdpauReadback => "vdpau-readback",
@@ -108,12 +120,13 @@ impl std::str::FromStr for DecodeMode {
         match value {
             "auto" => Ok(Self::Auto),
             "cpu" => Ok(Self::Cpu),
+            "vulkan-readback" => Ok(Self::VulkanReadback),
             "mediacodec-direct" => Ok(Self::MediaCodecDirect),
             "mediacodec-readback" => Ok(Self::MediaCodecReadback),
             "vdpau-readback" => Ok(Self::VdpauReadback),
             "vdpau-direct" => Ok(Self::VdpauDirect),
             _ => Err(format!(
-                "invalid decode mode {value:?}; expected auto, cpu, mediacodec-direct, mediacodec-readback, vdpau-readback, or vdpau-direct"
+                "invalid decode mode {value:?}; expected auto, cpu, vulkan-readback, mediacodec-direct, mediacodec-readback, vdpau-readback, or vdpau-direct"
             )),
         }
     }
@@ -270,7 +283,7 @@ mod decode_mode_tests {
     #[test]
     fn vdpau_request_is_rejected_without_vdpau() {
         let error = DecodeMode::VdpauDirect
-            .validate_for_platform(false, false, "windows")
+            .validate_for_platform(false, false, false, "windows")
             .unwrap_err();
         assert_eq!(
             error,
@@ -281,20 +294,42 @@ mod decode_mode_tests {
     #[test]
     fn mediacodec_modes_require_android_backend() {
         for mode in [DecodeMode::MediaCodecDirect, DecodeMode::MediaCodecReadback] {
-            assert!(mode.validate_for_platform(false, true, "android").is_ok());
+            assert!(
+                mode.validate_for_platform(false, true, false, "android")
+                    .is_ok()
+            );
             let error = mode
-                .validate_for_platform(false, false, "windows")
+                .validate_for_platform(false, false, true, "windows")
                 .unwrap_err();
             assert!(error.contains("not supported on windows"));
         }
     }
 
     #[test]
+    fn vulkan_readback_requires_vulkan_video_backend() {
+        assert!(
+            DecodeMode::VulkanReadback
+                .validate_for_platform(false, false, true, "windows")
+                .is_ok()
+        );
+        let error = DecodeMode::VulkanReadback
+            .validate_for_platform(false, false, false, "linux")
+            .unwrap_err();
+        assert!(error.contains("not supported on linux"));
+    }
+
+    #[test]
     fn automatic_mode_is_valid_with_or_without_hardware_backends() {
-        for (vdpau, mediacodec) in [(false, false), (true, false), (false, true), (true, true)] {
+        for (vdpau, mediacodec, vulkan) in [
+            (false, false, false),
+            (true, false, false),
+            (false, true, false),
+            (false, false, true),
+            (true, true, true),
+        ] {
             assert!(
                 DecodeMode::Auto
-                    .validate_for_platform(vdpau, mediacodec, "test")
+                    .validate_for_platform(vdpau, mediacodec, vulkan, "test")
                     .is_ok()
             );
         }
@@ -309,6 +344,11 @@ mod decode_mode_tests {
                 .is_ok()
         );
         assert!(DecodeMode::VdpauDirect.validate_current_platform().is_ok());
+        assert!(
+            DecodeMode::VulkanReadback
+                .validate_current_platform()
+                .is_err()
+        );
         assert!(
             DecodeMode::MediaCodecDirect
                 .validate_current_platform()
@@ -335,6 +375,11 @@ mod decode_mode_tests {
                 .is_ok()
         );
         assert!(
+            DecodeMode::VulkanReadback
+                .validate_current_platform()
+                .is_err()
+        );
+        assert!(
             DecodeMode::VdpauReadback
                 .validate_current_platform()
                 .is_err()
@@ -342,11 +387,42 @@ mod decode_mode_tests {
         assert!(DecodeMode::VdpauDirect.validate_current_platform().is_err());
     }
 
-    #[cfg(not(any(target_os = "freebsd", target_os = "android")))]
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_supports_vulkan_video_readback() {
+        assert!(
+            DecodeMode::VulkanReadback
+                .validate_current_platform()
+                .is_ok()
+        );
+        assert!(
+            DecodeMode::MediaCodecDirect
+                .validate_current_platform()
+                .is_err()
+        );
+        assert!(
+            DecodeMode::MediaCodecReadback
+                .validate_current_platform()
+                .is_err()
+        );
+        assert!(
+            DecodeMode::VdpauReadback
+                .validate_current_platform()
+                .is_err()
+        );
+        assert!(DecodeMode::VdpauDirect.validate_current_platform().is_err());
+    }
+
+    #[cfg(not(any(target_os = "freebsd", target_os = "android", target_os = "windows")))]
     #[test]
     fn platforms_without_hardware_backend_support_auto_and_cpu_only() {
         assert!(DecodeMode::Auto.validate_current_platform().is_ok());
         assert!(DecodeMode::Cpu.validate_current_platform().is_ok());
+        assert!(
+            DecodeMode::VulkanReadback
+                .validate_current_platform()
+                .is_err()
+        );
         assert!(
             DecodeMode::MediaCodecDirect
                 .validate_current_platform()

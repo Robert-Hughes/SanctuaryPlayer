@@ -587,6 +587,8 @@ fn open_variant_session(
 
     let mut registries = ::oxideav::Registries::new();
     oxideav_meta::register_all(&mut registries);
+    #[cfg(target_os = "windows")]
+    crate::vulkan_video_decoder::register(&mut registries);
     #[cfg(target_os = "android")]
     if option_env!("SANCTUARY_ANDROID_DISABLE_MEDIACODEC").is_none() {
         oxideav_mediacodec::register(&mut registries);
@@ -2658,13 +2660,19 @@ fn codec_preferences(decode_mode: DecodeMode) -> CodecPreferences {
         DecodeMode::Auto => {
             // Hardware implementations advertise better intrinsic priorities than
             // software. Android ranks direct MediaCodec first, then MediaCodec
-            // readback, then h264_sw; FreeBSD ranks VDPAU before h264_sw. Factory
-            // failures therefore walk the same quality order without making the
-            // user's automatic request strict.
+            // readback, then h264_sw; FreeBSD ranks VDPAU before h264_sw; Windows
+            // ranks Vulkan Video before h264_sw. Factory failures therefore walk the
+            // same quality order without making the user's automatic request strict.
             CodecPreferences::default()
         }
         DecodeMode::Cpu => CodecPreferences {
             no_hardware: true,
+            ..Default::default()
+        },
+        DecodeMode::VulkanReadback => CodecPreferences {
+            prefer: vec!["h264_vulkan".into()],
+            exclude: vec!["h264_sw".into()],
+            boost: 100,
             ..Default::default()
         },
         DecodeMode::MediaCodecDirect => CodecPreferences {
@@ -4000,6 +4008,14 @@ mod tests {
         assert!(prefs.prefer.is_empty());
         assert!(prefs.exclude.is_empty());
         assert!(!prefs.no_hardware);
+        assert!(!prefs.require_hardware);
+    }
+
+    #[test]
+    fn vulkan_selection_is_strict_without_requiring_hardware_audio() {
+        let prefs = codec_preferences(DecodeMode::VulkanReadback);
+        assert_eq!(prefs.prefer, vec!["h264_vulkan"]);
+        assert!(prefs.exclude.iter().any(|name| name == "h264_sw"));
         assert!(!prefs.require_hardware);
     }
 

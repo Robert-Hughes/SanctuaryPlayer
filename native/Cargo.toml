@@ -43,6 +43,7 @@ oxideav-sysaudio = { version = "0.1", default-features = false }
 oxideav-hls = "0.1"
 oxideav-vdpau = "0.0.2"
 oxideav-mediacodec = "0.0.1"
+oxideav-vulkan-video = "0.0.2"
 
 # Sanctuary's public dependency contract is the `dev` branch of the
 # project-maintained OxideAV forks. Cargo.lock pins the exact Git revisions

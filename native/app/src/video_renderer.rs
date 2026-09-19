@@ -1,6 +1,7 @@
 use ::oxideav::core::arena::sync::Frame as ArenaFrame;
 use ::oxideav::core::{
-    FrameLease, PixelFormat, VideoColorInfo, VideoColorRange, VideoFrame, VideoMatrixCoefficients,
+    Frame, FrameLease, PixelFormat, VideoColorInfo, VideoColorRange, VideoFrame,
+    VideoMatrixCoefficients,
 };
 
 #[cfg(target_os = "android")]
@@ -467,6 +468,7 @@ impl VideoRenderer {
         match decode_mode {
             DecodeMode::Auto => self.upload_auto(device, queue, lease, color),
             DecodeMode::Cpu => self.upload_cpu_lease(device, queue, lease, color),
+            DecodeMode::VulkanReadback => self.upload_vulkan_readback(device, queue, lease, color),
             DecodeMode::MediaCodecDirect => {
                 #[cfg(target_os = "android")]
                 {
@@ -505,6 +507,16 @@ impl VideoRenderer {
     ) -> Result<(), String> {
         if lease.as_arena_video().is_some() {
             return self.upload_cpu_lease(device, queue, lease, color);
+        }
+        if lease.as_frame().is_some() {
+            #[cfg(target_os = "windows")]
+            {
+                return self.upload_vulkan_readback(device, queue, lease, color);
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                return Err("auto decode received a legacy CPU video frame on a platform without the Vulkan readback path".into());
+            }
         }
         let hardware = lease
             .as_hardware_video()
@@ -567,6 +579,36 @@ impl VideoRenderer {
         let view = arena_yuv420p_view(arena)
             .ok_or_else(|| "unsupported arena video layout (expected native YUV420P)".to_owned())?;
         self.upload_yuv420p(device, queue, &view, color)
+    }
+
+    fn upload_vulkan_readback(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        lease: &FrameLease,
+        color: Option<VideoColorInfo>,
+    ) -> Result<(), String> {
+        let frame = lease
+            .as_frame()
+            .ok_or_else(|| "vulkan-readback mode received a non-owned video lease".to_owned())?;
+        let Frame::Video(frame) = frame else {
+            return Err("vulkan-readback mode received a non-video frame".into());
+        };
+        let (width, height) = video_frame_yuv420p_dimensions(frame).ok_or_else(|| {
+            "Vulkan Video readback produced invalid YUV420P plane dimensions".to_owned()
+        })?;
+        let view = video_frame_yuv420p_view(frame, width, height)
+            .ok_or_else(|| "Vulkan Video readback produced invalid YUV420P planes".to_owned())?;
+        self.upload_yuv420p(device, queue, &view, color)?;
+        if !self.readback_logged {
+            log::info!(
+                "SanctuaryPlayer: Vulkan Video readback presentation active ({}x{}, hardware decode -> Vulkan NV12 staging readback -> CPU I420 -> wgpu)",
+                width,
+                height
+            );
+            self.readback_logged = true;
+        }
+        Ok(())
     }
 
     fn upload_mediacodec_readback(
@@ -1272,6 +1314,20 @@ fn arena_yuv420p_view(frame: &ArenaFrame) -> Option<Yuv420pView<'_>> {
         v,
         frame.plane_stride(2)?,
     )
+}
+
+fn video_frame_yuv420p_dimensions(frame: &VideoFrame) -> Option<(u32, u32)> {
+    let y = frame.planes.first()?;
+    if y.stride == 0 || !y.data.len().is_multiple_of(y.stride) {
+        return None;
+    }
+    let width = u32::try_from(y.stride).ok()?;
+    let height = u32::try_from(y.data.len() / y.stride).ok()?;
+    if width == 0 || height == 0 {
+        return None;
+    }
+    video_frame_yuv420p_view(frame, width, height)?;
+    Some((width, height))
 }
 
 fn video_frame_yuv420p_view(

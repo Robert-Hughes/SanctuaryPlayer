@@ -46,5 +46,7 @@ glow = "0.17"
 x11-dl = "2.21"
 oxideav-vdpau.workspace = true
 
+[target.'cfg(target_os = "windows")'.dependencies]
+oxideav-vulkan-video.workspace = true
 [dev-dependencies]
 oxideav-sysaudio = { workspace = true, features = ["mock"] }

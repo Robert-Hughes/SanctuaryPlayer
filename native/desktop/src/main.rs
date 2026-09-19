@@ -6,7 +6,7 @@ use sanctuary_player_app::{AppEvent, SanctuaryPlayerApp};
 
 const USAGE: &str = "Usage: sanctuary-player [OPTIONS] [VIDEO]\n\n\
 VIDEO may be a YouTube/Twitch video ID or URL, or a sanctuaryplayer:// deep link.\n\n\
-Options:\n  -v, --video <VIDEO>       Auto-load a video on startup\n      --play, --autoplay    Start playback after the video opens\n      --mute                Mute audio while keeping the audio playback clock active\n      --decode-mode <MODE>  auto | cpu | vdpau-readback | vdpau-direct (VDPAU: FreeBSD only)\n      --register-uri-handler Register sanctuaryplayer:// for this executable\n  -h, --help                Show this help";
+Options:\n  -v, --video <VIDEO>       Auto-load a video on startup\n      --play, --autoplay    Start playback after the video opens\n      --mute                Mute audio while keeping the audio playback clock active\n      --decode-mode <MODE>  auto | cpu | vulkan-readback (Windows) | vdpau-readback | vdpau-direct (FreeBSD)\n      --register-uri-handler Register sanctuaryplayer:// for this executable\n  -h, --help                Show this help";
 
 enum CliAction {
     Run {
@@ -380,6 +380,24 @@ mod tests {
         };
         assert_eq!(decode_mode, DecodeMode::Cpu);
 
+        #[cfg(target_os = "windows")]
+        {
+            let CliAction::Run { decode_mode, .. } =
+                parse(&["--decode-mode", "vulkan-readback", "2395077199"]).unwrap()
+            else {
+                panic!("expected run action");
+            };
+            assert_eq!(decode_mode, DecodeMode::VulkanReadback);
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            let error = parse(&["--decode-mode", "vulkan-readback", "2395077199"])
+                .err()
+                .expect("unsupported mode should fail");
+            assert!(error.contains("not supported"));
+        }
+
         #[cfg(target_os = "freebsd")]
         for (name, expected) in [
             ("vdpau-readback", DecodeMode::VdpauReadback),
@@ -395,7 +413,9 @@ mod tests {
 
         #[cfg(not(target_os = "freebsd"))]
         for name in ["vdpau-readback", "vdpau-direct"] {
-            let error = parse(&["--decode-mode", name, "2395077199"]).unwrap_err();
+            let error = parse(&["--decode-mode", name, "2395077199"])
+                .err()
+                .expect("unsupported mode should fail");
             assert!(error.contains("not supported"));
         }
 

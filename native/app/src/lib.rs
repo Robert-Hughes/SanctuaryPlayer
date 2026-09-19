@@ -30,6 +30,8 @@ pub mod ui;
 mod vdpau_vulkan_bridge;
 pub mod video;
 pub mod video_renderer;
+#[cfg(target_os = "windows")]
+mod vulkan_video_decoder;
 
 #[cfg(not(target_os = "android"))]
 use std::path::PathBuf;
