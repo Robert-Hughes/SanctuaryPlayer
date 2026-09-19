@@ -448,9 +448,17 @@ impl AppState {
     pub fn update(&mut self, elapsed: Duration) {
         self.poll_video_open();
         let was_seeking = matches!(self.playback.state(), PlaybackState::Seeking);
+        let was_error = matches!(self.playback.state(), PlaybackState::Error(_));
         self.playback.update(elapsed);
         let seek_completed =
             was_seeking && !matches!(self.playback.state(), PlaybackState::Seeking);
+        let playback_error = match self.playback.state() {
+            PlaybackState::Error(message) if !was_error => Some(message.clone()),
+            _ => None,
+        };
+        if let Some(message) = playback_error {
+            self.show_message("Playback error", message);
+        }
         self.refresh_safe_session();
         self.persist_session(seek_completed);
         self.age_saved_positions(elapsed);
@@ -1454,6 +1462,72 @@ mod tests {
         ))
     }
 
+    struct ErrorOnUpdatePlayback {
+        source: VideoSource,
+        state: PlaybackState,
+    }
+
+    impl ErrorOnUpdatePlayback {
+        fn new() -> Self {
+            Self {
+                source: VideoSource::parse("2386400830").unwrap(),
+                state: PlaybackState::Playing,
+            }
+        }
+    }
+
+    impl PlaybackBackend for ErrorOnUpdatePlayback {
+        fn open(&mut self, _source: &VideoSource) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn source(&self) -> Option<&VideoSource> {
+            Some(&self.source)
+        }
+
+        fn state(&self) -> &PlaybackState {
+            &self.state
+        }
+
+        fn play(&mut self) {}
+
+        fn pause(&mut self) {}
+
+        fn position(&self) -> Duration {
+            Duration::from_secs(123)
+        }
+
+        fn duration(&self) -> Option<Duration> {
+            Some(Duration::from_secs(456))
+        }
+
+        fn seek(&mut self, _position: Duration) {}
+
+        fn available_rates(&self) -> &[f32] {
+            &[1.0]
+        }
+
+        fn playback_rate(&self) -> f32 {
+            1.0
+        }
+
+        fn set_playback_rate(&mut self, _rate: f32) {}
+
+        fn available_qualities(&self) -> &[Quality] {
+            &[]
+        }
+
+        fn quality(&self) -> Option<&Quality> {
+            None
+        }
+
+        fn set_quality(&mut self, _quality_id: &str) {}
+
+        fn update(&mut self, _elapsed: Duration) {
+            self.state = PlaybackState::Error("synthetic executor failure".into());
+        }
+    }
+
     fn loaded_state() -> AppState {
         let mut state = AppState::new();
         let source = VideoSource::parse("2386400830").unwrap();
@@ -1603,6 +1677,24 @@ mod tests {
         let mut playback = DummyPlayback::new();
         playback.open(&source)?;
         Ok(Box::new(playback))
+    }
+
+    #[test]
+    fn playback_error_transition_opens_message_dialog_once() {
+        let mut state = AppState::new();
+        state.playback = Box::new(ErrorOnUpdatePlayback::new());
+
+        state.update(Duration::from_millis(16));
+
+        assert!(matches!(
+            state.ui.dialog.as_ref(),
+            Some(DialogState::Message { title, message })
+                if title == "Playback error" && message == "synthetic executor failure"
+        ));
+
+        state.close_dialog();
+        state.update(Duration::from_millis(16));
+        assert!(state.ui.dialog.is_none());
     }
 
     #[test]

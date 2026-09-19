@@ -1584,6 +1584,9 @@ impl OxidePlayback {
         if let Some(audio) = self.audio_output.as_mut() {
             let _ = audio.set_paused(true);
         }
+        let now = Instant::now();
+        self.video_clock.pause(now, self.video_stream.time_base);
+        self.update_position_at(now);
         self.state = PlaybackState::Error(message);
     }
 
@@ -1883,7 +1886,7 @@ impl PlaybackBackend for OxidePlayback {
     }
 
     fn position(&self) -> Duration {
-        if !matches!(self.state, PlaybackState::Seeking)
+        if !matches!(self.state, PlaybackState::Seeking | PlaybackState::Error(_))
             && let Some(position) = self.video_position_at(Instant::now())
         {
             return self
@@ -2473,6 +2476,34 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn playback_error_freezes_video_clock_and_position() {
+        let (mut playback, _tx) = clock_test_playback();
+        playback
+            .video_clock
+            .establish(90_000, Instant::now() - Duration::from_secs(1), true);
+
+        playback.fail("synthetic playback failure".into());
+
+        assert!(matches!(playback.state, PlaybackState::Error(_)));
+        assert!(playback.video_clock.frozen_pts.is_some());
+        let frozen_position = playback.position();
+        std::thread::sleep(Duration::from_millis(5));
+        assert_eq!(playback.position(), frozen_position);
+    }
+
+    #[test]
+    fn error_position_uses_stored_position_instead_of_live_clock() {
+        let (mut playback, _tx) = clock_test_playback();
+        playback.position = Duration::from_secs(42);
+        playback.state = PlaybackState::Error("synthetic playback failure".into());
+        playback
+            .video_clock
+            .establish(90_000, Instant::now() - Duration::from_secs(10), true);
+
+        assert_eq!(playback.position(), Duration::from_secs(42));
     }
 
     #[test]
