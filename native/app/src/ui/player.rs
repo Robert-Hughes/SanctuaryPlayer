@@ -305,11 +305,14 @@ fn paint_centre_status(ui: &egui::Ui, state: &AppState, controls_rect: egui::Rec
         .pivot(egui::Align2::CENTER_TOP)
         .order(egui::Order::Foreground)
         .show(&ctx, |ui| {
-            ui.label(
-                egui::RichText::new(label)
-                    .size(4.0 * vmin)
-                    .color(theme::TOP_INFO)
-                    .strong(),
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(label)
+                        .size(4.0 * vmin)
+                        .color(theme::TOP_INFO)
+                        .strong(),
+                )
+                .wrap_mode(egui::TextWrapMode::Extend),
             );
         });
 }
