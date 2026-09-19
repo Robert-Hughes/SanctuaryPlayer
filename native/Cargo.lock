@@ -2160,13 +2160,13 @@ dependencies = [
 [[package]]
 name = "oxideav-vulkan-video"
 version = "0.0.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9ad9f76b63ab380a137c3125586463330ab07d9dab119e39e35b13a67a993dc5"
+source = "git+https://github.com/Robert-Hughes/oxideav-vulkan-video.git?branch=dev#ccb6f3195b04b970d6548ff82d82631c3607a227"
 dependencies = [
  "libloading 0.8.9",
  "linkme",
  "oxideav-bitstream",
  "oxideav-core",
+ "oxideav-h264",
 ]
 
 [[package]]

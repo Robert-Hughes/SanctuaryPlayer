@@ -120,11 +120,13 @@ The local OxideAV workspace provides the pieces needed for native playback:
   `8d2a3e5`).
 - FreeBSD VDPAU H.264 streaming decode (`a1a2463`) with explicit unsupported-case
   fallback rather than silent approximation (`2869584`).
-- Windows Vulkan Video H.264 hardware decode through `oxideav-vulkan-video` 0.0.2.
-  Sanctuary currently consumes the crate's GPU decode plus host-visible NV12 staging
-  readback, converts that readback to packed CPU I420, and then uses the existing wgpu
-  YUV upload path. Direct Vulkan-image presentation is intentionally left for the next
-  zero-copy stage.
+- Windows Vulkan Video H.264 streaming hardware decode through the project fork
+  (`oxideav-vulkan-video` `ccb6f31`): the shared H.264 frontend supplies POC/DPB state
+  for I/P/B pictures and the Vulkan backend maps that state to real reference slots,
+  rejecting unsupported stream tools instead of approximating them. Sanctuary consumes
+  host-visible NV12 staging readback, converts it to packed CPU I420, and then uses the
+  existing wgpu YUV upload path. Direct Vulkan-image presentation is intentionally left
+  for the next zero-copy stage.
 - Retainable decoded-frame ownership through `FrameLease` (`c6e6f02`, `4c7099a`).
 - Native pooled software-H.264 arena output (`46f8433`, `94b6372`, `fda3143`),
   including arena-backed PAFF/SCP assembly and hard pool-exhaustion semantics

@@ -61,3 +61,4 @@ oxideav-http = { git = "https://github.com/Robert-Hughes/oxideav-http.git", bran
 oxideav-hls = { git = "https://github.com/Robert-Hughes/oxideav-hls.git", branch = "dev" }
 oxideav-mediacodec = { git = "https://github.com/Robert-Hughes/oxideav-mediacodec.git", branch = "dev" }
 oxideav-vdpau = { git = "https://github.com/Robert-Hughes/oxideav-vdpau.git", branch = "dev" }
+oxideav-vulkan-video = { git = "https://github.com/Robert-Hughes/oxideav-vulkan-video.git", branch = "dev" }
