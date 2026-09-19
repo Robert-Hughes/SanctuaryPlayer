@@ -57,10 +57,11 @@ fn paint_top_info(ui: &mut egui::Ui, state: &AppState) -> egui::Rect {
     area.response.rect
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PlayerIcon {
     Play,
     Pause,
+    Refresh,
     Seeking,
     Ended,
     Fullscreen,
@@ -74,6 +75,9 @@ fn icon_image(icon: PlayerIcon) -> egui::Image<'static> {
         PlayerIcon::Pause => {
             egui::Image::new(egui::include_image!("../../assets/player-icons/pause.svg"))
         }
+        PlayerIcon::Refresh => egui::Image::new(egui::include_image!(
+            "../../assets/player-icons/refresh.svg"
+        )),
         PlayerIcon::Seeking => egui::Image::new(egui::include_image!(
             "../../assets/player-icons/seeking.svg"
         )),
@@ -132,23 +136,18 @@ fn paint_centre_controls(
         .show(&ctx, |ui| {
             ui.spacing_mut().item_spacing.x = gap;
             ui.horizontal(|ui| {
-                let (icon, state_enabled) = match state.playback_state() {
-                    PlaybackState::Playing | PlaybackState::Buffering => (PlayerIcon::Pause, true),
-                    PlaybackState::Paused => (PlayerIcon::Play, true),
-                    PlaybackState::Seeking => (PlayerIcon::Seeking, false),
-                    PlaybackState::Ended => (PlayerIcon::Ended, false),
-                    PlaybackState::Loading | PlaybackState::Error(_) => (PlayerIcon::Play, false),
-                };
+                let (icon, command) = primary_playback_control(state.playback_state());
                 if icon_button(
                     ui,
                     icon,
                     size,
                     radius,
-                    state_enabled && !state.ui.controls_locked,
+                    command.is_some() && !state.ui.controls_locked,
                 )
                 .clicked()
+                    && let Some(command) = command
                 {
-                    commands.push(AppCommand::TogglePlayback);
+                    commands.push(command);
                 }
                 if icon_button(
                     ui,
@@ -164,6 +163,19 @@ fn paint_centre_controls(
             });
         });
     area.response.rect
+}
+
+fn primary_playback_control(state: &PlaybackState) -> (PlayerIcon, Option<AppCommand>) {
+    match state {
+        PlaybackState::Playing | PlaybackState::Buffering => {
+            (PlayerIcon::Pause, Some(AppCommand::TogglePlayback))
+        }
+        PlaybackState::Paused => (PlayerIcon::Play, Some(AppCommand::TogglePlayback)),
+        PlaybackState::Error(_) => (PlayerIcon::Refresh, Some(AppCommand::RetryPlayback)),
+        PlaybackState::Seeking => (PlayerIcon::Seeking, None),
+        PlaybackState::Ended => (PlayerIcon::Ended, None),
+        PlaybackState::Loading => (PlayerIcon::Play, None),
+    }
 }
 
 fn playback_status_label(state: &PlaybackState) -> Option<&'static str> {
@@ -459,8 +471,18 @@ fn paint_lock_slider(
 
 #[cfg(test)]
 mod tests {
-    use super::{bottom_control_row_origins, playback_status_label};
-    use crate::model::PlaybackState;
+    use super::{
+        PlayerIcon, bottom_control_row_origins, playback_status_label, primary_playback_control,
+    };
+    use crate::model::{AppCommand, PlaybackState};
+
+    #[test]
+    fn error_state_uses_refresh_recovery_control() {
+        let (icon, command) =
+            primary_playback_control(&PlaybackState::Error("network failed".into()));
+        assert_eq!(icon, PlayerIcon::Refresh);
+        assert_eq!(command, Some(AppCommand::RetryPlayback));
+    }
 
     #[test]
     fn centre_status_hides_obvious_states_and_labels_transitional_states() {

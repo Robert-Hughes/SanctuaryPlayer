@@ -554,6 +554,14 @@ impl AppState {
     }
 
     fn begin_twitch_resolution(&mut self, source: VideoSource) {
+        self.start_twitch_resolution(source, true);
+    }
+
+    fn retry_twitch_resolution(&mut self, source: VideoSource) {
+        self.start_twitch_resolution(source, false);
+    }
+
+    fn start_twitch_resolution(&mut self, source: VideoSource, clear_current: bool) {
         let resolver = self.twitch_resolver;
         let playback_factory = self.playback_factory;
         let playback_wake = self.playback_wake.clone();
@@ -561,7 +569,11 @@ impl AppState {
         let decode_mode = self.decode_mode;
         let muted = self.muted;
         let video_id = source.id.clone();
-        log::info!("SanctuaryPlayer: Twitch video open begin video_id={video_id}");
+        log::info!(
+            "SanctuaryPlayer: Twitch video open begin video_id={} retry={}",
+            video_id,
+            !clear_current
+        );
         let worker_video_id = video_id.clone();
         let (sender, receiver) = mpsc::channel();
         thread::spawn(move || {
@@ -582,12 +594,40 @@ impl AppState {
             let _ = sender.send(result);
         });
 
-        self.playback = Box::new(DummyPlayback::new());
-        self.metadata = None;
+        if clear_current {
+            self.playback = Box::new(DummyPlayback::new());
+            self.metadata = None;
+        }
         self.pending_video_open = Some(PendingVideoOpen { receiver });
         self.ui.menu_open = false;
         self.ui.dialog = Some(DialogState::TwitchResolving { video_id });
         self.note_interaction();
+    }
+
+    fn retry_failed_playback(&mut self) {
+        if !matches!(self.playback.state(), PlaybackState::Error(_)) {
+            return;
+        }
+        let Some(mut source) = self.playback.source().cloned() else {
+            return;
+        };
+        let position = self.playback.position();
+        source.start_time = (!position.is_zero()).then_some(position);
+        self.play_when_opened = true;
+        self.cancel_paused_position_save();
+
+        log::info!(
+            "SanctuaryPlayer: retry playback video_id={} position={:.3}s",
+            source.id,
+            position.as_secs_f64()
+        );
+        match source.platform {
+            VideoPlatform::Twitch => self.retry_twitch_resolution(source),
+            VideoPlatform::YouTube => self.show_message(
+                "YouTube is not supported yet",
+                "SanctuaryPlayer recognises YouTube video IDs and URLs, but YouTube playback is currently unsupported.",
+            ),
+        }
     }
 
     fn show_message(&mut self, title: impl Into<String>, message: impl Into<String>) {
@@ -1139,6 +1179,7 @@ impl AppState {
                 }
                 _ => {}
             },
+            AppCommand::RetryPlayback => self.retry_failed_playback(),
             AppCommand::Play => {
                 self.cancel_paused_position_save();
                 self.playback.play();
@@ -1623,6 +1664,14 @@ mod tests {
         })
     }
 
+    fn test_twitch_resolver_failure(
+        _video_id: &str,
+    ) -> Result<ResolvedTwitchVod, TwitchVodResolveError> {
+        Err(TwitchVodResolveError::Request(
+            "synthetic network failure".into(),
+        ))
+    }
+
     fn test_twitch_resolver_without_metadata(
         _video_id: &str,
     ) -> Result<ResolvedTwitchVod, TwitchVodResolveError> {
@@ -1701,6 +1750,75 @@ mod tests {
         state.close_dialog();
         state.update(Duration::from_millis(16));
         assert!(state.ui.dialog.is_none());
+    }
+
+    #[test]
+    fn retry_playback_reopens_same_twitch_video_at_error_position_and_resumes() {
+        let mut state = AppState::new();
+        let mut failed = ErrorOnUpdatePlayback::new();
+        failed.state = PlaybackState::Error("synthetic executor failure".into());
+        state.playback = Box::new(failed);
+        state.twitch_resolver = test_twitch_resolver;
+        state.playback_factory = test_playback_factory;
+
+        state.apply(AppCommand::RetryPlayback);
+
+        assert!(state.pending_video_open.is_some());
+        assert!(matches!(state.playback_state(), PlaybackState::Error(_)));
+        assert_eq!(state.position(), Duration::from_secs(123));
+
+        for _ in 0..200 {
+            state.update(Duration::from_millis(200));
+            if state.pending_video_open.is_none()
+                && matches!(state.playback_state(), PlaybackState::Playing)
+            {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+
+        assert!(state.pending_video_open.is_none());
+        assert_eq!(state.playback_state(), &PlaybackState::Playing);
+        assert_eq!(state.position(), Duration::from_secs(123));
+        let source = state.source().expect("reopened Twitch source");
+        assert_eq!(source.id, "2386400830");
+        assert_eq!(source.start_time, Some(Duration::from_secs(123)));
+        assert!(!state.play_when_opened);
+    }
+
+    #[test]
+    fn failed_retry_keeps_terminal_backend_available_for_another_attempt() {
+        let mut state = AppState::new();
+        let mut failed = ErrorOnUpdatePlayback::new();
+        failed.state = PlaybackState::Error("synthetic executor failure".into());
+        state.playback = Box::new(failed);
+        state.twitch_resolver = test_twitch_resolver_failure;
+        state.playback_factory = test_playback_factory;
+
+        state.apply(AppCommand::RetryPlayback);
+
+        for _ in 0..200 {
+            state.update(Duration::ZERO);
+            if state.pending_video_open.is_none() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+
+        assert!(state.pending_video_open.is_none());
+        assert!(matches!(state.playback_state(), PlaybackState::Error(_)));
+        assert_eq!(state.position(), Duration::from_secs(123));
+        assert_eq!(
+            state.source().map(|source| source.id.as_str()),
+            Some("2386400830")
+        );
+        assert!(matches!(
+            state.ui.dialog.as_ref(),
+            Some(DialogState::Message { title, message })
+                if title == "Unable to open Twitch video"
+                    && message.contains("synthetic network failure")
+        ));
+        assert!(!state.play_when_opened);
     }
 
     #[test]
