@@ -69,36 +69,40 @@ fn paint_debug_info(ui: &egui::Ui, state: &AppState) {
                             ui.set_min_width(width - 2.0 * vmin);
                             for (section_index, section) in sections.iter().enumerate() {
                                 if section_index != 0 {
-                                    ui.add_space(0.8 * vmin);
+                                    ui.add_space(0.5 * vmin);
                                 }
-                                ui.label(
+                                egui::CollapsingHeader::new(
                                     egui::RichText::new(&section.title)
                                         .monospace()
                                         .strong()
                                         .size((1.9 * vmin).max(12.0))
                                         .color(theme::TOP_INFO),
-                                );
-                                egui::Grid::new(("debug-info-section", section_index))
-                                    .num_columns(2)
-                                    .spacing(egui::vec2(vmin, 0.2 * vmin))
-                                    .striped(true)
-                                    .show(ui, |ui| {
-                                        for (label, value) in &section.rows {
-                                            ui.label(
-                                                egui::RichText::new(label)
-                                                    .monospace()
-                                                    .size((1.7 * vmin).max(11.0))
-                                                    .color(egui::Color32::LIGHT_GRAY),
-                                            );
-                                            ui.label(
-                                                egui::RichText::new(value)
-                                                    .monospace()
-                                                    .size((1.7 * vmin).max(11.0))
-                                                    .color(egui::Color32::WHITE),
-                                            );
-                                            ui.end_row();
-                                        }
-                                    });
+                                )
+                                .id_salt(("playback-debug-section", &section.title))
+                                .default_open(true)
+                                .show(ui, |ui| {
+                                    egui::Grid::new(("debug-info-grid", &section.title))
+                                        .num_columns(2)
+                                        .spacing(egui::vec2(vmin, 0.2 * vmin))
+                                        .striped(true)
+                                        .show(ui, |ui| {
+                                            for (label, value) in &section.rows {
+                                                ui.label(
+                                                    egui::RichText::new(label)
+                                                        .monospace()
+                                                        .size((1.7 * vmin).max(11.0))
+                                                        .color(egui::Color32::LIGHT_GRAY),
+                                                );
+                                                ui.label(
+                                                    egui::RichText::new(value)
+                                                        .monospace()
+                                                        .size((1.7 * vmin).max(11.0))
+                                                        .color(egui::Color32::WHITE),
+                                                );
+                                                ui.end_row();
+                                            }
+                                        });
+                                });
                             }
                         });
                 });
