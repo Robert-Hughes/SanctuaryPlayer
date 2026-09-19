@@ -11,6 +11,7 @@
 
 - Re-enable non-1.0x playback rates for real A/V playback with pitch-preserving audio time-stretch and correct A/V clocking.
 - Compensate the media clock for reported audio output latency so presentation timing reflects when sound actually reaches the device.
+- Multiple qualities - e.g. after seek show the low quality first then upgrade
 
 ## Playback resilience and lifecycle
 
