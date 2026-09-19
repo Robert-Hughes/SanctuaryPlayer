@@ -56,4 +56,3 @@
 - Add OS media-key handling for play/pause and other appropriate transport controls.
 - Add platform media-session integration (lock-screen/system media controls and current media metadata) where available.
 - Add equivalent display sleep/screensaver inhibition on desktop platforms; Android keeps the display awake only during foreground playback.
-- Add native deep-link/share support for the current video and media time, equivalent to the web client's continuously updated `videoId`/`time` URL state.
