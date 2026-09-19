@@ -885,7 +885,11 @@ mod android {
             let full_output = ctx.run_ui(raw_input, |root_ui| {
                 let viewport = ctx.viewport_rect();
                 let content = ctx.content_rect();
-                let fill = root_ui.visuals().panel_fill;
+                let fill = if state.has_video() {
+                    egui::Color32::BLACK
+                } else {
+                    root_ui.visuals().panel_fill
+                };
                 let painter = egui::Painter::new(
                     ctx.clone(),
                     egui::LayerId::new(
@@ -1417,7 +1421,11 @@ mod android {
     }
 
     #[allow(unsafe_code)]
-    fn set_android_fullscreen(app: &AndroidApp, fullscreen: bool) -> Result<(), String> {
+    fn set_android_system_bars(
+        app: &AndroidApp,
+        fullscreen: bool,
+        dark_background: bool,
+    ) -> Result<(), String> {
         use jni::{
             JavaVM, jni_sig, jni_str,
             objects::{JObject, JValue},
@@ -1478,15 +1486,16 @@ mod android {
                             &[JValue::Int(SYSTEM_BARS)],
                         )?;
                     } else {
-                        // Restore normal light-system-bar appearance before making the
-                        // bars visible again. Some Samsung builds otherwise keep
-                        // SystemUI (including the notification shade) in fullscreen's
-                        // light-foreground mode until a later appearance update.
+                        // Match the foreground to the content drawn beneath the bars:
+                        // light icons/text over video black, dark icons/text over the
+                        // light welcome-page background. Applying this before show()
+                        // also avoids Samsung retaining fullscreen's previous appearance.
+                        let appearance = if dark_background { 0 } else { LIGHT_BARS };
                         env.call_method(
                             &controller,
                             jni_str!("setSystemBarsAppearance"),
                             jni_sig!("(II)V"),
-                            &[JValue::Int(LIGHT_BARS), JValue::Int(LIGHT_BARS)],
+                            &[JValue::Int(appearance), JValue::Int(LIGHT_BARS)],
                         )?;
                         // Fullscreen enables transient bars. Restore normal bar
                         // behaviour as part of the same transition back to windowed UI.
@@ -1522,6 +1531,8 @@ mod android {
                         | 0x0000_0100
                         | 0x0000_0200
                         | 0x0000_0400
+                } else if dark_background {
+                    0
                 } else {
                     let mut flags = 0x0000_2000; // LIGHT_STATUS_BAR
                     if sdk_int >= 26 {
@@ -1591,7 +1602,7 @@ mod android {
 
             if matches!(state.apply(command), Some(AppEffect::ToggleFullscreen)) {
                 *fullscreen = !*fullscreen;
-                match set_android_fullscreen(app, *fullscreen) {
+                match set_android_system_bars(app, *fullscreen, state.has_video()) {
                     Ok(()) => log::info!("SanctuaryPlayer: Android fullscreen={}", *fullscreen),
                     Err(error) => log::error!(
                         "SanctuaryPlayer: could not set Android fullscreen={}: {error}",
@@ -1670,6 +1681,7 @@ mod android {
         let mut focused = false;
         let mut input_available = false;
         let mut fullscreen = false;
+        let mut system_bars_video_loaded = None;
         let mut running = true;
 
         while running {
@@ -1706,17 +1718,22 @@ mod android {
                     } else if let Some(source) = startup_source.take() {
                         let _ = state.apply(AppCommand::OpenVideo(source));
                     }
-                    if let Err(error) = set_android_fullscreen(&android_app, fullscreen) {
+                    let video_loaded = state.has_video();
+                    if let Err(error) =
+                        set_android_system_bars(&android_app, fullscreen, video_loaded)
+                    {
                         log::error!(
                             "SanctuaryPlayer: could not apply Android system-bar mode fullscreen={fullscreen}: {error}"
                         );
                     }
+                    system_bars_video_loaded = Some(video_loaded);
                     repaint.request(Duration::ZERO);
                 }
                 PollEvent::Main(MainEvent::TerminateWindow { .. }) => {
                     if let Some(gpu) = gpu.as_mut() {
                         gpu.detach_window();
                     }
+                    system_bars_video_loaded = None;
                 }
                 PollEvent::Main(MainEvent::WindowResized { .. }) => {
                     if let Some(gpu) = gpu.as_mut()
@@ -1731,11 +1748,15 @@ mod android {
                 }
                 PollEvent::Main(MainEvent::GainedFocus) => {
                     focused = true;
-                    if let Err(error) = set_android_fullscreen(&android_app, fullscreen) {
+                    let video_loaded = state.has_video();
+                    if let Err(error) =
+                        set_android_system_bars(&android_app, fullscreen, video_loaded)
+                    {
                         log::error!(
                             "SanctuaryPlayer: could not restore Android system-bar mode fullscreen={fullscreen}: {error}"
                         );
                     }
+                    system_bars_video_loaded = Some(video_loaded);
                     repaint.request(Duration::ZERO);
                 }
                 PollEvent::Main(MainEvent::LostFocus) => {
@@ -1814,6 +1835,17 @@ mod android {
                 && let Some(size) = gpu.dimensions()
             {
                 state.update(now.saturating_duration_since(last_update));
+                let video_loaded = state.has_video();
+                if system_bars_video_loaded != Some(video_loaded) {
+                    if let Err(error) =
+                        set_android_system_bars(&android_app, fullscreen, video_loaded)
+                    {
+                        log::error!(
+                            "SanctuaryPlayer: could not update Android system-bar appearance: {error}"
+                        );
+                    }
+                    system_bars_video_loaded = Some(video_loaded);
+                }
                 media_focus.sync_playback_state(&android_app, &mut state);
                 screen_on.sync(&android_app, &state);
                 last_update = now;
