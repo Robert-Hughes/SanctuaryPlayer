@@ -171,7 +171,7 @@ fn primary_playback_control(state: &PlaybackState) -> (PlayerIcon, Option<AppCom
             (PlayerIcon::Pause, Some(AppCommand::TogglePlayback))
         }
         PlaybackState::Paused => (PlayerIcon::Play, Some(AppCommand::TogglePlayback)),
-        PlaybackState::Error(_) => (PlayerIcon::Refresh, Some(AppCommand::RetryPlayback)),
+        PlaybackState::Error(_) => (PlayerIcon::Refresh, Some(AppCommand::RefreshPlayback)),
         PlaybackState::Seeking => (PlayerIcon::Seeking, None),
         PlaybackState::Ended => (PlayerIcon::Ended, None),
         PlaybackState::Loading => (PlayerIcon::Play, None),
@@ -477,11 +477,11 @@ mod tests {
     use crate::model::{AppCommand, PlaybackState};
 
     #[test]
-    fn error_state_uses_refresh_recovery_control() {
+    fn error_state_uses_shared_refresh_control() {
         let (icon, command) =
             primary_playback_control(&PlaybackState::Error("network failed".into()));
         assert_eq!(icon, PlayerIcon::Refresh);
-        assert_eq!(command, Some(AppCommand::RetryPlayback));
+        assert_eq!(command, Some(AppCommand::RefreshPlayback));
     }
 
     #[test]

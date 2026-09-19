@@ -32,7 +32,7 @@ impl Quality {
 pub enum AppCommand {
     OpenVideo(VideoSource),
     TogglePlayback,
-    RetryPlayback,
+    RefreshPlayback,
     Play,
     Pause,
     SeekAbsolute(Duration),

@@ -557,7 +557,7 @@ impl AppState {
         self.start_twitch_resolution(source, true);
     }
 
-    fn retry_twitch_resolution(&mut self, source: VideoSource) {
+    fn refresh_twitch_resolution(&mut self, source: VideoSource) {
         self.start_twitch_resolution(source, false);
     }
 
@@ -604,25 +604,43 @@ impl AppState {
         self.note_interaction();
     }
 
-    fn retry_failed_playback(&mut self) {
-        if !matches!(self.playback.state(), PlaybackState::Error(_)) {
-            return;
-        }
+    fn refresh_playback(&mut self) {
+        let resume_playing = matches!(
+            self.playback.state(),
+            PlaybackState::Playing
+                | PlaybackState::Buffering
+                | PlaybackState::Loading
+                | PlaybackState::Seeking
+                | PlaybackState::Error(_)
+        );
         let Some(mut source) = self.playback.source().cloned() else {
             return;
         };
         let position = self.playback.position();
         source.start_time = (!position.is_zero()).then_some(position);
-        self.play_when_opened = true;
+
+        // Freeze healthy active playback at the captured refresh position while
+        // the replacement graph is resolved and opened. Error is already
+        // frozen, while transitional states keep their own terminal/seek
+        // semantics until the replacement succeeds.
+        if matches!(
+            self.playback.state(),
+            PlaybackState::Playing | PlaybackState::Buffering
+        ) {
+            self.playback.pause();
+        }
+
+        self.play_when_opened = resume_playing;
         self.cancel_paused_position_save();
 
         log::info!(
-            "SanctuaryPlayer: retry playback video_id={} position={:.3}s",
+            "SanctuaryPlayer: refresh playback video_id={} position={:.3}s resume_playing={}",
             source.id,
-            position.as_secs_f64()
+            position.as_secs_f64(),
+            resume_playing
         );
         match source.platform {
-            VideoPlatform::Twitch => self.retry_twitch_resolution(source),
+            VideoPlatform::Twitch => self.refresh_twitch_resolution(source),
             VideoPlatform::YouTube => self.show_message(
                 "YouTube is not supported yet",
                 "SanctuaryPlayer recognises YouTube video IDs and URLs, but YouTube playback is currently unsupported.",
@@ -1179,7 +1197,7 @@ impl AppState {
                 }
                 _ => {}
             },
-            AppCommand::RetryPlayback => self.retry_failed_playback(),
+            AppCommand::RefreshPlayback => self.refresh_playback(),
             AppCommand::Play => {
                 self.cancel_paused_position_save();
                 self.playback.play();
@@ -1753,7 +1771,70 @@ mod tests {
     }
 
     #[test]
-    fn retry_playback_reopens_same_twitch_video_at_error_position_and_resumes() {
+    fn refresh_playback_preserves_paused_state_and_position() {
+        let mut state = loaded_state();
+        state.twitch_resolver = test_twitch_resolver;
+        state.playback_factory = test_playback_factory;
+        state.apply(AppCommand::SeekAbsolute(Duration::from_secs(42)));
+        state.update(Duration::from_secs(1));
+        assert_eq!(state.playback_state(), &PlaybackState::Paused);
+        assert_eq!(state.position(), Duration::from_secs(42));
+
+        state.apply(AppCommand::RefreshPlayback);
+
+        for _ in 0..200 {
+            state.update(Duration::from_millis(200));
+            if state.pending_video_open.is_none()
+                && !matches!(state.playback_state(), PlaybackState::Seeking)
+            {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+
+        assert!(state.pending_video_open.is_none());
+        assert_eq!(state.playback_state(), &PlaybackState::Paused);
+        assert_eq!(state.position(), Duration::from_secs(42));
+        assert!(!state.play_when_opened);
+    }
+
+    #[test]
+    fn refresh_playback_freezes_active_position_then_reopens_and_resumes() {
+        let mut state = loaded_state();
+        state.twitch_resolver = test_twitch_resolver;
+        state.playback_factory = test_playback_factory;
+        state.apply(AppCommand::Play);
+        state.update(Duration::from_secs(17));
+        assert_eq!(state.playback_state(), &PlaybackState::Playing);
+        assert_eq!(state.position(), Duration::from_secs(17));
+
+        state.apply(AppCommand::RefreshPlayback);
+
+        assert_eq!(
+            state.playback_state(),
+            &PlaybackState::Paused,
+            "active playback should freeze while the fresh graph opens"
+        );
+        assert_eq!(state.position(), Duration::from_secs(17));
+
+        for _ in 0..200 {
+            state.update(Duration::from_millis(200));
+            if state.pending_video_open.is_none()
+                && matches!(state.playback_state(), PlaybackState::Playing)
+            {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+
+        assert!(state.pending_video_open.is_none());
+        assert_eq!(state.playback_state(), &PlaybackState::Playing);
+        assert_eq!(state.position(), Duration::from_secs(17));
+        assert!(!state.play_when_opened);
+    }
+
+    #[test]
+    fn refresh_playback_reopens_error_at_same_twitch_position_and_resumes() {
         let mut state = AppState::new();
         let mut failed = ErrorOnUpdatePlayback::new();
         failed.state = PlaybackState::Error("synthetic executor failure".into());
@@ -1761,7 +1842,7 @@ mod tests {
         state.twitch_resolver = test_twitch_resolver;
         state.playback_factory = test_playback_factory;
 
-        state.apply(AppCommand::RetryPlayback);
+        state.apply(AppCommand::RefreshPlayback);
 
         assert!(state.pending_video_open.is_some());
         assert!(matches!(state.playback_state(), PlaybackState::Error(_)));
@@ -1787,7 +1868,7 @@ mod tests {
     }
 
     #[test]
-    fn failed_retry_keeps_terminal_backend_available_for_another_attempt() {
+    fn failed_error_refresh_keeps_terminal_backend_available_for_another_attempt() {
         let mut state = AppState::new();
         let mut failed = ErrorOnUpdatePlayback::new();
         failed.state = PlaybackState::Error("synthetic executor failure".into());
@@ -1795,7 +1876,7 @@ mod tests {
         state.twitch_resolver = test_twitch_resolver_failure;
         state.playback_factory = test_playback_factory;
 
-        state.apply(AppCommand::RetryPlayback);
+        state.apply(AppCommand::RefreshPlayback);
 
         for _ in 0..200 {
             state.update(Duration::ZERO);
