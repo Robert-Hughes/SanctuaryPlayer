@@ -35,6 +35,7 @@ const VIDEO_QUEUE_CAP: usize = 2;
 const PLAYBACK_PACKET_CHANNEL_CAP: usize = 256;
 const OPEN_TIMEOUT: Duration = Duration::from_secs(30);
 const DIAGNOSTIC_INTERVAL: Duration = Duration::from_secs(1);
+const BUFFERING_GRACE: Duration = Duration::from_millis(250);
 const TRACK_SINK_BACKPRESSURE_WAIT: Duration = Duration::from_millis(20);
 
 pub struct OxidePlayback {
@@ -68,6 +69,7 @@ pub struct OxidePlayback {
     first_audio_seconds: Option<f64>,
     audio_anchor_seconds: Option<f64>,
     first_frame_presented: bool,
+    starvation_started_at: Option<Instant>,
     sink_finished: bool,
     seek_pending: Option<PendingSeek>,
     post_seek_epoch: Option<PostSeekEpoch>,
@@ -743,6 +745,7 @@ impl OxidePlayback {
             first_audio_seconds: session.first_audio_seconds,
             audio_anchor_seconds: session.first_audio_seconds,
             first_frame_presented: false,
+            starvation_started_at: None,
             sink_finished: false,
             seek_pending: None,
             post_seek_epoch: None,
@@ -788,6 +791,7 @@ impl OxidePlayback {
         self.first_audio_seconds = session.first_audio_seconds;
         self.audio_anchor_seconds = session.first_audio_seconds;
         self.first_frame_presented = false;
+        self.starvation_started_at = None;
         self.sink_finished = false;
         self.seek_pending = None;
         self.post_seek_epoch = None;
@@ -840,16 +844,19 @@ impl OxidePlayback {
         }
 
         let now = Instant::now();
-        let resume_playing = matches!(self.state, PlaybackState::Playing)
-            || matches!(self.state, PlaybackState::Seeking)
-                && self
-                    .seek_pending
-                    .as_ref()
-                    .is_some_and(|pending| pending.resume_playing);
+        let resume_playing = matches!(
+            self.state,
+            PlaybackState::Playing | PlaybackState::Buffering
+        ) || matches!(self.state, PlaybackState::Seeking)
+            && self
+                .seek_pending
+                .as_ref()
+                .is_some_and(|pending| pending.resume_playing);
         if matches!(self.state, PlaybackState::Playing) {
             self.video_clock.pause(now, self.video_stream.time_base);
             self.update_position_at(now);
         }
+        self.starvation_started_at = None;
         let preserved_position = self.position;
         if let Some(audio) = self.audio_output.as_mut() {
             let _ = audio.set_paused(true);
@@ -1608,8 +1615,64 @@ impl OxidePlayback {
         }
     }
 
+    fn forward_buffers_ready(&self) -> bool {
+        let video_ready = self.video_queue.len() >= VIDEO_QUEUE_CAP;
+        let audio_ready = if self.audio_stream.is_some() {
+            self.audio_output.as_ref().is_some_and(|audio| {
+                audio.preroll_ready() && audio.queued_samples() >= audio.queue_target_samples()
+            })
+        } else {
+            true
+        };
+        video_ready && audio_ready
+    }
+
+    fn note_or_enter_buffering(&mut self, now: Instant) {
+        if !matches!(self.state, PlaybackState::Playing) || !self.first_frame_presented {
+            self.starvation_started_at = None;
+            return;
+        }
+        if !self.video_queue.is_empty() {
+            self.starvation_started_at = None;
+            return;
+        }
+
+        let started = *self.starvation_started_at.get_or_insert(now);
+        if now.duration_since(started) < BUFFERING_GRACE {
+            return;
+        }
+
+        log::info!("SanctuaryPlayer: playback -> Buffering");
+        self.video_clock.pause(now, self.video_stream.time_base);
+        self.update_position_at(now);
+        if let Some(audio) = self.audio_output.as_mut()
+            && let Err(error) = audio.set_paused(true)
+        {
+            self.fail(error);
+            return;
+        }
+        self.starvation_started_at = None;
+        self.state = PlaybackState::Buffering;
+    }
+
+    fn resume_from_buffering_if_ready(&mut self, now: Instant) {
+        if !matches!(self.state, PlaybackState::Buffering) || !self.forward_buffers_ready() {
+            return;
+        }
+        if let Some(audio) = self.audio_output.as_mut()
+            && let Err(error) = audio.set_paused(false)
+        {
+            self.fail(error);
+            return;
+        }
+        self.video_clock.play(now);
+        self.state = PlaybackState::Playing;
+        log::info!("SanctuaryPlayer: playback -> Playing after buffering");
+    }
+
     fn fail(&mut self, message: String) {
         log::error!("SanctuaryPlayer: {message}");
+        self.starvation_started_at = None;
         if let Some(executor) = self.executor.as_ref() {
             executor.request_abort();
         }
@@ -1674,6 +1737,8 @@ impl OxidePlayback {
 
     fn take_due_frame_at(&mut self, now: Instant) -> Option<FrameLease> {
         self.pump_session();
+        self.resume_from_buffering_if_ready(now);
+        self.note_or_enter_buffering(now);
 
         if self
             .video_clock
@@ -1721,6 +1786,7 @@ impl OxidePlayback {
             self.position = position;
         }
         self.pump_session();
+        self.note_or_enter_buffering(now);
         Some(frame)
     }
 
@@ -1731,6 +1797,9 @@ impl OxidePlayback {
     fn next_video_wake_deadline_at(&self, now: Instant) -> Option<Instant> {
         if !matches!(self.state, PlaybackState::Playing) {
             return None;
+        }
+        if let Some(started) = self.starvation_started_at {
+            return Some((started + BUFFERING_GRACE).max(now));
         }
         let frame_pts = self.video_queue.front()?.pts()?;
         let Some(desired_pts) = self.video_clock.pts_at(now, self.video_stream.time_base) else {
@@ -1836,6 +1905,7 @@ impl OxidePlayback {
         self.video_queue.clear();
         self.video_clock.reset();
         self.first_frame_presented = false;
+        self.starvation_started_at = None;
         self.position = target;
         self.state = PlaybackState::Seeking;
         self.seek_pending = Some(PendingSeek {
@@ -1901,7 +1971,10 @@ impl PlaybackBackend for OxidePlayback {
             log::info!("SanctuaryPlayer: playback seek will remain paused after completion");
             return;
         }
-        if !matches!(self.state, PlaybackState::Playing) {
+        if !matches!(
+            self.state,
+            PlaybackState::Playing | PlaybackState::Buffering
+        ) {
             return;
         }
         log::info!("SanctuaryPlayer: playback -> Paused");
@@ -1914,6 +1987,7 @@ impl PlaybackBackend for OxidePlayback {
         let now = Instant::now();
         self.video_clock.pause(now, self.video_stream.time_base);
         self.update_position_at(now);
+        self.starvation_started_at = None;
         self.state = PlaybackState::Paused;
     }
 
@@ -1968,7 +2042,10 @@ impl PlaybackBackend for OxidePlayback {
         }
 
         let prior_position = self.position;
-        let resume_playing = matches!(self.state, PlaybackState::Playing);
+        let resume_playing = matches!(
+            self.state,
+            PlaybackState::Playing | PlaybackState::Buffering
+        );
 
         // Freeze the application-owned audio clock before the seek command can
         // move the source. Otherwise a fast source thread could land and start
@@ -2034,7 +2111,10 @@ impl PlaybackBackend for OxidePlayback {
             return;
         }
         self.pump_session();
-        self.update_position_at(Instant::now());
+        let now = Instant::now();
+        self.resume_from_buffering_if_ready(now);
+        self.note_or_enter_buffering(now);
+        self.update_position_at(now);
         self.update_end_state();
         self.maybe_log_status();
     }
@@ -2385,6 +2465,7 @@ mod tests {
                 first_audio_seconds: None,
                 audio_anchor_seconds: None,
                 first_frame_presented: true,
+                starvation_started_at: None,
                 sink_finished: false,
                 seek_pending: None,
                 post_seek_epoch: None,
@@ -2518,6 +2599,66 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn sustained_video_starvation_enters_buffering_and_freezes_clock() {
+        let (mut playback, _senders) = clock_test_playback();
+        let start = Instant::now();
+        playback.video_clock.establish(90_000, start, true);
+        playback.video_queue.clear();
+
+        playback.note_or_enter_buffering(start);
+        assert_eq!(playback.state, PlaybackState::Playing);
+        assert_eq!(
+            playback.next_video_wake_deadline_at(start),
+            Some(start + BUFFERING_GRACE)
+        );
+
+        let buffering_at = start + BUFFERING_GRACE;
+        playback.note_or_enter_buffering(buffering_at);
+
+        assert_eq!(playback.state, PlaybackState::Buffering);
+        assert_eq!(playback.video_clock.frozen_pts, Some(112_500));
+        let frozen_position = playback.position();
+        assert_eq!(playback.position(), frozen_position);
+    }
+
+    #[test]
+    fn buffering_resumes_only_after_forward_video_buffer_refills() {
+        let (mut playback, _senders) = clock_test_playback();
+        let now = Instant::now();
+        playback.state = PlaybackState::Buffering;
+        playback.video_clock.establish(90_000, now, false);
+        playback.video_queue.clear();
+
+        playback.resume_from_buffering_if_ready(now);
+        assert_eq!(playback.state, PlaybackState::Buffering);
+
+        playback
+            .video_queue
+            .push_back(video_frame_lease(Some(90_000)));
+        playback
+            .video_queue
+            .push_back(video_frame_lease(Some(91_500)));
+        playback.resume_from_buffering_if_ready(now);
+
+        assert_eq!(playback.state, PlaybackState::Playing);
+        assert!(playback.video_clock.origin.is_some());
+        assert!(playback.video_clock.frozen_pts.is_none());
+    }
+
+    #[test]
+    fn pausing_while_buffering_becomes_paused() {
+        let (mut playback, _senders) = clock_test_playback();
+        playback.state = PlaybackState::Buffering;
+        playback
+            .video_clock
+            .establish(90_000, Instant::now(), false);
+
+        playback.pause();
+
+        assert_eq!(playback.state, PlaybackState::Paused);
     }
 
     #[test]

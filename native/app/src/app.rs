@@ -603,7 +603,10 @@ impl AppState {
     fn refresh_safe_session(&mut self) {
         if !matches!(
             self.playback.state(),
-            PlaybackState::Playing | PlaybackState::Paused | PlaybackState::Ended
+            PlaybackState::Playing
+                | PlaybackState::Buffering
+                | PlaybackState::Paused
+                | PlaybackState::Ended
         ) {
             return;
         }
@@ -732,7 +735,10 @@ impl AppState {
     fn maybe_save_position(&mut self) {
         if !matches!(
             self.playback.state(),
-            PlaybackState::Playing | PlaybackState::Paused | PlaybackState::Ended
+            PlaybackState::Playing
+                | PlaybackState::Buffering
+                | PlaybackState::Paused
+                | PlaybackState::Ended
         ) {
             return;
         }
@@ -993,7 +999,7 @@ impl AppState {
     pub fn pause_for_platform_interruption(&mut self) -> bool {
         let was_active = matches!(
             self.playback.state(),
-            PlaybackState::Playing | PlaybackState::Seeking
+            PlaybackState::Playing | PlaybackState::Buffering | PlaybackState::Seeking
         );
         if was_active {
             self.playback.pause();
@@ -1121,7 +1127,7 @@ impl AppState {
                 }
             }
             AppCommand::TogglePlayback => match self.playback.state() {
-                PlaybackState::Playing => {
+                PlaybackState::Playing | PlaybackState::Buffering => {
                     self.playback.pause();
                     self.refresh_safe_session();
                     self.persist_session(true);

@@ -16,7 +16,8 @@ pub fn render(ui: &mut egui::Ui, state: &mut AppState) -> Vec<AppCommand> {
     if state.ui.controls_visible {
         paint_top_info(ui, state);
         menu::render_button(ui, state);
-        paint_centre_controls(ui, state, &mut commands);
+        let centre_controls = paint_centre_controls(ui, state, &mut commands);
+        paint_centre_status(ui, state, centre_controls);
         paint_bottom_controls(ui, state, &mut commands);
         paint_lock_slider(ui, state, &mut commands);
         menu::render(ui, state, &mut commands);
@@ -132,10 +133,11 @@ fn paint_centre_controls(
             ui.spacing_mut().item_spacing.x = gap;
             ui.horizontal(|ui| {
                 let (icon, state_enabled) = match state.playback_state() {
-                    PlaybackState::Playing => (PlayerIcon::Pause, true),
+                    PlaybackState::Playing | PlaybackState::Buffering => (PlayerIcon::Pause, true),
+                    PlaybackState::Paused => (PlayerIcon::Play, true),
                     PlaybackState::Seeking => (PlayerIcon::Seeking, false),
                     PlaybackState::Ended => (PlayerIcon::Ended, false),
-                    _ => (PlayerIcon::Play, true),
+                    PlaybackState::Loading | PlaybackState::Error(_) => (PlayerIcon::Play, false),
                 };
                 if icon_button(
                     ui,
@@ -162,6 +164,40 @@ fn paint_centre_controls(
             });
         });
     area.response.rect
+}
+
+fn playback_status_label(state: &PlaybackState) -> Option<&'static str> {
+    match state {
+        PlaybackState::Playing | PlaybackState::Paused => None,
+        PlaybackState::Loading => Some("Loading…"),
+        PlaybackState::Buffering => Some("Buffering…"),
+        PlaybackState::Seeking => Some("Seeking…"),
+        PlaybackState::Ended => Some("Ended"),
+        PlaybackState::Error(_) => Some("Error"),
+    }
+}
+
+fn paint_centre_status(ui: &egui::Ui, state: &AppState, controls_rect: egui::Rect) {
+    let Some(label) = playback_status_label(state.playback_state()) else {
+        return;
+    };
+    let ctx = ui.ctx().clone();
+    let vmin = theme::vmin(ui);
+    egui::Area::new(egui::Id::new("centre-playback-status"))
+        .fixed_pos(egui::pos2(
+            controls_rect.center().x,
+            controls_rect.bottom() + 1.5 * vmin,
+        ))
+        .pivot(egui::Align2::CENTER_TOP)
+        .order(egui::Order::Foreground)
+        .show(&ctx, |ui| {
+            ui.label(
+                egui::RichText::new(label)
+                    .size(4.0 * vmin)
+                    .color(theme::TOP_INFO)
+                    .strong(),
+            );
+        });
 }
 
 fn text_control_button(
@@ -423,7 +459,27 @@ fn paint_lock_slider(
 
 #[cfg(test)]
 mod tests {
-    use super::bottom_control_row_origins;
+    use super::{bottom_control_row_origins, playback_status_label};
+    use crate::model::PlaybackState;
+
+    #[test]
+    fn centre_status_hides_obvious_states_and_labels_transitional_states() {
+        assert_eq!(playback_status_label(&PlaybackState::Playing), None);
+        assert_eq!(playback_status_label(&PlaybackState::Paused), None);
+        assert_eq!(
+            playback_status_label(&PlaybackState::Buffering),
+            Some("Buffering…")
+        );
+        assert_eq!(
+            playback_status_label(&PlaybackState::Seeking),
+            Some("Seeking…")
+        );
+        assert_eq!(playback_status_label(&PlaybackState::Ended), Some("Ended"));
+        assert_eq!(
+            playback_status_label(&PlaybackState::Error("failed".into())),
+            Some("Error")
+        );
+    }
 
     #[test]
     fn bottom_middle_controls_stay_centred_with_asymmetric_seek_widths() {

@@ -7,6 +7,7 @@ pub enum PlaybackState {
     Loading,
     Paused,
     Playing,
+    Buffering,
     Seeking,
     Ended,
     Error(String),
