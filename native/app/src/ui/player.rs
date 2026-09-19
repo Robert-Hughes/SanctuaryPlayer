@@ -164,7 +164,6 @@ enum PlayerIcon {
     Play,
     Pause,
     Refresh,
-    Seeking,
     Ended,
     Fullscreen,
 }
@@ -179,9 +178,6 @@ fn icon_image(icon: PlayerIcon) -> egui::Image<'static> {
         }
         PlayerIcon::Refresh => egui::Image::new(egui::include_image!(
             "../../assets/player-icons/refresh.svg"
-        )),
-        PlayerIcon::Seeking => egui::Image::new(egui::include_image!(
-            "../../assets/player-icons/seeking.svg"
         )),
         PlayerIcon::Ended => {
             egui::Image::new(egui::include_image!("../../assets/player-icons/ended.svg"))
@@ -238,7 +234,10 @@ fn paint_centre_controls(
         .show(&ctx, |ui| {
             ui.spacing_mut().item_spacing.x = gap;
             ui.horizontal(|ui| {
-                let (icon, command) = primary_playback_control(state.playback_state());
+                let (icon, command) = primary_playback_control(
+                    state.playback_state(),
+                    state.playback_intends_playing(),
+                );
                 if icon_button(
                     ui,
                     icon,
@@ -267,14 +266,20 @@ fn paint_centre_controls(
     area.response.rect
 }
 
-fn primary_playback_control(state: &PlaybackState) -> (PlayerIcon, Option<AppCommand>) {
+fn primary_playback_control(
+    state: &PlaybackState,
+    intends_playing: bool,
+) -> (PlayerIcon, Option<AppCommand>) {
     match state {
         PlaybackState::Playing | PlaybackState::Buffering => {
             (PlayerIcon::Pause, Some(AppCommand::TogglePlayback))
         }
         PlaybackState::Paused => (PlayerIcon::Play, Some(AppCommand::TogglePlayback)),
         PlaybackState::Error(_) => (PlayerIcon::Refresh, Some(AppCommand::RefreshPlayback)),
-        PlaybackState::Seeking => (PlayerIcon::Seeking, None),
+        PlaybackState::Seeking if intends_playing => {
+            (PlayerIcon::Pause, Some(AppCommand::TogglePlayback))
+        }
+        PlaybackState::Seeking => (PlayerIcon::Play, Some(AppCommand::TogglePlayback)),
         PlaybackState::Ended => (PlayerIcon::Ended, None),
         PlaybackState::Loading => (PlayerIcon::Play, None),
     }
@@ -584,9 +589,20 @@ mod tests {
     #[test]
     fn error_state_uses_shared_refresh_control() {
         let (icon, command) =
-            primary_playback_control(&PlaybackState::Error("network failed".into()));
+            primary_playback_control(&PlaybackState::Error("network failed".into()), false);
         assert_eq!(icon, PlayerIcon::Refresh);
         assert_eq!(command, Some(AppCommand::RefreshPlayback));
+    }
+
+    #[test]
+    fn seeking_control_reflects_and_toggles_resume_intent() {
+        let (icon, command) = primary_playback_control(&PlaybackState::Seeking, true);
+        assert_eq!(icon, PlayerIcon::Pause);
+        assert_eq!(command, Some(AppCommand::TogglePlayback));
+
+        let (icon, command) = primary_playback_control(&PlaybackState::Seeking, false);
+        assert_eq!(icon, PlayerIcon::Play);
+        assert_eq!(command, Some(AppCommand::TogglePlayback));
     }
 
     #[test]

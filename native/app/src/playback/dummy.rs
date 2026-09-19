@@ -75,6 +75,16 @@ impl PlaybackBackend for DummyPlayback {
         &self.state
     }
 
+    fn intends_playing(&self) -> bool {
+        matches!(
+            self.state,
+            PlaybackState::Playing | PlaybackState::Buffering
+        ) || self
+            .pending_seek
+            .as_ref()
+            .is_some_and(|seek| seek.resume_playing)
+    }
+
     fn play(&mut self) {
         if self.source.is_none() || matches!(self.state, PlaybackState::Ended) {
             return;

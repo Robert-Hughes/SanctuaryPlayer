@@ -1941,6 +1941,16 @@ impl PlaybackBackend for OxidePlayback {
         &self.state
     }
 
+    fn intends_playing(&self) -> bool {
+        matches!(
+            self.state,
+            PlaybackState::Playing | PlaybackState::Buffering
+        ) || self
+            .seek_pending
+            .as_ref()
+            .is_some_and(|pending| pending.resume_playing)
+    }
+
     fn play(&mut self) {
         if matches!(self.state, PlaybackState::Seeking) {
             if let Some(pending) = self.seek_pending.as_mut() {

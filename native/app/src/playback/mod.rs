@@ -195,6 +195,7 @@ pub trait PlaybackBackend: Send {
     fn open(&mut self, source: &VideoSource) -> Result<(), String>;
     fn source(&self) -> Option<&VideoSource>;
     fn state(&self) -> &PlaybackState;
+    fn intends_playing(&self) -> bool;
     fn play(&mut self);
     fn pause(&mut self);
     fn position(&self) -> Duration;

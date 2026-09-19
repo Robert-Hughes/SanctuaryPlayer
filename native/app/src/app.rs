@@ -1199,6 +1199,14 @@ impl AppState {
                     self.cancel_paused_position_save();
                     self.playback.play();
                 }
+                PlaybackState::Seeking => {
+                    if self.playback.intends_playing() {
+                        self.playback.pause();
+                    } else {
+                        self.cancel_paused_position_save();
+                        self.playback.play();
+                    }
+                }
                 _ => {}
             },
             AppCommand::RefreshPlayback => self.refresh_playback(),
@@ -1393,6 +1401,10 @@ impl AppState {
 
     pub fn playback_state(&self) -> &PlaybackState {
         self.playback.state()
+    }
+
+    pub fn playback_intends_playing(&self) -> bool {
+        self.playback.intends_playing()
     }
 
     pub(crate) fn debug_info_visible(&self) -> bool {
@@ -1606,6 +1618,13 @@ mod tests {
 
         fn state(&self) -> &PlaybackState {
             &self.state
+        }
+
+        fn intends_playing(&self) -> bool {
+            matches!(
+                self.state,
+                PlaybackState::Playing | PlaybackState::Buffering
+            )
         }
 
         fn play(&mut self) {}
@@ -2152,6 +2171,21 @@ mod tests {
         state.apply(AppCommand::SeekRelative(60));
         assert_eq!(state.position(), Duration::from_secs(62));
         assert_eq!(state.playback_state(), &PlaybackState::Seeking);
+        assert!(state.playback_intends_playing());
+
+        state.apply(AppCommand::TogglePlayback);
+        assert_eq!(state.playback_state(), &PlaybackState::Seeking);
+        assert!(!state.playback_intends_playing());
+        state.update(Duration::from_secs(1));
+        assert_eq!(state.playback_state(), &PlaybackState::Paused);
+
+        state.apply(AppCommand::SeekRelative(60));
+        assert_eq!(state.playback_state(), &PlaybackState::Seeking);
+        assert!(!state.playback_intends_playing());
+        state.apply(AppCommand::TogglePlayback);
+        assert!(state.playback_intends_playing());
+        state.update(Duration::from_secs(1));
+        assert_eq!(state.playback_state(), &PlaybackState::Playing);
     }
 
     #[test]
