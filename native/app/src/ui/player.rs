@@ -14,7 +14,7 @@ pub fn render(ui: &mut egui::Ui, state: &mut AppState) -> Vec<AppCommand> {
     );
 
     if state.debug_info_visible() {
-        paint_debug_info(ui, state);
+        paint_debug_info(ui, state, &mut commands);
     }
 
     if state.ui.controls_visible {
@@ -34,7 +34,7 @@ pub fn render(ui: &mut egui::Ui, state: &mut AppState) -> Vec<AppCommand> {
     commands
 }
 
-fn paint_debug_info(ui: &egui::Ui, state: &AppState) {
+fn paint_debug_info(ui: &egui::Ui, state: &AppState, commands: &mut Vec<AppCommand>) {
     let ctx = ui.ctx().clone();
     let screen = ctx.content_rect();
     let vmin = theme::vmin(ui);
@@ -54,13 +54,29 @@ fn paint_debug_info(ui: &egui::Ui, state: &AppState) {
                 .show(ui, |ui| {
                     ui.set_width(width);
                     ui.set_max_height(max_height);
-                    ui.label(
-                        egui::RichText::new("Debug info")
-                            .monospace()
-                            .strong()
-                            .size((2.2 * vmin).max(13.0))
-                            .color(egui::Color32::WHITE),
-                    );
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new("Debug info")
+                                .monospace()
+                                .strong()
+                                .size((2.2 * vmin).max(13.0))
+                                .color(egui::Color32::WHITE),
+                        );
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let close = ui.add(
+                                egui::Button::new(
+                                    egui::RichText::new("×")
+                                        .strong()
+                                        .size((2.5 * vmin).max(16.0))
+                                        .color(egui::Color32::WHITE),
+                                )
+                                .frame(false),
+                            );
+                            if close.clicked() {
+                                commands.push(AppCommand::ToggleDebugInfo);
+                            }
+                        });
+                    });
                     ui.separator();
                     egui::ScrollArea::both()
                         .id_salt("playback-debug-scroll")
@@ -81,27 +97,34 @@ fn paint_debug_info(ui: &egui::Ui, state: &AppState) {
                                 .id_salt(("playback-debug-section", &section.title))
                                 .default_open(true)
                                 .show(ui, |ui| {
-                                    egui::Grid::new(("debug-info-grid", &section.title))
-                                        .num_columns(2)
-                                        .spacing(egui::vec2(vmin, 0.2 * vmin))
-                                        .striped(true)
-                                        .show(ui, |ui| {
-                                            for (label, value) in &section.rows {
-                                                ui.label(
-                                                    egui::RichText::new(label)
-                                                        .monospace()
-                                                        .size((1.7 * vmin).max(11.0))
-                                                        .color(egui::Color32::LIGHT_GRAY),
-                                                );
-                                                ui.label(
-                                                    egui::RichText::new(value)
-                                                        .monospace()
-                                                        .size((1.7 * vmin).max(11.0))
-                                                        .color(egui::Color32::WHITE),
-                                                );
-                                                ui.end_row();
-                                            }
-                                        });
+                                    ui.scope(|ui| {
+                                        // The application theme is light, but this overlay is
+                                        // deliberately dark. Give striped rows a local dark-purple
+                                        // fill so white/light-grey diagnostic text retains contrast.
+                                        ui.visuals_mut().faint_bg_color =
+                                            egui::Color32::from_rgb(48, 42, 105);
+                                        egui::Grid::new(("debug-info-grid", &section.title))
+                                            .num_columns(2)
+                                            .spacing(egui::vec2(vmin, 0.2 * vmin))
+                                            .striped(true)
+                                            .show(ui, |ui| {
+                                                for (label, value) in &section.rows {
+                                                    ui.label(
+                                                        egui::RichText::new(label)
+                                                            .monospace()
+                                                            .size((1.7 * vmin).max(11.0))
+                                                            .color(egui::Color32::LIGHT_GRAY),
+                                                    );
+                                                    ui.label(
+                                                        egui::RichText::new(value)
+                                                            .monospace()
+                                                            .size((1.7 * vmin).max(11.0))
+                                                            .color(egui::Color32::WHITE),
+                                                    );
+                                                    ui.end_row();
+                                                }
+                                            });
+                                    });
                                 });
                             }
                         });
