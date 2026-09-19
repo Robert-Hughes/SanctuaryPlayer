@@ -258,6 +258,7 @@ fn intrinsic_menu_width(
     };
     width = width.max(action_width(&account_label));
     if state.has_video() {
+        width = width.max(action_width("Toggle debug info"));
         width = width.max(action_width("Refresh"));
     }
 
@@ -365,6 +366,13 @@ pub fn render(
                         }
                     } else if menu_action_row(ui, "Sign in…", vmin, font_size).clicked() {
                         state.open_sign_in_dialog();
+                        state.close_menu();
+                    }
+
+                    if state.has_video()
+                        && menu_action_row(ui, "Toggle debug info", vmin, font_size).clicked()
+                    {
+                        commands.push(AppCommand::ToggleDebugInfo);
                         state.close_menu();
                     }
 

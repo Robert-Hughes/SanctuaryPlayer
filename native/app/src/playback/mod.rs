@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use ::oxideav::core::{FrameLease, VideoColorInfo};
 
-use crate::model::{PlaybackState, Quality};
+use crate::model::{DebugInfoSection, PlaybackState, Quality};
 use crate::video::VideoSource;
 
 pub use self::oxideav::OxidePlayback;
@@ -218,6 +218,10 @@ pub trait PlaybackBackend: Send {
 
     fn video_color_info(&self) -> Option<VideoColorInfo> {
         None
+    }
+
+    fn debug_info(&self) -> Vec<DebugInfoSection> {
+        Vec::new()
     }
 }
 

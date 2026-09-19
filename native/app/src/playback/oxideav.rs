@@ -17,7 +17,7 @@ use url::Url;
 
 use crate::audio_output::AudioOutput;
 use crate::audio_timeline::QueueResult;
-use crate::model::{PlaybackState, Quality};
+use crate::model::{DebugInfoSection, PlaybackState, Quality};
 use crate::video::VideoSource;
 
 use super::{DecodeMode, PlaybackBackend, PlaybackWake, PlaybackWakeKind};
@@ -2130,6 +2130,373 @@ impl PlaybackBackend for OxidePlayback {
     fn video_color_info(&self) -> Option<VideoColorInfo> {
         self.video_stream.params.video_color
     }
+
+    fn debug_info(&self) -> Vec<DebugInfoSection> {
+        let now = Instant::now();
+        let state = format!("{:?}", self.state);
+        let position = self.position();
+        let duration = self
+            .duration
+            .map(|value| format!("{:.3}s", value.as_secs_f64()))
+            .unwrap_or_else(|| "unknown".into());
+        let quality = self
+            .qualities
+            .get(self.active_quality_index)
+            .map(|quality| quality.label.clone())
+            .unwrap_or_else(|| "unknown".into());
+        let error = match &self.state {
+            PlaybackState::Error(message) => message.as_str(),
+            _ => "-",
+        };
+
+        let executor = match self.executor.as_ref() {
+            None => "none".to_owned(),
+            Some(executor) if executor.has_finished() => "finished".to_owned(),
+            Some(_) => "running".to_owned(),
+        };
+        let transport_state = match self.state {
+            PlaybackState::Loading => "opening",
+            PlaybackState::Buffering => "waiting for media",
+            PlaybackState::Error(_) => "terminal error",
+            PlaybackState::Ended => "ended",
+            _ if self.sink_finished => "sink finished",
+            _ => "active",
+        };
+        let hls_host = self
+            .quality_urls
+            .get(self.active_quality_index)
+            .and_then(Url::host_str)
+            .unwrap_or("unknown")
+            .to_owned();
+
+        let video = &self.video_stream;
+        let video_front = self
+            .video_queue
+            .front()
+            .and_then(FrameLease::pts)
+            .map(|pts| format!("{pts} ({:.3}s)", video.time_base.seconds_of(pts)))
+            .unwrap_or_else(|| "-".into());
+        let video_back = self
+            .video_queue
+            .back()
+            .and_then(FrameLease::pts)
+            .map(|pts| format!("{pts} ({:.3}s)", video.time_base.seconds_of(pts)))
+            .unwrap_or_else(|| "-".into());
+        let video_clock = self
+            .video_clock
+            .pts_at(now, video.time_base)
+            .map(|pts| format!("{pts} ({:.3}s)", video.time_base.seconds_of(pts)))
+            .unwrap_or_else(|| "-".into());
+        let video_dims = match (video.params.width, video.params.height) {
+            (Some(width), Some(height)) => format!("{width}x{height}"),
+            _ => "unknown".into(),
+        };
+
+        let audio_rows = if let Some(audio_stream) = self.audio_stream.as_ref() {
+            let output = self.audio_output.as_ref();
+            vec![
+                ("codec".into(), audio_stream.params.codec_id.to_string()),
+                (
+                    "time base".into(),
+                    format!(
+                        "{}/{}",
+                        audio_stream.time_base.num(),
+                        audio_stream.time_base.den()
+                    ),
+                ),
+                (
+                    "sample rate".into(),
+                    audio_stream
+                        .params
+                        .sample_rate
+                        .map(|value| format!("{value} Hz"))
+                        .unwrap_or_else(|| "unknown".into()),
+                ),
+                (
+                    "channels".into(),
+                    audio_stream
+                        .params
+                        .resolved_channels()
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| "unknown".into()),
+                ),
+                (
+                    "sample format".into(),
+                    audio_stream
+                        .params
+                        .sample_format
+                        .map(|value| format!("{value:?}"))
+                        .unwrap_or_else(|| "unknown".into()),
+                ),
+                (
+                    "decoded frames".into(),
+                    self.diagnostics.received_audio_frames.to_string(),
+                ),
+                (
+                    "pending frame".into(),
+                    self.pending_audio_frame.is_some().to_string(),
+                ),
+                (
+                    "output backend".into(),
+                    output
+                        .map(|audio| audio.backend_name().to_owned())
+                        .unwrap_or_else(|| "not open".into()),
+                ),
+                (
+                    "device rate".into(),
+                    output
+                        .map(|audio| format!("{} Hz", audio.device_rate()))
+                        .unwrap_or_else(|| "-".into()),
+                ),
+                (
+                    "playing".into(),
+                    output
+                        .map(|audio| audio.is_playing().to_string())
+                        .unwrap_or_else(|| "false".into()),
+                ),
+                (
+                    "preroll ready".into(),
+                    output
+                        .map(|audio| audio.preroll_ready().to_string())
+                        .unwrap_or_else(|| "false".into()),
+                ),
+                (
+                    "ring queued".into(),
+                    output
+                        .map(|audio| {
+                            format!(
+                                "{} samples / {:.1} ms",
+                                audio.queued_samples(),
+                                audio.queued_duration().as_secs_f64() * 1000.0
+                            )
+                        })
+                        .unwrap_or_else(|| "-".into()),
+                ),
+                (
+                    "ring target".into(),
+                    output
+                        .map(|audio| format!("{} samples", audio.queue_target_samples()))
+                        .unwrap_or_else(|| "-".into()),
+                ),
+                (
+                    "ring headroom".into(),
+                    output
+                        .map(|audio| {
+                            format!(
+                                "{} samples / {:.1} ms",
+                                audio.headroom_samples(),
+                                audio.headroom_duration().as_secs_f64() * 1000.0
+                            )
+                        })
+                        .unwrap_or_else(|| "-".into()),
+                ),
+                (
+                    "submitted samples".into(),
+                    output
+                        .map(|audio| audio.submitted_samples().to_string())
+                        .unwrap_or_else(|| "-".into()),
+                ),
+                (
+                    "next output PTS".into(),
+                    output
+                        .and_then(AudioOutput::next_output_pts)
+                        .map(|pts| pts.to_string())
+                        .unwrap_or_else(|| "-".into()),
+                ),
+                (
+                    "media origin".into(),
+                    output
+                        .and_then(AudioOutput::media_origin)
+                        .map(|origin| format!("{:.3}s", origin.as_secs_f64()))
+                        .unwrap_or_else(|| "-".into()),
+                ),
+                (
+                    "underruns".into(),
+                    output
+                        .map(|audio| {
+                            format!(
+                                "{} callbacks / {} samples",
+                                audio.underrun_callbacks(),
+                                audio.underrun_samples()
+                            )
+                        })
+                        .unwrap_or_else(|| "-".into()),
+                ),
+            ]
+        } else {
+            vec![("stream".into(), "none".into())]
+        };
+
+        let av_offset = match (self.first_video_seconds, self.first_audio_seconds) {
+            (Some(video), Some(audio)) => format!("{:+.3}s audio-video", audio - video),
+            _ => "-".into(),
+        };
+        let post_seek = self
+            .post_seek_epoch
+            .map(|epoch| {
+                format!(
+                    "floor={:.3}s audio_aligned={} video_aligned={} drops={}/{}",
+                    epoch.floor.as_secs_f64(),
+                    epoch.audio_aligned,
+                    epoch.video_aligned,
+                    epoch.dropped_audio_frames,
+                    epoch.dropped_video_frames
+                )
+            })
+            .unwrap_or_else(|| "none".into());
+
+        vec![
+            DebugInfoSection::new(
+                "Playback",
+                vec![
+                    ("state".into(), state),
+                    ("position".into(), format!("{:.3}s", position.as_secs_f64())),
+                    ("duration".into(), duration),
+                    ("rate".into(), format!("{:.3}x", self.rate)),
+                    ("quality".into(), quality),
+                    ("decode mode".into(), self.decode_mode.to_string()),
+                    ("muted".into(), self.muted.to_string()),
+                    ("error".into(), error.into()),
+                ],
+            ),
+            DebugInfoSection::new(
+                "Transport / pipeline",
+                vec![
+                    ("network / stream".into(), transport_state.into()),
+                    ("HLS host".into(), hls_host),
+                    ("executor".into(), executor),
+                    ("sink finished".into(), self.sink_finished.to_string()),
+                    (
+                        "session channel caps".into(),
+                        format!(
+                            "control={} audio={} video={}",
+                            SESSION_CHANNEL_CAP, SESSION_CHANNEL_CAP, SESSION_CHANNEL_CAP
+                        ),
+                    ),
+                    (
+                        "compressed packet cap".into(),
+                        format!("{PLAYBACK_PACKET_CHANNEL_CAP} / track"),
+                    ),
+                    (
+                        "quality switch".into(),
+                        self.pending_quality_switch
+                            .as_ref()
+                            .map(|pending| {
+                                self.qualities
+                                    .get(pending.intent.target_index)
+                                    .map(|quality| quality.label.clone())
+                                    .unwrap_or_else(|| pending.intent.target_index.to_string())
+                            })
+                            .unwrap_or_else(|| "none".into()),
+                    ),
+                    (
+                        "starvation grace".into(),
+                        self.starvation_started_at
+                            .map(|started| {
+                                format!(
+                                    "{:.0} ms",
+                                    now.duration_since(started).as_secs_f64() * 1000.0
+                                )
+                            })
+                            .unwrap_or_else(|| "inactive".into()),
+                    ),
+                ],
+            ),
+            DebugInfoSection::new(
+                "Video",
+                vec![
+                    ("codec".into(), video.params.codec_id.to_string()),
+                    ("coded size".into(), video_dims),
+                    (
+                        "time base".into(),
+                        format!("{}/{}", video.time_base.num(), video.time_base.den()),
+                    ),
+                    (
+                        "start PTS".into(),
+                        video
+                            .start_time
+                            .map(|pts| pts.to_string())
+                            .unwrap_or_else(|| "-".into()),
+                    ),
+                    (
+                        "colour".into(),
+                        video
+                            .params
+                            .video_color
+                            .map(|value| format!("{value:?}"))
+                            .unwrap_or_else(|| "unknown".into()),
+                    ),
+                    (
+                        "decoded queue".into(),
+                        format!("{} / {}", self.video_queue.len(), VIDEO_QUEUE_CAP),
+                    ),
+                    ("queue front".into(), video_front),
+                    ("queue back".into(), video_back),
+                    ("video clock".into(), video_clock),
+                    (
+                        "first frame presented".into(),
+                        self.first_frame_presented.to_string(),
+                    ),
+                    (
+                        "frames".into(),
+                        format!(
+                            "recv={} present={} drop={}",
+                            self.diagnostics.received_video_frames,
+                            self.diagnostics.presented_video_frames,
+                            self.diagnostics.dropped_video_frames
+                        ),
+                    ),
+                ],
+            ),
+            DebugInfoSection::new("Audio", audio_rows),
+            DebugInfoSection::new(
+                "Timeline / seek",
+                vec![
+                    (
+                        "timeline origin".into(),
+                        self.timeline_origin_seconds
+                            .map(|value| format!("{value:.3}s"))
+                            .unwrap_or_else(|| "-".into()),
+                    ),
+                    (
+                        "first video".into(),
+                        self.first_video_seconds
+                            .map(|value| format!("{value:.3}s"))
+                            .unwrap_or_else(|| "-".into()),
+                    ),
+                    (
+                        "first audio".into(),
+                        self.first_audio_seconds
+                            .map(|value| format!("{value:.3}s"))
+                            .unwrap_or_else(|| "-".into()),
+                    ),
+                    ("first A/V offset".into(), av_offset),
+                    (
+                        "audio anchor".into(),
+                        self.audio_anchor_seconds
+                            .map(|value| format!("{value:.3}s"))
+                            .unwrap_or_else(|| "-".into()),
+                    ),
+                    (
+                        "seek pending".into(),
+                        self.seek_pending
+                            .map(|pending| {
+                                format!(
+                                    "gen={} requested={:.3}s barriers={} resume={}",
+                                    pending.generation,
+                                    pending.requested.as_secs_f64(),
+                                    pending.barriers_remaining,
+                                    pending.resume_playing
+                                )
+                            })
+                            .unwrap_or_else(|| "none".into()),
+                    ),
+                    ("post-seek epoch".into(), post_seek),
+                    ("seek supported".into(), self.seek_supported.to_string()),
+                ],
+            ),
+        ]
+    }
 }
 
 impl Drop for OxidePlayback {
@@ -2659,6 +3026,64 @@ mod tests {
         playback.pause();
 
         assert_eq!(playback.state, PlaybackState::Paused);
+    }
+
+    #[test]
+    fn debug_info_exposes_pipeline_video_audio_and_timeline_sections() {
+        let (mut playback, _senders) = clock_test_playback();
+        let mut params = CodecParameters::audio(CodecId::new("aac"));
+        params.sample_rate = Some(48_000);
+        params.channels = Some(2);
+        params.sample_format = Some(SampleFormat::F32);
+        playback.audio_stream = Some(StreamInfo {
+            index: 1,
+            time_base: TimeBase::AUDIO_48K,
+            duration: None,
+            start_time: Some(0),
+            params,
+        });
+
+        let sections = playback.debug_info();
+        let titles = sections
+            .iter()
+            .map(|section| section.title.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            titles,
+            vec![
+                "Playback",
+                "Transport / pipeline",
+                "Video",
+                "Audio",
+                "Timeline / seek"
+            ]
+        );
+        let transport = sections
+            .iter()
+            .find(|section| section.title == "Transport / pipeline")
+            .unwrap();
+        assert!(transport.rows.iter().any(|(name, value)| {
+            name == "compressed packet cap"
+                && value == &format!("{PLAYBACK_PACKET_CHANNEL_CAP} / track")
+        }));
+        let video = sections
+            .iter()
+            .find(|section| section.title == "Video")
+            .unwrap();
+        assert!(video.rows.iter().any(|(name, value)| {
+            name == "decoded queue" && value == &format!("{} / {}", 0, VIDEO_QUEUE_CAP)
+        }));
+        let audio = sections
+            .iter()
+            .find(|section| section.title == "Audio")
+            .unwrap();
+        assert!(
+            audio
+                .rows
+                .iter()
+                .any(|(name, value)| name == "codec" && value == "aac")
+        );
     }
 
     #[test]

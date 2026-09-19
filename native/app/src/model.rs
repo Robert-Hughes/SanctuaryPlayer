@@ -14,6 +14,21 @@ pub enum PlaybackState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DebugInfoSection {
+    pub title: String,
+    pub rows: Vec<(String, String)>,
+}
+
+impl DebugInfoSection {
+    pub fn new(title: impl Into<String>, rows: Vec<(String, String)>) -> Self {
+        Self {
+            title: title.into(),
+            rows,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Quality {
     pub id: String,
     pub label: String,
@@ -33,6 +48,7 @@ pub enum AppCommand {
     OpenVideo(VideoSource),
     TogglePlayback,
     RefreshPlayback,
+    ToggleDebugInfo,
     Play,
     Pause,
     SeekAbsolute(Duration),

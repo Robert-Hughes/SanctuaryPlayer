@@ -9,7 +9,7 @@ use url::Url;
 
 use ::oxideav::core::{FrameLease, VideoColorInfo};
 
-use crate::model::{AppCommand, PlaybackState, Quality};
+use crate::model::{AppCommand, DebugInfoSection, PlaybackState, Quality};
 use crate::playback::{
     DecodeMode, DummyPlayback, OxidePlayback, PendingPlaybackWakes, PlaybackBackend, PlaybackWake,
 };
@@ -133,6 +133,7 @@ pub struct AppState {
     pending_video_open: Option<PendingVideoOpen>,
     play_when_opened: bool,
     muted: bool,
+    graphics_debug_info: Vec<DebugInfoSection>,
     pub(crate) ui: UiState,
 }
 
@@ -166,6 +167,7 @@ pub(crate) struct UiState {
     pub(crate) lock_return_elapsed: Duration,
     pub(crate) dialog: Option<DialogState>,
     pub(crate) focus_first_dialog_input: bool,
+    pub(crate) debug_info_visible: bool,
     #[cfg(target_os = "android")]
     pub(crate) android_text_input: Option<AndroidTextInputSnapshot>,
     #[cfg(target_os = "android")]
@@ -186,6 +188,7 @@ impl Default for UiState {
             lock_return_elapsed: Duration::ZERO,
             dialog: None,
             focus_first_dialog_input: false,
+            debug_info_visible: false,
             #[cfg(target_os = "android")]
             android_text_input: None,
             #[cfg(target_os = "android")]
@@ -270,6 +273,7 @@ impl Default for AppState {
             pending_video_open: None,
             play_when_opened: false,
             muted: false,
+            graphics_debug_info: Vec::new(),
             ui: UiState::default(),
         }
     }
@@ -1198,6 +1202,10 @@ impl AppState {
                 _ => {}
             },
             AppCommand::RefreshPlayback => self.refresh_playback(),
+            AppCommand::ToggleDebugInfo => {
+                self.ui.debug_info_visible = !self.ui.debug_info_visible;
+                self.note_interaction();
+            }
             AppCommand::Play => {
                 self.cancel_paused_position_save();
                 self.playback.play();
@@ -1385,6 +1393,52 @@ impl AppState {
 
     pub fn playback_state(&self) -> &PlaybackState {
         self.playback.state()
+    }
+
+    pub(crate) fn debug_info_visible(&self) -> bool {
+        self.ui.debug_info_visible
+    }
+
+    pub(crate) fn set_graphics_debug_info(&mut self, sections: Vec<DebugInfoSection>) {
+        self.graphics_debug_info = sections;
+    }
+
+    pub(crate) fn debug_info_sections(&self) -> Vec<DebugInfoSection> {
+        let source = self.playback.source();
+        let mut sections = vec![DebugInfoSection::new(
+            "Application",
+            vec![
+                (
+                    "source".into(),
+                    source
+                        .map(|source| format!("{} {}", source.platform, source.id))
+                        .unwrap_or_else(|| "none".into()),
+                ),
+                (
+                    "source start".into(),
+                    source
+                        .and_then(|source| source.start_time)
+                        .map(|value| format!("{:.3}s", value.as_secs_f64()))
+                        .unwrap_or_else(|| "-".into()),
+                ),
+                ("decode preference".into(), self.decode_mode.to_string()),
+                (
+                    "pending video open".into(),
+                    self.pending_video_open.is_some().to_string(),
+                ),
+                (
+                    "controls visible".into(),
+                    self.ui.controls_visible.to_string(),
+                ),
+                (
+                    "controls locked".into(),
+                    self.ui.controls_locked.to_string(),
+                ),
+            ],
+        )];
+        sections.extend(self.playback.debug_info());
+        sections.extend(self.graphics_debug_info.clone());
+        sections
     }
 
     pub fn position(&self) -> Duration {
@@ -2075,6 +2129,18 @@ mod tests {
         assert!(state.pending_video_open.is_none());
         assert_eq!(state.playback_state(), &PlaybackState::Playing);
         assert!(!state.play_when_opened);
+    }
+
+    #[test]
+    fn debug_info_command_toggles_overlay_state() {
+        let mut state = loaded_state();
+        assert!(!state.debug_info_visible());
+
+        state.apply(AppCommand::ToggleDebugInfo);
+        assert!(state.debug_info_visible());
+
+        state.apply(AppCommand::ToggleDebugInfo);
+        assert!(!state.debug_info_visible());
     }
 
     #[test]

@@ -284,6 +284,18 @@ impl AudioOutput {
         self.stream.is_playing()
     }
 
+    pub(crate) fn backend_name(&self) -> &'static str {
+        self.backend_name
+    }
+
+    pub(crate) fn device_rate(&self) -> u32 {
+        self.device_rate
+    }
+
+    pub(crate) fn media_origin(&self) -> Option<Duration> {
+        self.media_origin
+    }
+
     #[cfg(test)]
     pub(crate) fn media_position(&self) -> Option<Duration> {
         let media_origin = self.media_origin?;

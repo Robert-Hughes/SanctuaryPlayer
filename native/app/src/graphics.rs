@@ -6,7 +6,7 @@ use winit::keyboard::{KeyCode, ModifiersState, PhysicalKey};
 use winit::window::Window;
 
 use crate::app::AppState;
-use crate::model::AppCommand;
+use crate::model::{AppCommand, DebugInfoSection};
 use crate::ui;
 use crate::video_renderer::VideoRenderer;
 
@@ -244,6 +244,50 @@ impl Graphics {
             self.surface_config.width,
             self.surface_config.height,
         );
+
+        if state.debug_info_visible() {
+            let adapter = self._adapter.get_info();
+            state.set_graphics_debug_info(vec![
+                DebugInfoSection::new(
+                    "Graphics / surface",
+                    vec![
+                        ("adapter".into(), adapter.name),
+                        ("backend".into(), format!("{:?}", adapter.backend)),
+                        ("device type".into(), format!("{:?}", adapter.device_type)),
+                        (
+                            "surface".into(),
+                            format!(
+                                "{}x{} {:?}",
+                                self.surface_config.width,
+                                self.surface_config.height,
+                                self.surface_config.format
+                            ),
+                        ),
+                        (
+                            "present mode".into(),
+                            format!("{:?}", self.surface_config.present_mode),
+                        ),
+                        (
+                            "alpha mode".into(),
+                            format!("{:?}", self.surface_config.alpha_mode),
+                        ),
+                        (
+                            "frame latency".into(),
+                            self.surface_config
+                                .desired_maximum_frame_latency
+                                .to_string(),
+                        ),
+                        (
+                            "max texture dimension".into(),
+                            self.max_texture_dimension_2d.to_string(),
+                        ),
+                    ],
+                ),
+                DebugInfoSection::new("Video renderer", self.video_renderer.debug_rows()),
+            ]);
+        } else {
+            state.set_graphics_debug_info(Vec::new());
+        }
 
         let mut raw_input = self.egui_winit.take_egui_input(window);
         raw_input.events.append(&mut self.pending_egui_events);

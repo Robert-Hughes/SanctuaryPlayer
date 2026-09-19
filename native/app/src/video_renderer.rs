@@ -393,6 +393,69 @@ impl VideoRenderer {
         self.presentation = Presentation::None;
     }
 
+    pub(crate) fn debug_rows(&self) -> Vec<(String, String)> {
+        let presentation = match self.presentation {
+            Presentation::None => "none".to_owned(),
+            Presentation::Yuv => "CPU/readback YUV420P planes".to_owned(),
+            #[cfg(target_os = "android")]
+            Presentation::MediaCodecDirect(slot) => {
+                format!("MediaCodec direct RGBA8 slot {slot}")
+            }
+            #[cfg(target_os = "freebsd")]
+            Presentation::VdpauDirect(slot) => {
+                format!("VDPAU direct RGBA8 slot {slot}")
+            }
+        };
+        let content_size = self
+            .dims
+            .map(|(width, height)| format!("{width}x{height}"))
+            .unwrap_or_else(|| "none".into());
+        let plane_textures = if self.textures.is_some() {
+            self.dims
+                .map(|(width, height)| {
+                    format!(
+                        "R8Unorm Y={}x{} U/V={}x{}",
+                        width,
+                        height,
+                        width / 2,
+                        height / 2
+                    )
+                })
+                .unwrap_or_else(|| "allocated".into())
+        } else {
+            "none".into()
+        };
+
+        let mut rows = vec![
+            ("content size".into(), content_size),
+            ("presentation".into(), presentation),
+            ("YUV textures".into(), plane_textures),
+            (
+                "max texture dimension".into(),
+                self.max_texture_dimension_2d.to_string(),
+            ),
+        ];
+        #[cfg(target_os = "freebsd")]
+        rows.push((
+            "VDPAU direct".into(),
+            format!(
+                "slots={} busy drops={}",
+                self.vdpau_bridges.len(),
+                self.vdpau_busy_drops
+            ),
+        ));
+        #[cfg(target_os = "android")]
+        rows.push((
+            "MediaCodec direct".into(),
+            format!(
+                "slots={} busy drops={}",
+                self.mediacodec_bind_groups.len(),
+                self.mediacodec_busy_drops
+            ),
+        ));
+        rows
+    }
+
     pub fn upload_lease(
         &mut self,
         device: &wgpu::Device,

@@ -13,6 +13,10 @@ pub fn render(ui: &mut egui::Ui, state: &mut AppState) -> Vec<AppCommand> {
         egui::Sense::click(),
     );
 
+    if state.debug_info_visible() {
+        paint_debug_info(ui, state);
+    }
+
     if state.ui.controls_visible {
         paint_top_info(ui, state);
         menu::render_button(ui, state);
@@ -28,6 +32,77 @@ pub fn render(ui: &mut egui::Ui, state: &mut AppState) -> Vec<AppCommand> {
     }
 
     commands
+}
+
+fn paint_debug_info(ui: &egui::Ui, state: &AppState) {
+    let ctx = ui.ctx().clone();
+    let screen = ctx.content_rect();
+    let vmin = theme::vmin(ui);
+    let width = (52.0 * vmin).min(screen.width() * 0.62).max(28.0 * vmin);
+    let max_height = (screen.height() - 14.0 * vmin).max(20.0 * vmin);
+    let sections = state.debug_info_sections();
+
+    egui::Area::new(egui::Id::new("playback-debug-info"))
+        .fixed_pos(egui::pos2(screen.left() + vmin, screen.top() + 10.0 * vmin))
+        .order(egui::Order::Foreground)
+        .show(&ctx, |ui| {
+            egui::Frame::new()
+                .fill(egui::Color32::from_black_alpha(210))
+                .stroke(egui::Stroke::new(1.0_f32, theme::TOP_INFO))
+                .corner_radius((0.8 * vmin).round() as u8)
+                .inner_margin(egui::Margin::same((0.8 * vmin).round() as i8))
+                .show(ui, |ui| {
+                    ui.set_width(width);
+                    ui.set_max_height(max_height);
+                    ui.label(
+                        egui::RichText::new("Debug info")
+                            .monospace()
+                            .strong()
+                            .size((2.2 * vmin).max(13.0))
+                            .color(egui::Color32::WHITE),
+                    );
+                    ui.separator();
+                    egui::ScrollArea::both()
+                        .id_salt("playback-debug-scroll")
+                        .max_height(max_height - 4.0 * vmin)
+                        .show(ui, |ui| {
+                            ui.set_min_width(width - 2.0 * vmin);
+                            for (section_index, section) in sections.iter().enumerate() {
+                                if section_index != 0 {
+                                    ui.add_space(0.8 * vmin);
+                                }
+                                ui.label(
+                                    egui::RichText::new(&section.title)
+                                        .monospace()
+                                        .strong()
+                                        .size((1.9 * vmin).max(12.0))
+                                        .color(theme::TOP_INFO),
+                                );
+                                egui::Grid::new(("debug-info-section", section_index))
+                                    .num_columns(2)
+                                    .spacing(egui::vec2(vmin, 0.2 * vmin))
+                                    .striped(true)
+                                    .show(ui, |ui| {
+                                        for (label, value) in &section.rows {
+                                            ui.label(
+                                                egui::RichText::new(label)
+                                                    .monospace()
+                                                    .size((1.7 * vmin).max(11.0))
+                                                    .color(egui::Color32::LIGHT_GRAY),
+                                            );
+                                            ui.label(
+                                                egui::RichText::new(value)
+                                                    .monospace()
+                                                    .size((1.7 * vmin).max(11.0))
+                                                    .color(egui::Color32::WHITE),
+                                            );
+                                            ui.end_row();
+                                        }
+                                    });
+                            }
+                        });
+                });
+        });
 }
 
 fn paint_top_info(ui: &mut egui::Ui, state: &AppState) -> egui::Rect {
