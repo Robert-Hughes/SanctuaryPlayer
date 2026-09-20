@@ -2097,8 +2097,7 @@ dependencies = [
 [[package]]
 name = "oxideav-mpegts"
 version = "0.0.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4a72bdd896ae71cd76be5bd92999aa2ce35e2a2f7f05803f9cb3df3672c78679"
+source = "git+https://github.com/Robert-Hughes/oxideav-mpegts.git?branch=dev#e1306d8aab2f51e9f01a69bf9a55c80e54cb5f42"
 dependencies = [
  "oxideav-core",
  "thiserror 2.0.20",
