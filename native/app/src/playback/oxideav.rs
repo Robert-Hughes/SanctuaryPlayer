@@ -2675,6 +2675,12 @@ fn codec_preferences(decode_mode: DecodeMode) -> CodecPreferences {
             boost: 100,
             ..Default::default()
         },
+        DecodeMode::VulkanDirect => CodecPreferences {
+            prefer: vec!["h264_vulkan_direct".into()],
+            exclude: vec!["h264_vulkan".into(), "h264_sw".into()],
+            boost: 100,
+            ..Default::default()
+        },
         DecodeMode::MediaCodecDirect => CodecPreferences {
             prefer: vec!["h264_mediacodec_direct".into()],
             exclude: vec!["h264_mediacodec_readback".into(), "h264_sw".into()],
@@ -4017,6 +4023,19 @@ mod tests {
         assert_eq!(prefs.prefer, vec!["h264_vulkan"]);
         assert!(prefs.exclude.iter().any(|name| name == "h264_sw"));
         assert!(!prefs.require_hardware);
+    }
+
+    #[test]
+    fn vulkan_direct_selection_is_strict_and_does_not_change_auto() {
+        let direct = codec_preferences(DecodeMode::VulkanDirect);
+        assert_eq!(direct.prefer, vec!["h264_vulkan_direct"]);
+        assert!(direct.exclude.iter().any(|name| name == "h264_vulkan"));
+        assert!(direct.exclude.iter().any(|name| name == "h264_sw"));
+        assert!(!direct.require_hardware);
+
+        let auto = codec_preferences(DecodeMode::Auto);
+        assert!(auto.prefer.is_empty());
+        assert!(auto.exclude.is_empty());
     }
 
     #[test]

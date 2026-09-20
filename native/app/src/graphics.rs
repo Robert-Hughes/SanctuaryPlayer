@@ -7,6 +7,7 @@ use winit::window::Window;
 
 use crate::app::AppState;
 use crate::model::{AppCommand, DebugInfoSection};
+use crate::playback::DecodeMode;
 use crate::ui;
 use crate::video_renderer::VideoRenderer;
 
@@ -30,11 +31,11 @@ pub(crate) struct Graphics {
 }
 
 impl Graphics {
-    pub(crate) fn new(window: Arc<Window>) -> Result<Self, String> {
-        pollster::block_on(Self::new_async(window))
+    pub(crate) fn new(window: Arc<Window>, decode_mode: DecodeMode) -> Result<Self, String> {
+        pollster::block_on(Self::new_async(window, decode_mode))
     }
 
-    async fn new_async(window: Arc<Window>) -> Result<Self, String> {
+    async fn new_async(window: Arc<Window>, decode_mode: DecodeMode) -> Result<Self, String> {
         let size = window.inner_size();
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::PRIMARY,
@@ -57,17 +58,32 @@ impl Graphics {
         let adapter_info = adapter.get_info();
         let adapter_limits = adapter.limits();
         let max_texture_dimension_2d = adapter_limits.max_texture_dimension_2d;
-        let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor {
-                label: Some("sanctuary-player-device"),
-                required_features: wgpu::Features::empty(),
-                required_limits: adapter_limits,
-                memory_hints: wgpu::MemoryHints::default(),
-                experimental_features: wgpu::ExperimentalFeatures::disabled(),
-                trace: wgpu::Trace::Off,
-            })
-            .await
-            .map_err(|error| format!("request_device: {error}"))?;
+        let device_desc = wgpu::DeviceDescriptor {
+            label: Some("sanctuary-player-device"),
+            required_features: wgpu::Features::empty(),
+            required_limits: adapter_limits,
+            memory_hints: wgpu::MemoryHints::default(),
+            experimental_features: wgpu::ExperimentalFeatures::disabled(),
+            trace: wgpu::Trace::Off,
+        };
+        #[cfg(target_os = "windows")]
+        let (device, queue) = if decode_mode == DecodeMode::VulkanDirect {
+            crate::vulkan_video_decoder::request_shared_wgpu_device(&adapter, &device_desc)?
+        } else {
+            crate::vulkan_video_decoder::clear_direct_device();
+            adapter
+                .request_device(&device_desc)
+                .await
+                .map_err(|error| format!("request_device: {error}"))?
+        };
+        #[cfg(not(target_os = "windows"))]
+        let (device, queue) = {
+            let _ = decode_mode;
+            adapter
+                .request_device(&device_desc)
+                .await
+                .map_err(|error| format!("request_device: {error}"))?
+        };
 
         device.on_uncaptured_error(Arc::new(|error| {
             log::error!("SanctuaryPlayer: uncaptured wgpu error: {error}");

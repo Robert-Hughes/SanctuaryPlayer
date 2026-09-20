@@ -2160,7 +2160,7 @@ dependencies = [
 [[package]]
 name = "oxideav-vulkan-video"
 version = "0.0.2"
-source = "git+https://github.com/Robert-Hughes/oxideav-vulkan-video.git?branch=dev#f96df114b9672011397c0bc4a31670a35eb9121c"
+source = "git+https://github.com/Robert-Hughes/oxideav-vulkan-video.git?branch=dev#d13ada86b116b5be31967ff9485b038cb81db397"
 dependencies = [
  "libloading 0.8.9",
  "linkme",

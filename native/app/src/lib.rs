@@ -32,6 +32,8 @@ pub mod video;
 pub mod video_renderer;
 #[cfg(target_os = "windows")]
 mod vulkan_video_decoder;
+#[cfg(target_os = "windows")]
+mod vulkan_video_vulkan_bridge;
 
 #[cfg(not(target_os = "android"))]
 use std::path::PathBuf;
@@ -319,7 +321,7 @@ impl ApplicationHandler<AppEvent> for SanctuaryPlayerApp {
                 return;
             }
         };
-        let graphics = match Graphics::new(window.clone()) {
+        let graphics = match Graphics::new(window.clone(), self.state.decode_mode()) {
             Ok(graphics) => graphics,
             Err(error) => {
                 log::error!("SanctuaryPlayer: failed to initialise GPU rendering: {error}");

@@ -48,5 +48,6 @@ oxideav-vdpau.workspace = true
 
 [target.'cfg(target_os = "windows")'.dependencies]
 oxideav-vulkan-video.workspace = true
+ash = "0.38"
 [dev-dependencies]
 oxideav-sysaudio = { workspace = true, features = ["mock"] }

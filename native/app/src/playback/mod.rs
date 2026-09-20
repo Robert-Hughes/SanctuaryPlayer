@@ -23,6 +23,7 @@ pub enum DecodeMode {
     Auto,
     Cpu,
     VulkanReadback,
+    VulkanDirect,
     MediaCodecDirect,
     MediaCodecReadback,
     VdpauReadback,
@@ -42,7 +43,7 @@ impl DecodeMode {
     ) -> bool {
         match self {
             Self::Auto | Self::Cpu => true,
-            Self::VulkanReadback => vulkan_supported,
+            Self::VulkanReadback | Self::VulkanDirect => vulkan_supported,
             Self::MediaCodecDirect | Self::MediaCodecReadback => mediacodec_supported,
             Self::VdpauReadback | Self::VdpauDirect => vdpau_supported,
         }
@@ -70,7 +71,7 @@ impl DecodeMode {
 
         let mut supported = vec!["auto", "cpu"];
         if vulkan_supported {
-            supported.push("vulkan-readback");
+            supported.extend(["vulkan-readback", "vulkan-direct"]);
         }
         if mediacodec_supported {
             supported.extend(["mediacodec-readback", "mediacodec-direct"]);
@@ -99,6 +100,7 @@ impl DecodeMode {
             Self::Auto => "auto",
             Self::Cpu => "cpu",
             Self::VulkanReadback => "vulkan-readback",
+            Self::VulkanDirect => "vulkan-direct",
             Self::MediaCodecDirect => "mediacodec-direct",
             Self::MediaCodecReadback => "mediacodec-readback",
             Self::VdpauReadback => "vdpau-readback",
@@ -121,12 +123,13 @@ impl std::str::FromStr for DecodeMode {
             "auto" => Ok(Self::Auto),
             "cpu" => Ok(Self::Cpu),
             "vulkan-readback" => Ok(Self::VulkanReadback),
+            "vulkan-direct" => Ok(Self::VulkanDirect),
             "mediacodec-direct" => Ok(Self::MediaCodecDirect),
             "mediacodec-readback" => Ok(Self::MediaCodecReadback),
             "vdpau-readback" => Ok(Self::VdpauReadback),
             "vdpau-direct" => Ok(Self::VdpauDirect),
             _ => Err(format!(
-                "invalid decode mode {value:?}; expected auto, cpu, vulkan-readback, mediacodec-direct, mediacodec-readback, vdpau-readback, or vdpau-direct"
+                "invalid decode mode {value:?}; expected auto, cpu, vulkan-readback, vulkan-direct, mediacodec-direct, mediacodec-readback, vdpau-readback, or vdpau-direct"
             )),
         }
     }
@@ -306,16 +309,17 @@ mod decode_mode_tests {
     }
 
     #[test]
-    fn vulkan_readback_requires_vulkan_video_backend() {
-        assert!(
-            DecodeMode::VulkanReadback
-                .validate_for_platform(false, false, true, "windows")
-                .is_ok()
-        );
-        let error = DecodeMode::VulkanReadback
-            .validate_for_platform(false, false, false, "linux")
-            .unwrap_err();
-        assert!(error.contains("not supported on linux"));
+    fn vulkan_modes_require_vulkan_video_backend() {
+        for mode in [DecodeMode::VulkanReadback, DecodeMode::VulkanDirect] {
+            assert!(
+                mode.validate_for_platform(false, false, true, "windows")
+                    .is_ok()
+            );
+            let error = mode
+                .validate_for_platform(false, false, false, "linux")
+                .unwrap_err();
+            assert!(error.contains("not supported on linux"));
+        }
     }
 
     #[test]
@@ -350,6 +354,11 @@ mod decode_mode_tests {
                 .is_err()
         );
         assert!(
+            DecodeMode::VulkanDirect
+                .validate_current_platform()
+                .is_err()
+        );
+        assert!(
             DecodeMode::MediaCodecDirect
                 .validate_current_platform()
                 .is_err()
@@ -380,6 +389,11 @@ mod decode_mode_tests {
                 .is_err()
         );
         assert!(
+            DecodeMode::VulkanDirect
+                .validate_current_platform()
+                .is_err()
+        );
+        assert!(
             DecodeMode::VdpauReadback
                 .validate_current_platform()
                 .is_err()
@@ -389,12 +403,10 @@ mod decode_mode_tests {
 
     #[cfg(target_os = "windows")]
     #[test]
-    fn windows_supports_vulkan_video_readback() {
-        assert!(
-            DecodeMode::VulkanReadback
-                .validate_current_platform()
-                .is_ok()
-        );
+    fn windows_supports_vulkan_video_modes() {
+        for mode in [DecodeMode::VulkanReadback, DecodeMode::VulkanDirect] {
+            assert!(mode.validate_current_platform().is_ok());
+        }
         assert!(
             DecodeMode::MediaCodecDirect
                 .validate_current_platform()
@@ -420,6 +432,11 @@ mod decode_mode_tests {
         assert!(DecodeMode::Cpu.validate_current_platform().is_ok());
         assert!(
             DecodeMode::VulkanReadback
+                .validate_current_platform()
+                .is_err()
+        );
+        assert!(
+            DecodeMode::VulkanDirect
                 .validate_current_platform()
                 .is_err()
         );

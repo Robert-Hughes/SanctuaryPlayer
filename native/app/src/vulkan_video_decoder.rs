@@ -1,36 +1,225 @@
+use std::sync::{OnceLock, RwLock};
+
 use ::oxideav::core::{
     CancellationToken, CodecCapabilities, CodecId, CodecInfo, CodecParameters, CodecTag, Decoder,
     Error, ExecutionContext, Frame, Packet, Result,
 };
+use ash::vk::{self, Handle};
+use oxideav_vulkan_video::ExternalDevice;
+use wgpu::hal::api::Vulkan;
 
-/// Register Sanctuary's Windows Vulkan Video H.264 adapter.
+const VIDEO_QUEUE_PRIORITY: [f32; 1] = [1.0];
+const SHARED_QUEUE_PRIORITIES: [f32; 2] = [1.0, 1.0];
+
+static DIRECT_DEVICE: OnceLock<RwLock<Option<ExternalDevice>>> = OnceLock::new();
+
+fn direct_device_slot() -> &'static RwLock<Option<ExternalDevice>> {
+    DIRECT_DEVICE.get_or_init(|| RwLock::new(None))
+}
+
+pub(crate) fn install_direct_device(device: ExternalDevice) {
+    if let Ok(mut slot) = direct_device_slot().write() {
+        *slot = Some(device);
+    }
+}
+
+pub(crate) fn clear_direct_device() {
+    if let Ok(mut slot) = direct_device_slot().write() {
+        *slot = None;
+    }
+}
+
+fn direct_device() -> Result<ExternalDevice> {
+    direct_device_slot()
+        .read()
+        .map_err(|_| Error::other("vulkan-video: shared-device registry is poisoned"))?
+        .as_ref()
+        .copied()
+        .ok_or_else(|| {
+            Error::unsupported(
+                "vulkan-video: direct presentation requires Sanctuary's shared wgpu Vulkan device",
+            )
+        })
+}
+
+pub(crate) fn request_shared_wgpu_device(
+    adapter: &wgpu::Adapter,
+    desc: &wgpu::DeviceDescriptor<'_>,
+) -> std::result::Result<(wgpu::Device, wgpu::Queue), String> {
+    let hal_adapter = unsafe { adapter.as_hal::<Vulkan>() }
+        .ok_or_else(|| "vulkan-direct requires the wgpu Vulkan backend".to_string())?;
+    let physical_device = hal_adapter.raw_physical_device();
+    let raw_instance = hal_adapter.shared_instance().raw_instance();
+    let queue_families =
+        unsafe { raw_instance.get_physical_device_queue_family_properties(physical_device) };
+    let video_queue_family_index = queue_families
+        .iter()
+        .enumerate()
+        .find(|(_, props)| props.queue_flags.contains(vk::QueueFlags::VIDEO_DECODE_KHR))
+        .map(|(index, _)| index as u32)
+        .ok_or_else(|| {
+            "vulkan-direct: selected GPU has no Vulkan Video decode queue".to_string()
+        })?;
+
+    let required_extensions = [
+        ash::khr::video_queue::NAME,
+        ash::khr::video_decode_queue::NAME,
+        ash::khr::video_decode_h264::NAME,
+    ];
+    let available_extensions = unsafe {
+        raw_instance
+            .enumerate_device_extension_properties(physical_device)
+            .map_err(|error| format!("vulkan-direct enumerate device extensions: {error}"))?
+    };
+    for required in required_extensions {
+        let available = available_extensions.iter().any(|property| unsafe {
+            std::ffi::CStr::from_ptr(property.extension_name.as_ptr()) == required
+        });
+        if !available {
+            return Err(format!(
+                "vulkan-direct: selected GPU is missing {}",
+                required.to_string_lossy()
+            ));
+        }
+    }
+    let synchronization2_available = available_extensions.iter().any(|property| unsafe {
+        std::ffi::CStr::from_ptr(property.extension_name.as_ptr())
+            == ash::khr::synchronization2::NAME
+    });
+
+    let graphics_queue_family_index = 0u32;
+    let video_queue_index = if video_queue_family_index == graphics_queue_family_index {
+        if queue_families[video_queue_family_index as usize].queue_count < 2 {
+            return Err(
+                "vulkan-direct: graphics/video queue family has only one queue; a dedicated decode queue is required"
+                    .to_string(),
+            );
+        }
+        1
+    } else {
+        0
+    };
+
+    let callback = Box::new(
+        move |args: wgpu::hal::vulkan::CreateDeviceCallbackArgs<'_, '_, '_>| {
+            for extension in required_extensions {
+                if !args.extensions.contains(&extension) {
+                    args.extensions.push(extension);
+                }
+            }
+            if synchronization2_available
+                && !args.extensions.contains(&ash::khr::synchronization2::NAME)
+            {
+                args.extensions.push(ash::khr::synchronization2::NAME);
+            }
+            if video_queue_family_index == graphics_queue_family_index {
+                if let Some(info) = args
+                    .queue_create_infos
+                    .iter_mut()
+                    .find(|info| info.queue_family_index == graphics_queue_family_index)
+                {
+                    *info = vk::DeviceQueueCreateInfo::default()
+                        .queue_family_index(graphics_queue_family_index)
+                        .queue_priorities(&SHARED_QUEUE_PRIORITIES);
+                }
+            } else {
+                args.queue_create_infos.push(
+                    vk::DeviceQueueCreateInfo::default()
+                        .queue_family_index(video_queue_family_index)
+                        .queue_priorities(&VIDEO_QUEUE_PRIORITY),
+                );
+            }
+        },
+    );
+
+    let open_device = unsafe {
+        hal_adapter.open_with_callback(
+            desc.required_features,
+            &desc.required_limits,
+            &desc.memory_hints,
+            Some(callback),
+        )
+    }
+    .map_err(|error| format!("vulkan-direct create shared Vulkan device: {error:?}"))?;
+    drop(hal_adapter);
+
+    let (device, queue) = unsafe { adapter.create_device_from_hal::<Vulkan>(open_device, desc) }
+        .map_err(|error| format!("vulkan-direct create wgpu device from Vulkan HAL: {error}"))?;
+
+    let hal_device = unsafe { device.as_hal::<Vulkan>() }
+        .ok_or_else(|| "vulkan-direct: shared device was not Vulkan".to_string())?;
+    let graphics_queue_family_index = hal_device.queue_family_index();
+    let external = ExternalDevice::new(
+        hal_device
+            .shared_instance()
+            .raw_instance()
+            .handle()
+            .as_raw() as usize as *mut std::ffi::c_void,
+        hal_device.raw_physical_device().as_raw() as usize as *mut std::ffi::c_void,
+        hal_device.raw_device().handle().as_raw() as usize as *mut std::ffi::c_void,
+        video_queue_family_index,
+    )
+    .with_queue_index(video_queue_index)
+    .with_consumer_queue_family_index(graphics_queue_family_index);
+    install_direct_device(external);
+    log::info!(
+        "SanctuaryPlayer: shared Vulkan device direct-video queues graphics_family={} decode_family={} decode_queue={}",
+        graphics_queue_family_index,
+        video_queue_family_index,
+        video_queue_index
+    );
+    drop(hal_device);
+    Ok((device, queue))
+}
+
+/// Register Sanctuary's Windows Vulkan Video H.264 adapters.
 ///
-/// The upstream decoder already performs GPU decode followed by an NV12 staging
-/// readback, but its current CPU VideoFrame output does not carry packet PTS.
-/// Sanctuary requires timestamps for presentation, so the adapter preserves the
-/// current packet PTS while leaving the decoded plane storage untouched.
+/// Readback remains the higher-priority hardware implementation so automatic
+/// selection is unchanged. The direct implementation is selected only by an
+/// explicit vulkan-direct request.
 pub fn register(ctx: &mut ::oxideav::Registries) {
-    let capabilities = CodecCapabilities::video("h264_vulkan")
-        .with_lossy(true)
-        .with_intra_only(false)
-        .with_hardware(true)
-        .with_priority(20);
-
     ctx.codecs.register(
         CodecInfo::new(CodecId::new("h264"))
-            .capabilities(capabilities.with_decode())
+            .capabilities(
+                CodecCapabilities::video("h264_vulkan")
+                    .with_lossy(true)
+                    .with_intra_only(false)
+                    .with_hardware(true)
+                    .with_priority(20)
+                    .with_decode(),
+            )
             .decoder(make_decoder)
-            .tags([
-                CodecTag::fourcc(b"H264"),
-                CodecTag::fourcc(b"h264"),
-                CodecTag::fourcc(b"AVC1"),
-                CodecTag::fourcc(b"avc1"),
-                CodecTag::fourcc(b"X264"),
-                CodecTag::matroska("V_MPEG4/ISO/AVC"),
-            ])
+            .tags(h264_tags())
             .with_engine_id("vulkan-video")
             .with_engine_probe(oxideav_vulkan_video::engine_info),
     );
+
+    ctx.codecs.register(
+        CodecInfo::new(CodecId::new("h264"))
+            .capabilities(
+                CodecCapabilities::video("h264_vulkan_direct")
+                    .with_lossy(true)
+                    .with_intra_only(false)
+                    .with_hardware(true)
+                    .with_priority(19)
+                    .with_decode(),
+            )
+            .decoder(make_direct_decoder)
+            .tags(h264_tags())
+            .with_engine_id("vulkan-video-direct")
+            .with_engine_probe(oxideav_vulkan_video::engine_info),
+    );
+}
+
+fn h264_tags() -> [CodecTag; 6] {
+    [
+        CodecTag::fourcc(b"H264"),
+        CodecTag::fourcc(b"h264"),
+        CodecTag::fourcc(b"AVC1"),
+        CodecTag::fourcc(b"avc1"),
+        CodecTag::fourcc(b"X264"),
+        CodecTag::matroska("V_MPEG4/ISO/AVC"),
+    ]
 }
 
 fn make_decoder(params: &CodecParameters) -> Result<Box<dyn Decoder>> {
@@ -65,6 +254,37 @@ fn make_decoder(params: &CodecParameters) -> Result<Box<dyn Decoder>> {
         inner,
         current_packet_pts: None,
     }))
+}
+
+fn make_direct_decoder(params: &CodecParameters) -> Result<Box<dyn Decoder>> {
+    let device_index = params.device_index.unwrap_or(0) as usize;
+    let devices = oxideav_vulkan_video::engine_info();
+    let device = devices.get(device_index).ok_or_else(|| {
+        Error::unsupported(format!(
+            "vulkan-video: device_index {device_index} is unavailable"
+        ))
+    })?;
+    if !device
+        .codecs
+        .iter()
+        .any(|codec| codec.codec == "h264" && codec.decode)
+    {
+        return Err(Error::unsupported(format!(
+            "vulkan-video: {} does not advertise H.264 decode",
+            device.name
+        )));
+    }
+
+    let external = direct_device()?;
+    log::info!(
+        "SanctuaryPlayer: selecting direct Vulkan Video H.264 decoder on shared wgpu device {}",
+        device.name
+    );
+    // SAFETY: Graphics installs handles from its live wgpu-owned Vulkan device
+    // and keeps that device alive for the application's playback lifetime.
+    unsafe {
+        oxideav_vulkan_video::decoder::H264VkDecoder::make_direct_with_device(params, external)
+    }
 }
 
 struct TimestampedVulkanDecoder {

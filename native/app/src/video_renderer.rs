@@ -9,17 +9,23 @@ use crate::mediacodec_vulkan_bridge::MediaCodecVulkanBridge;
 use crate::playback::DecodeMode;
 #[cfg(target_os = "freebsd")]
 use crate::vdpau_vulkan_bridge::VdpauVulkanBridge;
-#[cfg(any(target_os = "freebsd", target_os = "android"))]
+#[cfg(target_os = "windows")]
+use crate::vulkan_video_vulkan_bridge::VulkanVideoVulkanBridge;
+#[cfg(any(target_os = "freebsd", target_os = "android", target_os = "windows"))]
 use ::oxideav::core::HardwareVideoFrameStorage;
 #[cfg(target_os = "android")]
 use oxideav_mediacodec::{MediaCodecOutputMode, MediaCodecVideoFrameStorage};
 #[cfg(target_os = "freebsd")]
 use oxideav_vdpau::VdpauVideoFrameStorage;
+#[cfg(target_os = "windows")]
+use oxideav_vulkan_video::decoder::VulkanVideoFrameStorage;
 
 #[cfg(target_os = "freebsd")]
 const VDPAU_BRIDGE_SLOTS: usize = 4;
 #[cfg(target_os = "android")]
 const MEDIACODEC_BRIDGE_SLOTS: usize = 4;
+#[cfg(target_os = "windows")]
+const VULKAN_DIRECT_BRIDGE_SLOTS: usize = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VideoTargetRect {
@@ -71,6 +77,8 @@ enum Presentation {
     MediaCodecDirect(usize),
     #[cfg(target_os = "freebsd")]
     VdpauDirect(usize),
+    #[cfg(target_os = "windows")]
+    VulkanDirect(usize),
 }
 
 pub struct VideoRenderer {
@@ -80,6 +88,10 @@ pub struct VideoRenderer {
     rgba_pipeline: wgpu::RenderPipeline,
     #[cfg(any(target_os = "freebsd", target_os = "android"))]
     rgba_bind_group_layout: wgpu::BindGroupLayout,
+    #[cfg(target_os = "windows")]
+    vulkan_direct_pipeline: wgpu::RenderPipeline,
+    #[cfg(target_os = "windows")]
+    vulkan_direct_bind_group_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     uniform_buffer: wgpu::Buffer,
     textures: Option<YuvTextures>,
@@ -96,6 +108,12 @@ pub struct VideoRenderer {
     vdpau_bind_groups: Vec<wgpu::BindGroup>,
     #[cfg(target_os = "freebsd")]
     vdpau_busy_drops: u64,
+    #[cfg(target_os = "windows")]
+    vulkan_direct_bridges: Vec<VulkanVideoVulkanBridge>,
+    #[cfg(target_os = "windows")]
+    vulkan_direct_bind_groups: Vec<wgpu::BindGroup>,
+    #[cfg(target_os = "windows")]
+    vulkan_direct_busy_drops: u64,
     dims: Option<(u32, u32)>,
     presentation: Presentation,
     readback_logged: bool,
@@ -267,6 +285,71 @@ impl VideoRenderer {
             cache: None,
         });
 
+        #[cfg(target_os = "windows")]
+        let vulkan_direct_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("sanctuary-nv12-to-rgb"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("nv12_to_rgb.wgsl").into()),
+        });
+        #[cfg(target_os = "windows")]
+        let vulkan_direct_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("sanctuary-vulkan-direct-bgl"),
+                entries: &[
+                    texture_entry(0),
+                    texture_entry(1),
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
+            });
+        #[cfg(target_os = "windows")]
+        let vulkan_direct_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("sanctuary-vulkan-direct-pl"),
+                bind_group_layouts: &[Some(&vulkan_direct_bind_group_layout)],
+                immediate_size: 0,
+            });
+        #[cfg(target_os = "windows")]
+        let vulkan_direct_pipeline =
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("sanctuary-vulkan-direct-pipeline"),
+                layout: Some(&vulkan_direct_pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &vulkan_direct_shader,
+                    entry_point: Some("vs"),
+                    compilation_options: Default::default(),
+                    buffers: &[],
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &vulkan_direct_shader,
+                    entry_point: Some("fs"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: surface_format,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            });
+
         #[cfg(any(target_os = "freebsd", target_os = "android"))]
         let rgba_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("sanctuary-rgba-to-screen"),
@@ -367,6 +450,10 @@ impl VideoRenderer {
             rgba_pipeline,
             #[cfg(any(target_os = "freebsd", target_os = "android"))]
             rgba_bind_group_layout,
+            #[cfg(target_os = "windows")]
+            vulkan_direct_pipeline,
+            #[cfg(target_os = "windows")]
+            vulkan_direct_bind_group_layout,
             sampler,
             uniform_buffer,
             textures: None,
@@ -383,6 +470,12 @@ impl VideoRenderer {
             vdpau_bind_groups: Vec::new(),
             #[cfg(target_os = "freebsd")]
             vdpau_busy_drops: 0,
+            #[cfg(target_os = "windows")]
+            vulkan_direct_bridges: Vec::new(),
+            #[cfg(target_os = "windows")]
+            vulkan_direct_bind_groups: Vec::new(),
+            #[cfg(target_os = "windows")]
+            vulkan_direct_busy_drops: 0,
             dims: None,
             presentation: Presentation::None,
             readback_logged: false,
@@ -405,6 +498,10 @@ impl VideoRenderer {
             #[cfg(target_os = "freebsd")]
             Presentation::VdpauDirect(slot) => {
                 format!("VDPAU direct RGBA8 slot {slot}")
+            }
+            #[cfg(target_os = "windows")]
+            Presentation::VulkanDirect(slot) => {
+                format!("Vulkan Video direct NV12 slot {slot}")
             }
         };
         let content_size = self
@@ -454,6 +551,15 @@ impl VideoRenderer {
                 self.mediacodec_busy_drops
             ),
         ));
+        #[cfg(target_os = "windows")]
+        rows.push((
+            "Vulkan direct".into(),
+            format!(
+                "slots={} busy drops={}",
+                self.vulkan_direct_bridges.len(),
+                self.vulkan_direct_busy_drops
+            ),
+        ));
         rows
     }
 
@@ -469,6 +575,17 @@ impl VideoRenderer {
             DecodeMode::Auto => self.upload_auto(device, queue, lease, color),
             DecodeMode::Cpu => self.upload_cpu_lease(device, queue, lease, color),
             DecodeMode::VulkanReadback => self.upload_vulkan_readback(device, queue, lease, color),
+            DecodeMode::VulkanDirect => {
+                #[cfg(target_os = "windows")]
+                {
+                    self.upload_vulkan_direct(device, queue, lease, color)
+                }
+                #[cfg(not(target_os = "windows"))]
+                {
+                    let _ = (device, queue, lease, color);
+                    Err("vulkan-direct presentation is only available on Windows".into())
+                }
+            }
             DecodeMode::MediaCodecDirect => {
                 #[cfg(target_os = "android")]
                 {
@@ -752,6 +869,129 @@ impl VideoRenderer {
         Ok(())
     }
 
+    #[cfg(target_os = "windows")]
+    fn upload_vulkan_direct(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        lease: &FrameLease,
+        color: Option<VideoColorInfo>,
+    ) -> Result<(), String> {
+        let hardware = lease
+            .as_hardware_video()
+            .ok_or_else(|| "vulkan-direct mode received a non-hardware video lease".to_owned())?;
+        if hardware.backend() != "vulkan-video" {
+            return Err(format!(
+                "vulkan-direct mode received hardware backend {:?}",
+                hardware.backend()
+            ));
+        }
+        if hardware.pixel_format() != PixelFormat::Nv12 {
+            return Err(format!(
+                "vulkan-direct mode received unsupported format {:?}",
+                hardware.pixel_format()
+            ));
+        }
+        let storage = hardware
+            .downcast_ref::<VulkanVideoFrameStorage>()
+            .ok_or_else(|| "vulkan-direct mode received unexpected storage".to_owned())?;
+        let width = storage.width();
+        let height = storage.height();
+        if width == 0
+            || height == 0
+            || width > self.max_texture_dimension_2d
+            || height > self.max_texture_dimension_2d
+        {
+            return Err(format!(
+                "invalid Vulkan direct frame dimensions {width}x{height}"
+            ));
+        }
+
+        let conversion = YuvConversion::for_stream(color, width, height);
+        queue.write_buffer(
+            &self.uniform_buffer,
+            16,
+            bytemuck::cast_slice(&conversion.uniform_words()),
+        );
+
+        let rebuild = self
+            .vulkan_direct_bridges
+            .first()
+            .is_none_or(|bridge| bridge.dimensions() != (width, height));
+        if rebuild {
+            self.vulkan_direct_bridges.clear();
+            self.vulkan_direct_bind_groups.clear();
+            for _ in 0..VULKAN_DIRECT_BRIDGE_SLOTS {
+                let bridge = VulkanVideoVulkanBridge::new(device, queue, width, height)
+                    .map_err(|error| format!("Vulkan direct bridge unavailable: {error}"))?;
+                let y_view = bridge
+                    .y_texture()
+                    .create_view(&wgpu::TextureViewDescriptor::default());
+                let uv_view = bridge
+                    .uv_texture()
+                    .create_view(&wgpu::TextureViewDescriptor::default());
+                let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("sanctuary-vulkan-direct-bg"),
+                    layout: &self.vulkan_direct_bind_group_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(&y_view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::TextureView(&uv_view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: wgpu::BindingResource::Sampler(&self.sampler),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 3,
+                            resource: self.uniform_buffer.as_entire_binding(),
+                        },
+                    ],
+                });
+                drop(uv_view);
+                drop(y_view);
+                self.vulkan_direct_bridges.push(bridge);
+                self.vulkan_direct_bind_groups.push(bind_group);
+            }
+            self.vulkan_direct_busy_drops = 0;
+            self.presentation = Presentation::None;
+            log::info!(
+                "SanctuaryPlayer: Vulkan Video direct presentation active (NV12 GPU copy -> wgpu R8/RG8, {}x{}, {} async slots)",
+                width,
+                height,
+                VULKAN_DIRECT_BRIDGE_SLOTS
+            );
+        }
+
+        let slot = first_ready_slot(self.vulkan_direct_bridges.len(), |index| {
+            self.vulkan_direct_bridges[index]
+                .is_available()
+                .map_err(|error| error.to_string())
+        })?;
+        let Some(slot) = slot else {
+            self.vulkan_direct_busy_drops += 1;
+            if self.vulkan_direct_busy_drops == 1
+                || self.vulkan_direct_busy_drops.is_multiple_of(120)
+            {
+                log::info!(
+                    "SanctuaryPlayer: all {VULKAN_DIRECT_BRIDGE_SLOTS} Vulkan direct slots are in flight; dropping video frame"
+                );
+            }
+            return Ok(());
+        };
+
+        self.vulkan_direct_bridges[slot]
+            .copy_from_vulkan(hardware.clone())
+            .map_err(|error| format!("Vulkan direct bridge copy failed: {error}"))?;
+        self.dims = Some((width, height));
+        self.presentation = Presentation::VulkanDirect(slot);
+        Ok(())
+    }
+
     #[cfg(target_os = "android")]
     fn upload_mediacodec_direct(
         &mut self,
@@ -1011,6 +1251,12 @@ impl VideoRenderer {
             _ => None,
         };
 
+        #[cfg(target_os = "windows")]
+        let vulkan_direct_slot = match self.presentation {
+            Presentation::VulkanDirect(slot) => Some(slot),
+            _ => None,
+        };
+
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("sanctuary-video-pass"),
@@ -1055,6 +1301,15 @@ impl VideoRenderer {
                     pass.set_bind_group(0, bind_group, &[]);
                     pass.draw(0..3, 0..1);
                 }
+                #[cfg(target_os = "windows")]
+                Presentation::VulkanDirect(slot) => {
+                    let Some(bind_group) = self.vulkan_direct_bind_groups.get(slot) else {
+                        return;
+                    };
+                    pass.set_pipeline(&self.vulkan_direct_pipeline);
+                    pass.set_bind_group(0, bind_group, &[]);
+                    pass.draw(0..3, 0..1);
+                }
                 Presentation::None => {}
             }
         }
@@ -1069,6 +1324,12 @@ impl VideoRenderer {
         #[cfg(target_os = "freebsd")]
         if let Some(slot) = direct_slot
             && let Some(bridge) = self.vdpau_bridges.get_mut(slot)
+        {
+            bridge.mark_sampled();
+        }
+        #[cfg(target_os = "windows")]
+        if let Some(slot) = vulkan_direct_slot
+            && let Some(bridge) = self.vulkan_direct_bridges.get_mut(slot)
         {
             bridge.mark_sampled();
         }
@@ -1154,7 +1415,7 @@ impl VideoRenderer {
     }
 }
 
-#[cfg(target_os = "freebsd")]
+#[cfg(any(target_os = "freebsd", target_os = "windows"))]
 fn first_ready_slot<E>(
     slot_count: usize,
     mut poll: impl FnMut(usize) -> Result<bool, E>,
