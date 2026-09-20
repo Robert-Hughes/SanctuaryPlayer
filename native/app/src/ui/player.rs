@@ -440,15 +440,12 @@ fn paint_centre_controls(
     commands: &mut Vec<AppCommand>,
 ) -> egui::Rect {
     let ctx = ui.ctx().clone();
-    let viewport = ctx.viewport_rect();
-    let screen = ctx.content_rect();
     let vmin = theme::vmin(ui);
     let size = 20.0 * vmin;
     let gap = 1.0 * vmin;
     let radius = 1.0 * vmin;
-    let offset = screen.center() - viewport.center();
     let area = egui::Area::new(egui::Id::new("centre-controls"))
-        .anchor(egui::Align2::CENTER_CENTER, offset)
+        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
         .show(&ctx, |ui| {
             ui.spacing_mut().item_spacing.x = gap;
             ui.horizontal(|ui| {
@@ -609,6 +606,10 @@ fn bottom_control_row_origins(
     (left_x, middle_x, right_x)
 }
 
+fn bottom_control_top(bottom: f32, height: f32) -> f32 {
+    bottom - height
+}
+
 fn paint_bottom_controls(ui: &mut egui::Ui, state: &mut AppState, commands: &mut Vec<AppCommand>) {
     let ctx = ui.ctx().clone();
     let screen = ctx.content_rect();
@@ -619,7 +620,6 @@ fn paint_bottom_controls(ui: &mut egui::Ui, state: &mut AppState, commands: &mut
     let padding = 0.2 * vmin;
     let radius = vmin;
     let middle_width = 20.0 * vmin;
-    let middle_height = 11.5 * vmin;
     let bottom = screen.bottom() - 0.5 * vmin;
 
     let left = [("-10m", -600), ("-1m", -60), ("-5s", -5)];
@@ -632,12 +632,15 @@ fn paint_bottom_controls(ui: &mut egui::Ui, state: &mut AppState, commands: &mut
         .iter()
         .map(|(label, _)| text_control_size(ui, label, font_size, padding))
         .collect();
+    let time_text = format_colon_time(state.position());
+    let time_size = text_control_size(ui, &time_text, font_size, padding);
     let left_widths: Vec<_> = left_sizes.iter().map(|size| size.x).collect();
     let (mut x, middle_x, right_x) =
         bottom_control_row_origins(screen.center().x, middle_width, gap, &left_widths);
+    let middle_centre_x = middle_x + middle_width * 0.5;
 
     for ((label, offset), size) in left.into_iter().zip(left_sizes) {
-        let y = bottom - size.y;
+        let y = bottom_control_top(bottom, size.y);
         let mut clicked = false;
         egui::Area::new(egui::Id::new(("bottom-seek", label)))
             .fixed_pos(egui::pos2(x, y))
@@ -652,64 +655,67 @@ fn paint_bottom_controls(ui: &mut egui::Ui, state: &mut AppState, commands: &mut
         x += size.x + gap;
     }
 
-    egui::Area::new(egui::Id::new("bottom-controls-middle"))
-        .fixed_pos(egui::pos2(middle_x, bottom - middle_height))
+    let time_fill = matches!(state.playback_state(), PlaybackState::Seeking).then_some(theme::PINK);
+    let mut time_clicked = false;
+    egui::Area::new(egui::Id::new("bottom-time"))
+        .fixed_pos(egui::pos2(
+            middle_centre_x - time_size.x * 0.5,
+            bottom_control_top(bottom, time_size.y),
+        ))
         .order(egui::Order::Foreground)
         .show(&ctx, |ui| {
-            ui.set_min_size(egui::vec2(middle_width, middle_height));
-            ui.set_max_width(middle_width);
-            ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
-                ui.spacing_mut().item_spacing.y = vmin;
-                let rates = state.available_rates().to_vec();
-                let mut selected_rate = state.playback_rate();
-                let speed_width = 14.0 * vmin;
-                ui.allocate_ui_with_layout(
-                    egui::vec2(speed_width, 5.0 * vmin),
-                    egui::Layout::top_down(egui::Align::Min),
-                    |ui| {
-                        ui.style_mut().override_font_id =
-                            Some(egui::FontId::proportional(3.5 * vmin));
-                        ui.visuals_mut().widgets.inactive.weak_bg_fill = theme::WHITE;
-                        ui.visuals_mut().widgets.hovered.weak_bg_fill = theme::LIGHT_PURPLE;
-                        ui.visuals_mut().widgets.active.weak_bg_fill = theme::LIGHT_PURPLE;
-                        ui.add_enabled_ui(enabled, |ui| {
-                            egui::ComboBox::from_id_salt("speed-select")
-                                .width(speed_width)
-                                .selected_text(format!("{selected_rate}x"))
-                                .show_ui(ui, |ui| {
-                                    for rate in rates {
-                                        if ui
-                                            .selectable_value(
-                                                &mut selected_rate,
-                                                rate,
-                                                format!("{rate}x"),
-                                            )
-                                            .changed()
-                                        {
-                                            commands.push(AppCommand::SetPlaybackRate(rate));
-                                        }
-                                    }
-                                });
-                        });
-                    },
-                );
+            time_clicked = text_control_button(
+                ui, &time_text, font_size, padding, radius, enabled, time_fill,
+            )
+            .clicked();
+        });
+    if time_clicked {
+        state.open_seek_dialog();
+    }
 
-                let time_text = format_colon_time(state.position());
-                let time_fill =
-                    matches!(state.playback_state(), PlaybackState::Seeking).then_some(theme::PINK);
-                if text_control_button(
-                    ui, &time_text, font_size, padding, radius, enabled, time_fill,
-                )
-                .clicked()
-                {
-                    state.open_seek_dialog();
-                }
-            });
+    let rates = state.available_rates().to_vec();
+    let mut selected_rate = state.playback_rate();
+    let speed_width = 14.0 * vmin;
+    let speed_height = 5.0 * vmin;
+    let speed_y = bottom_control_top(bottom, time_size.y) - gap - speed_height;
+    egui::Area::new(egui::Id::new("bottom-speed"))
+        .fixed_pos(egui::pos2(middle_centre_x - speed_width * 0.5, speed_y))
+        .order(egui::Order::Foreground)
+        .show(&ctx, |ui| {
+            ui.allocate_ui_with_layout(
+                egui::vec2(speed_width, speed_height),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| {
+                    ui.style_mut().override_font_id = Some(egui::FontId::proportional(3.5 * vmin));
+                    ui.visuals_mut().widgets.inactive.weak_bg_fill = theme::WHITE;
+                    ui.visuals_mut().widgets.hovered.weak_bg_fill = theme::LIGHT_PURPLE;
+                    ui.visuals_mut().widgets.active.weak_bg_fill = theme::LIGHT_PURPLE;
+                    ui.add_enabled_ui(enabled, |ui| {
+                        egui::ComboBox::from_id_salt("speed-select")
+                            .width(speed_width)
+                            .selected_text(format!("{selected_rate}x"))
+                            .show_ui(ui, |ui| {
+                                for rate in rates {
+                                    if ui
+                                        .selectable_value(
+                                            &mut selected_rate,
+                                            rate,
+                                            format!("{rate}x"),
+                                        )
+                                        .changed()
+                                    {
+                                        commands.push(AppCommand::SetPlaybackRate(rate));
+                                    }
+                                }
+                            });
+                    });
+                },
+            );
         });
     x = right_x;
 
     for ((label, offset), size) in right.into_iter().zip(right_sizes) {
-        let y = bottom - size.y;
+        let y = bottom_control_top(bottom, size.y);
         let mut clicked = false;
         egui::Area::new(egui::Id::new(("bottom-seek", label)))
             .fixed_pos(egui::pos2(x, y))
@@ -800,7 +806,8 @@ fn paint_lock_slider(
 #[cfg(test)]
 mod tests {
     use super::{
-        PlayerIcon, bottom_control_row_origins, playback_status_label, primary_playback_control,
+        PlayerIcon, bottom_control_row_origins, bottom_control_top, playback_status_label,
+        primary_playback_control,
     };
     use crate::model::{AppCommand, PlaybackState};
 
@@ -867,5 +874,29 @@ mod tests {
             + gap * left_widths.len().saturating_sub(1) as f32;
         assert!((middle_x - left_end - gap).abs() < 0.001);
         assert!((right_x - (middle_x + middle_width) - gap).abs() < 0.001);
+    }
+
+    #[test]
+    fn bottom_middle_uses_safe_content_centre_not_viewport_centre() {
+        let viewport_centre_x = 600.0;
+        let content_centre_x = 640.0;
+        let middle_width = 144.0;
+        let gap = 7.2;
+        let left_widths = [84.6925, 64.41125, 48.755];
+
+        let (_, middle_x, _) =
+            bottom_control_row_origins(content_centre_x, middle_width, gap, &left_widths);
+
+        assert_eq!(middle_x + middle_width * 0.5, content_centre_x);
+        assert_ne!(middle_x + middle_width * 0.5, viewport_centre_x);
+    }
+
+    #[test]
+    fn seek_and_time_controls_share_bottom_edge() {
+        let bottom = 340.0;
+        for height in [28.0, 32.5, 41.0] {
+            let top = bottom_control_top(bottom, height);
+            assert!((top + height - bottom).abs() < f32::EPSILON);
+        }
     }
 }
