@@ -2107,7 +2107,7 @@ dependencies = [
 [[package]]
 name = "oxideav-pipeline"
 version = "0.1.12"
-source = "git+https://github.com/Robert-Hughes/oxideav-pipeline.git?branch=dev#4952a106d35de3749b5abc57b71110b8bea6f6fe"
+source = "git+https://github.com/Robert-Hughes/oxideav-pipeline.git?branch=dev#c3c9c6a10f1e172b6ef6ba4944d9dbddf6dc5b1d"
 dependencies = [
  "indexmap",
  "log",

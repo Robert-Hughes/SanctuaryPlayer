@@ -60,6 +60,8 @@ pub struct OxidePlayback {
     executor: Option<ExecutorHandle>,
     video_stream: StreamInfo,
     audio_stream: Option<StreamInfo>,
+    video_decoder: Option<DecoderDebugInfo>,
+    audio_decoder: Option<DecoderDebugInfo>,
     audio_output: Option<AudioOutput>,
     pending_audio_frame: Option<FrameLease>,
     video_queue: VecDeque<FrameLease>,
@@ -474,6 +476,12 @@ impl JobSink for SessionSink {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DecoderDebugInfo {
+    implementation: String,
+    hardware_accelerated: bool,
+}
+
 struct PlaybackSession {
     control_rx: Receiver<SessionMsg>,
     audio_rx: Receiver<SessionMsg>,
@@ -481,6 +489,8 @@ struct PlaybackSession {
     executor: Option<ExecutorHandle>,
     video_stream: StreamInfo,
     audio_stream: Option<StreamInfo>,
+    video_decoder: Option<DecoderDebugInfo>,
+    audio_decoder: Option<DecoderDebugInfo>,
     audio_output: Option<AudioOutput>,
     duration: Option<Duration>,
     rates: Vec<f32>,
@@ -567,6 +577,21 @@ where
     receiver
 }
 
+fn selected_decoder_info(
+    executor: &ExecutorHandle,
+    media_type: MediaType,
+) -> Option<DecoderDebugInfo> {
+    executor
+        .pipeline_tracks()
+        .iter()
+        .find(|track| track.media_type == media_type)
+        .and_then(|track| track.decoder.as_ref())
+        .map(|caps| DecoderDebugInfo {
+            implementation: caps.implementation.clone(),
+            hardware_accelerated: caps.hardware_accelerated,
+        })
+}
+
 fn open_variant_session(
     variant_url: &Url,
     decode_mode: DecodeMode,
@@ -615,6 +640,35 @@ fn open_variant_session(
         .with_threads(0)
         .spawn()
         .map_err(|error| format!("start OxideAV playback: {error}"))?;
+    let video_decoder = selected_decoder_info(&executor, MediaType::Video);
+    let audio_decoder = selected_decoder_info(&executor, MediaType::Audio);
+    log::info!(
+        "SanctuaryPlayer: selected OxideAV decoders video={} ({}) audio={} ({})",
+        video_decoder
+            .as_ref()
+            .map(|decoder| decoder.implementation.as_str())
+            .unwrap_or("none"),
+        video_decoder
+            .as_ref()
+            .map(|decoder| if decoder.hardware_accelerated {
+                "hardware"
+            } else {
+                "software"
+            })
+            .unwrap_or("unknown"),
+        audio_decoder
+            .as_ref()
+            .map(|decoder| decoder.implementation.as_str())
+            .unwrap_or("none"),
+        audio_decoder
+            .as_ref()
+            .map(|decoder| if decoder.hardware_accelerated {
+                "hardware"
+            } else {
+                "software"
+            })
+            .unwrap_or("unknown"),
+    );
 
     let streams = match control_rx.recv_timeout(OPEN_TIMEOUT) {
         Ok(SessionMsg::Started(streams)) => streams,
@@ -684,6 +738,8 @@ fn open_variant_session(
         executor: Some(executor),
         video_stream,
         audio_stream,
+        video_decoder,
+        audio_decoder,
         audio_output,
         duration,
         rates,
@@ -738,6 +794,8 @@ impl OxidePlayback {
             executor: session.executor,
             video_stream: session.video_stream,
             audio_stream: session.audio_stream,
+            video_decoder: session.video_decoder,
+            audio_decoder: session.audio_decoder,
             audio_output: session.audio_output,
             pending_audio_frame: None,
             video_queue: VecDeque::new(),
@@ -783,6 +841,8 @@ impl OxidePlayback {
         self.executor = session.executor;
         self.video_stream = session.video_stream;
         self.audio_stream = session.audio_stream;
+        self.video_decoder = session.video_decoder;
+        self.audio_decoder = session.audio_decoder;
         self.audio_output = session.audio_output;
         self.pending_audio_frame = None;
         self.duration = session.duration;
@@ -2209,6 +2269,27 @@ impl PlaybackBackend for OxidePlayback {
             vec![
                 ("codec".into(), audio_stream.params.codec_id.to_string()),
                 (
+                    "OxideAV decoder".into(),
+                    self.audio_decoder
+                        .as_ref()
+                        .map(|decoder| decoder.implementation.clone())
+                        .unwrap_or_else(|| "unknown".into()),
+                ),
+                (
+                    "decoder acceleration".into(),
+                    self.audio_decoder
+                        .as_ref()
+                        .map(|decoder| {
+                            if decoder.hardware_accelerated {
+                                "hardware"
+                            } else {
+                                "software"
+                            }
+                            .to_owned()
+                        })
+                        .unwrap_or_else(|| "unknown".into()),
+                ),
+                (
                     "time base".into(),
                     format!(
                         "{}/{}",
@@ -2418,6 +2499,27 @@ impl PlaybackBackend for OxidePlayback {
                 "Video",
                 vec![
                     ("codec".into(), video.params.codec_id.to_string()),
+                    (
+                        "OxideAV decoder".into(),
+                        self.video_decoder
+                            .as_ref()
+                            .map(|decoder| decoder.implementation.clone())
+                            .unwrap_or_else(|| "unknown".into()),
+                    ),
+                    (
+                        "decoder acceleration".into(),
+                        self.video_decoder
+                            .as_ref()
+                            .map(|decoder| {
+                                if decoder.hardware_accelerated {
+                                    "hardware"
+                                } else {
+                                    "software"
+                                }
+                                .to_owned()
+                            })
+                            .unwrap_or_else(|| "unknown".into()),
+                    ),
                     ("coded size".into(), video_dims),
                     (
                         "time base".into(),
@@ -2844,6 +2946,8 @@ mod tests {
                 executor: None,
                 video_stream,
                 audio_stream: None,
+                video_decoder: None,
+                audio_decoder: None,
                 audio_output: None,
                 pending_audio_frame: None,
                 video_queue: VecDeque::new(),
@@ -3066,6 +3170,14 @@ mod tests {
             start_time: Some(0),
             params,
         });
+        playback.video_decoder = Some(DecoderDebugInfo {
+            implementation: "h264_vulkan".into(),
+            hardware_accelerated: true,
+        });
+        playback.audio_decoder = Some(DecoderDebugInfo {
+            implementation: "aac_sw".into(),
+            hardware_accelerated: false,
+        });
 
         let sections = playback.debug_info();
         let titles = sections
@@ -3098,6 +3210,18 @@ mod tests {
         assert!(video.rows.iter().any(|(name, value)| {
             name == "decoded queue" && value == &format!("{} / {}", 0, VIDEO_QUEUE_CAP)
         }));
+        assert!(
+            video
+                .rows
+                .iter()
+                .any(|(name, value)| { name == "OxideAV decoder" && value == "h264_vulkan" })
+        );
+        assert!(
+            video
+                .rows
+                .iter()
+                .any(|(name, value)| { name == "decoder acceleration" && value == "hardware" })
+        );
         let audio = sections
             .iter()
             .find(|section| section.title == "Audio")
@@ -3107,6 +3231,18 @@ mod tests {
                 .rows
                 .iter()
                 .any(|(name, value)| name == "codec" && value == "aac")
+        );
+        assert!(
+            audio
+                .rows
+                .iter()
+                .any(|(name, value)| { name == "OxideAV decoder" && value == "aac_sw" })
+        );
+        assert!(
+            audio
+                .rows
+                .iter()
+                .any(|(name, value)| { name == "decoder acceleration" && value == "software" })
         );
     }
 
@@ -3362,6 +3498,8 @@ mod tests {
                 params: CodecParameters::video(CodecId::new("h264")),
             },
             audio_stream: None,
+            video_decoder: None,
+            audio_decoder: None,
             audio_output: None,
             duration: Some(Duration::from_secs(30)),
             rates: vec![0.5, 1.0, 2.0],

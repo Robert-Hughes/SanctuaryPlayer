@@ -137,6 +137,7 @@ The local OxideAV workspace provides the pieces needed for native playback:
 - Native AAC fast enough for real-time playback without Symphonia (`38a8443`,
   `26f4127`, `b760012`).
 - Decoder output parameters for late-discovered output shape (`72ef547`, `a0c9d78`).
+- Runtime decoder selection metadata from `oxideav-pipeline` (`c3c9c6a`), so diagnostics report the implementation whose factory actually succeeded after preference filtering and fallback rather than inferring it from requested policy.
 
 `oxideplay` also demonstrates lease retention through a player queue, direct
 arena-backed YUV420P upload to wgpu (`9c2f497`, `d6a6dda`, `b5caf78`), and the
