@@ -608,6 +608,52 @@ impl AppState {
         self.note_interaction();
     }
 
+    fn start_quality_replacement(&mut self, quality_id: String) {
+        let Some(master_url) = self.playback.quality_master_url().cloned() else {
+            self.playback.set_quality(&quality_id);
+            return;
+        };
+        let Some(mut source) = self.playback.source().cloned() else {
+            return;
+        };
+        let position = self.playback.position();
+        source.start_time = (!position.is_zero()).then_some(position);
+        let resume_playing = self.play_when_opened || self.playback.intends_playing();
+        if matches!(
+            self.playback.state(),
+            PlaybackState::Playing | PlaybackState::Buffering
+        ) {
+            self.playback.pause();
+        }
+        self.play_when_opened = resume_playing;
+        self.cancel_paused_position_save();
+
+        let playback_factory = self.playback_factory;
+        let playback_wake = self.playback_wake.clone();
+        let decode_mode = self.decode_mode;
+        let muted = self.muted;
+        let metadata = self.metadata.clone();
+        let (sender, receiver) = mpsc::channel();
+        log::info!(
+            "SanctuaryPlayer: quality replacement begin quality={} position={:.3}s resume_playing={}",
+            quality_id,
+            position.as_secs_f64(),
+            resume_playing
+        );
+        thread::spawn(move || {
+            let result = playback_factory(
+                source,
+                master_url,
+                quality_id,
+                decode_mode,
+                muted,
+                playback_wake,
+            )
+            .map(|playback| OpenedVideo { playback, metadata });
+            let _ = sender.send(result);
+        });
+        self.pending_video_open = Some(PendingVideoOpen { receiver });
+    }
     fn refresh_playback(&mut self) {
         let resume_playing = matches!(
             self.playback.state(),
@@ -1237,7 +1283,7 @@ impl AppState {
             AppCommand::SetPlaybackRate(rate) => self.playback.set_playback_rate(rate),
             AppCommand::SetQuality(quality) => {
                 self.preferences.manually_selected_quality = true;
-                self.playback.set_quality(&quality);
+                self.start_quality_replacement(quality);
             }
             AppCommand::SetFavouriteQualities(qualities) => {
                 self.preferences.favourite_qualities = qualities;
@@ -1305,7 +1351,7 @@ impl AppState {
                 .find(|quality| quality.id == wanted || quality.label == wanted)
                 .map(|quality| quality.id.clone())
             {
-                self.playback.set_quality(&quality_id);
+                self.start_quality_replacement(quality_id);
                 break;
             }
         }
@@ -1664,6 +1710,99 @@ mod tests {
         fn update(&mut self, _elapsed: Duration) {
             self.state = PlaybackState::Error("synthetic executor failure".into());
         }
+    }
+
+    struct QualityReloadPlayback {
+        inner: DummyPlayback,
+        master_url: Url,
+    }
+
+    impl QualityReloadPlayback {
+        fn new(position: Duration, playing: bool) -> Self {
+            let mut inner = DummyPlayback::new();
+            let source = VideoSource::parse("2386400830").unwrap();
+            inner.open(&source).unwrap();
+            inner.seek(position);
+            inner.update(Duration::from_secs(1));
+            if playing {
+                inner.play();
+            }
+            Self {
+                inner,
+                master_url: Url::parse("https://example.test/master.m3u8").unwrap(),
+            }
+        }
+    }
+
+    impl PlaybackBackend for QualityReloadPlayback {
+        fn open(&mut self, source: &VideoSource) -> Result<(), String> {
+            self.inner.open(source)
+        }
+        fn source(&self) -> Option<&VideoSource> {
+            self.inner.source()
+        }
+        fn state(&self) -> &PlaybackState {
+            self.inner.state()
+        }
+        fn intends_playing(&self) -> bool {
+            self.inner.intends_playing()
+        }
+        fn play(&mut self) {
+            self.inner.play();
+        }
+        fn pause(&mut self) {
+            self.inner.pause();
+        }
+        fn position(&self) -> Duration {
+            self.inner.position()
+        }
+        fn duration(&self) -> Option<Duration> {
+            self.inner.duration()
+        }
+        fn seek(&mut self, position: Duration) {
+            self.inner.seek(position);
+        }
+        fn available_rates(&self) -> &[f32] {
+            self.inner.available_rates()
+        }
+        fn playback_rate(&self) -> f32 {
+            self.inner.playback_rate()
+        }
+        fn set_playback_rate(&mut self, rate: f32) {
+            self.inner.set_playback_rate(rate);
+        }
+        fn available_qualities(&self) -> &[Quality] {
+            self.inner.available_qualities()
+        }
+        fn quality(&self) -> Option<&Quality> {
+            self.inner.quality()
+        }
+        fn quality_master_url(&self) -> Option<&Url> {
+            Some(&self.master_url)
+        }
+        fn set_quality(&mut self, quality_id: &str) {
+            self.inner.set_quality(quality_id);
+        }
+        fn update(&mut self, elapsed: Duration) {
+            self.inner.update(elapsed);
+        }
+    }
+
+    fn quality_replacement_test_factory(
+        source: VideoSource,
+        _url: Url,
+        initial_qualities: String,
+        _decode_mode: DecodeMode,
+        _muted: bool,
+        _wake: PlaybackWake,
+    ) -> Result<Box<dyn PlaybackBackend>, String> {
+        if initial_qualities == "480p" {
+            std::thread::sleep(Duration::from_millis(30));
+        }
+        let mut playback = QualityReloadPlayback::new(Duration::ZERO, false);
+        playback.open(&source)?;
+        playback.set_quality(&initial_qualities);
+        Ok(Box::new(playback))
     }
 
     fn loaded_state() -> AppState {
@@ -2324,6 +2463,59 @@ mod tests {
         state.toggle_menu();
         assert!(state.ui.menu_open);
         assert_eq!(state.playback_state(), &PlaybackState::Paused);
+    }
+
+    #[test]
+    fn quality_change_reuses_video_replacement_path_and_preserves_playing_position() {
+        let mut state = loaded_state();
+        state.playback = Box::new(QualityReloadPlayback::new(Duration::from_secs(37), true));
+        state.playback_factory = quality_replacement_test_factory;
+
+        state.apply(AppCommand::SetQuality("480p".into()));
+
+        assert!(state.pending_video_open.is_some());
+        assert_eq!(state.playback_state(), &PlaybackState::Paused);
+        assert!(!matches!(state.playback_state(), PlaybackState::Ended));
+
+        for _ in 0..500 {
+            state.update(Duration::from_millis(1));
+            if state.pending_video_open.is_none()
+                && matches!(state.playback_state(), PlaybackState::Playing)
+            {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+
+        assert!(state.pending_video_open.is_none());
+        assert_eq!(state.quality().unwrap().id, "480p");
+        assert_eq!(state.position(), Duration::from_secs(37));
+        assert_eq!(state.playback_state(), &PlaybackState::Playing);
+    }
+
+    #[test]
+    fn repeated_quality_changes_keep_the_latest_replacement_request() {
+        let mut state = loaded_state();
+        state.playback = Box::new(QualityReloadPlayback::new(Duration::from_secs(12), true));
+        state.playback_factory = quality_replacement_test_factory;
+
+        state.apply(AppCommand::SetQuality("480p".into()));
+        state.apply(AppCommand::SetQuality("1080p60".into()));
+
+        for _ in 0..500 {
+            state.update(Duration::from_millis(1));
+            if state.pending_video_open.is_none()
+                && matches!(state.playback_state(), PlaybackState::Playing)
+            {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+
+        assert!(state.pending_video_open.is_none());
+        assert_eq!(state.quality().unwrap().id, "1080p60");
+        assert_eq!(state.position(), Duration::from_secs(12));
+        assert_eq!(state.playback_state(), &PlaybackState::Playing);
     }
 
     #[test]

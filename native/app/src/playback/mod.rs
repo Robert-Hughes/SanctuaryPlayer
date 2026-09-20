@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::{Duration, Instant};
 
 use ::oxideav::core::{FrameLease, VideoColorInfo};
+use url::Url;
 
 use crate::model::{DebugInfoSection, PlaybackState, Quality};
 use crate::video::VideoSource;
@@ -222,6 +223,9 @@ pub trait PlaybackBackend: Send {
     fn set_playback_rate(&mut self, rate: f32);
     fn available_qualities(&self) -> &[Quality];
     fn quality(&self) -> Option<&Quality>;
+    fn quality_master_url(&self) -> Option<&Url> {
+        None
+    }
     fn set_quality(&mut self, quality_id: &str);
     fn update(&mut self, elapsed: Duration);
 
