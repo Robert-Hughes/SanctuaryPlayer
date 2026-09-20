@@ -218,8 +218,14 @@ impl PlaybackDiagnostics {
 enum SessionMsg {
     Started(Vec<StreamInfo>),
     StreamUpdate(Box<StreamInfo>),
-    Frame { kind: MediaType, frame: FrameLease },
-    Barrier(BarrierKind),
+    Frame {
+        kind: MediaType,
+        frame: FrameLease,
+    },
+    Barrier {
+        kind: Option<MediaType>,
+        barrier: BarrierKind,
+    },
     EndOfStream(MediaType),
     Finished,
 }
@@ -238,7 +244,7 @@ impl SessionMsg {
                 ..
             } => "video",
             Self::Frame { .. } => "other",
-            Self::Barrier(_) => "barrier",
+            Self::Barrier { .. } => "barrier",
             Self::EndOfStream(_) => "end-of-stream",
             Self::Finished => "finish",
         }
@@ -457,7 +463,10 @@ impl TrackSink for SessionTrackSink {
     }
 
     fn barrier(&mut self, barrier: BarrierKind) -> ::oxideav::core::Result<()> {
-        self.send(SessionMsg::Barrier(barrier))
+        self.send(SessionMsg::Barrier {
+            kind: Some(self.kind),
+            barrier,
+        })
     }
 
     fn end_of_stream(
@@ -528,7 +537,10 @@ impl JobSink for SessionSink {
     }
 
     fn barrier(&mut self, barrier: BarrierKind) -> ::oxideav::core::Result<()> {
-        self.send_control(SessionMsg::Barrier(barrier))
+        self.send_control(SessionMsg::Barrier {
+            kind: None,
+            barrier,
+        })
     }
 
     fn end_of_stream(
@@ -1019,7 +1031,7 @@ impl OxidePlayback {
                     _ => Ok(()),
                 }
             }
-            SessionMsg::Barrier(barrier) => self.handle_seek_barrier(barrier),
+            SessionMsg::Barrier { kind, barrier } => self.handle_seek_barrier(kind, barrier),
             SessionMsg::EndOfStream(kind) => {
                 match kind {
                     MediaType::Video => self.video_eof = true,
@@ -1153,7 +1165,11 @@ impl OxidePlayback {
         }
     }
 
-    fn handle_seek_barrier(&mut self, barrier: BarrierKind) -> Result<(), String> {
+    fn handle_seek_barrier(
+        &mut self,
+        kind: Option<MediaType>,
+        barrier: BarrierKind,
+    ) -> Result<(), String> {
         let generation = match barrier {
             BarrierKind::SeekFlush { generation, .. }
             | BarrierKind::SeekRejected { generation } => generation,
@@ -1177,6 +1193,15 @@ impl OxidePlayback {
                 time_base,
                 ..
             } => {
+                match kind {
+                    Some(MediaType::Video) => self.video_eof = false,
+                    Some(MediaType::Audio) => self.audio_eof = false,
+                    None => {
+                        self.video_eof = false;
+                        self.audio_eof = false;
+                    }
+                    Some(_) => {}
+                }
                 pending.landing.get_or_insert((landed_pts, time_base));
             }
             BarrierKind::SeekRejected { .. } => pending.rejected = true,
@@ -1234,9 +1259,6 @@ impl OxidePlayback {
             self.dispatch_seek(target, pending.prior_position, pending.resume_playing)?;
             return Ok(());
         }
-
-        self.video_eof = false;
-        self.audio_eof = false;
 
         if let Some(audio) = self.audio_output.as_mut() {
             audio.set_paused(true)?;
@@ -4221,6 +4243,77 @@ mod tests {
     }
 
     #[test]
+    fn post_seek_eof_survives_other_track_barrier_completion() {
+        let (mut playback, _tx) = clock_test_playback();
+        playback.audio_stream = Some(StreamInfo {
+            index: 1,
+            time_base: TimeBase::new(1, 48_000),
+            duration: None,
+            start_time: Some(0),
+            params: CodecParameters::audio(CodecId::new("aac")),
+        });
+        playback.state = PlaybackState::Seeking;
+        playback.position = Duration::from_secs(30);
+        playback.video_eof = true;
+        playback.audio_eof = true;
+        playback.seek_pending = Some(PendingSeek {
+            generation: 12,
+            requested: Duration::from_secs(30),
+            prior_position: Duration::from_secs(25),
+            resume_playing: true,
+            barriers_remaining: 2,
+            landing: None,
+            rejected: false,
+        });
+
+        playback
+            .handle_session_message(SessionMsg::Barrier {
+                kind: Some(MediaType::Audio),
+                barrier: BarrierKind::SeekFlush {
+                    generation: 12,
+                    landed_pts: 2_700_000,
+                    time_base: TimeBase::new(1, 90_000),
+                },
+            })
+            .unwrap();
+        assert!(
+            !playback.audio_eof,
+            "audio barrier must clear only the old audio EOF"
+        );
+        assert!(
+            playback.video_eof,
+            "video EOF must remain until the video barrier"
+        );
+
+        playback
+            .handle_session_message(SessionMsg::EndOfStream(MediaType::Audio))
+            .unwrap();
+        assert!(playback.audio_eof);
+
+        playback
+            .handle_session_message(SessionMsg::Barrier {
+                kind: Some(MediaType::Video),
+                barrier: BarrierKind::SeekFlush {
+                    generation: 12,
+                    landed_pts: 2_700_000,
+                    time_base: TimeBase::new(1, 90_000),
+                },
+            })
+            .unwrap();
+        assert!(
+            playback.audio_eof,
+            "completing the seek on video must not erase post-barrier audio EOF"
+        );
+        assert!(!playback.video_eof);
+        assert!(playback.seek_pending.is_none());
+
+        playback
+            .handle_session_message(SessionMsg::EndOfStream(MediaType::Video))
+            .unwrap();
+        playback.update_end_state();
+        assert!(matches!(playback.state, PlaybackState::Ended));
+    }
+    #[test]
     fn seek_waits_for_every_routed_barrier_before_reanchoring() {
         let (mut playback, _tx) = clock_test_playback();
         playback.state = PlaybackState::Seeking;
@@ -4236,21 +4329,27 @@ mod tests {
         });
 
         playback
-            .handle_seek_barrier(BarrierKind::SeekFlush {
-                generation: 9,
-                landed_pts: 2_700_000,
-                time_base: TimeBase::new(1, 90_000),
-            })
+            .handle_seek_barrier(
+                None,
+                BarrierKind::SeekFlush {
+                    generation: 9,
+                    landed_pts: 2_700_000,
+                    time_base: TimeBase::new(1, 90_000),
+                },
+            )
             .unwrap();
         assert!(playback.seek_pending.is_some());
         assert_eq!(playback.state, PlaybackState::Seeking);
 
         playback
-            .handle_seek_barrier(BarrierKind::SeekFlush {
-                generation: 9,
-                landed_pts: 2_700_000,
-                time_base: TimeBase::new(1, 90_000),
-            })
+            .handle_seek_barrier(
+                None,
+                BarrierKind::SeekFlush {
+                    generation: 9,
+                    landed_pts: 2_700_000,
+                    time_base: TimeBase::new(1, 90_000),
+                },
+            )
             .unwrap();
         assert!(playback.seek_pending.is_none());
         assert_eq!(playback.position, Duration::from_secs(30));
@@ -4337,18 +4436,24 @@ mod tests {
         });
 
         playback
-            .handle_seek_barrier(BarrierKind::SeekFlush {
-                generation: 11,
-                landed_pts: 6_666_000,
-                time_base: TimeBase::new(1, 90_000),
-            })
+            .handle_seek_barrier(
+                None,
+                BarrierKind::SeekFlush {
+                    generation: 11,
+                    landed_pts: 6_666_000,
+                    time_base: TimeBase::new(1, 90_000),
+                },
+            )
             .unwrap();
         playback
-            .handle_seek_barrier(BarrierKind::SeekFlush {
-                generation: 11,
-                landed_pts: 6_666_000,
-                time_base: TimeBase::new(1, 90_000),
-            })
+            .handle_seek_barrier(
+                None,
+                BarrierKind::SeekFlush {
+                    generation: 11,
+                    landed_pts: 6_666_000,
+                    time_base: TimeBase::new(1, 90_000),
+                },
+            )
             .unwrap();
 
         assert!(playback.seek_pending.is_none());
@@ -4432,7 +4537,7 @@ mod tests {
             rejected: false,
         });
         playback
-            .handle_seek_barrier(BarrierKind::SeekRejected { generation: 4 })
+            .handle_seek_barrier(None, BarrierKind::SeekRejected { generation: 4 })
             .unwrap();
         assert_eq!(playback.position, Duration::from_secs(3));
         assert_eq!(playback.state, PlaybackState::Paused);
