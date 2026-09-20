@@ -9,7 +9,7 @@ use ::oxideav::core::{
     VideoColorInfo,
 };
 use ::oxideav::pipeline::{
-    BarrierKind, ChannelCaps, CodecPreferences, Executor, ExecutorHandle, Job, JobSink,
+    BarrierKind, ChannelCaps, CodecPreferences, EofMode, Executor, ExecutorHandle, Job, JobSink,
     PipelineStageInfo, TrackSink, TrackSinkInfo,
 };
 use oxideav_hls::{HlsPlaylistInfo, HlsVariant};
@@ -106,6 +106,8 @@ pub struct OxidePlayback {
     first_frame_presented: bool,
     starvation_started_at: Option<Instant>,
     sink_finished: bool,
+    video_eof: bool,
+    audio_eof: bool,
     seek_pending: Option<PendingSeek>,
     post_seek_epoch: Option<PostSeekEpoch>,
     queued_seek: Option<Duration>,
@@ -218,6 +220,7 @@ enum SessionMsg {
     StreamUpdate(Box<StreamInfo>),
     Frame { kind: MediaType, frame: FrameLease },
     Barrier(BarrierKind),
+    EndOfStream(MediaType),
     Finished,
 }
 
@@ -236,6 +239,7 @@ impl SessionMsg {
             } => "video",
             Self::Frame { .. } => "other",
             Self::Barrier(_) => "barrier",
+            Self::EndOfStream(_) => "end-of-stream",
             Self::Finished => "finish",
         }
     }
@@ -455,6 +459,14 @@ impl TrackSink for SessionTrackSink {
     fn barrier(&mut self, barrier: BarrierKind) -> ::oxideav::core::Result<()> {
         self.send(SessionMsg::Barrier(barrier))
     }
+
+    fn end_of_stream(
+        &mut self,
+        _stream_index: u32,
+        kind: MediaType,
+    ) -> ::oxideav::core::Result<()> {
+        self.send(SessionMsg::EndOfStream(kind))
+    }
 }
 
 impl JobSink for SessionSink {
@@ -517,6 +529,14 @@ impl JobSink for SessionSink {
 
     fn barrier(&mut self, barrier: BarrierKind) -> ::oxideav::core::Result<()> {
         self.send_control(SessionMsg::Barrier(barrier))
+    }
+
+    fn end_of_stream(
+        &mut self,
+        _stream_index: u32,
+        kind: MediaType,
+    ) -> ::oxideav::core::Result<()> {
+        self.send_control(SessionMsg::EndOfStream(kind))
     }
 
     fn finish(&mut self) -> ::oxideav::core::Result<()> {
@@ -614,6 +634,7 @@ fn open_variant_session(
             packets: PLAYBACK_PACKET_CHANNEL_CAP,
             ..ChannelCaps::default()
         })
+        .with_eof_mode(EofMode::WaitForSeek)
         .with_threads(0)
         .spawn()
         .map_err(|error| format!("start OxideAV playback: {error}"))?;
@@ -787,6 +808,8 @@ impl OxidePlayback {
             first_frame_presented: false,
             starvation_started_at: None,
             sink_finished: false,
+            video_eof: false,
+            audio_eof: false,
             seek_pending: None,
             post_seek_epoch: None,
             queued_seek: None,
@@ -997,6 +1020,20 @@ impl OxidePlayback {
                 }
             }
             SessionMsg::Barrier(barrier) => self.handle_seek_barrier(barrier),
+            SessionMsg::EndOfStream(kind) => {
+                match kind {
+                    MediaType::Video => self.video_eof = true,
+                    MediaType::Audio => {
+                        self.audio_eof = true;
+                        if let Some(audio) = self.audio_output.as_mut() {
+                            audio.finish_input()?;
+                        }
+                    }
+                    _ => {}
+                }
+                log::info!("SanctuaryPlayer: track reached end-of-stream kind={kind:?}");
+                Ok(())
+            }
             SessionMsg::Finished => {
                 if let Some(audio) = self.audio_output.as_mut() {
                     audio.finish_input()?;
@@ -1197,6 +1234,9 @@ impl OxidePlayback {
             self.dispatch_seek(target, pending.prior_position, pending.resume_playing)?;
             return Ok(());
         }
+
+        self.video_eof = false;
+        self.audio_eof = false;
 
         if let Some(audio) = self.audio_output.as_mut() {
             audio.set_paused(true)?;
@@ -1482,8 +1522,9 @@ impl OxidePlayback {
     }
 
     fn update_end_state(&mut self) {
-        if !self.sink_finished || !self.video_queue.is_empty() || self.pending_audio_frame.is_some()
-        {
+        let epoch_finished = self.sink_finished
+            || (self.video_eof && (self.audio_stream.is_none() || self.audio_eof));
+        if !epoch_finished || !self.video_queue.is_empty() || self.pending_audio_frame.is_some() {
             return;
         }
         if self
@@ -1493,7 +1534,10 @@ impl OxidePlayback {
         {
             return;
         }
-        if matches!(self.state, PlaybackState::Error(_) | PlaybackState::Ended) {
+        if matches!(
+            self.state,
+            PlaybackState::Error(_) | PlaybackState::Ended | PlaybackState::Seeking
+        ) {
             return;
         }
         if !self.first_frame_presented {
@@ -3003,6 +3047,8 @@ mod tests {
                 first_frame_presented: true,
                 starvation_started_at: None,
                 sink_finished: false,
+                video_eof: false,
+                audio_eof: false,
                 seek_pending: None,
                 post_seek_epoch: None,
                 queued_seek: None,
@@ -3015,6 +3061,28 @@ mod tests {
                 _video_tx: video_tx,
             },
         )
+    }
+
+    #[test]
+    fn retained_eof_enters_ended_without_executor_finish() {
+        let (mut playback, _senders) = clock_test_playback();
+        playback.video_eof = true;
+
+        playback.update_end_state();
+
+        assert!(matches!(playback.state, PlaybackState::Ended));
+        assert!(!playback.sink_finished);
+    }
+
+    #[test]
+    fn retained_eof_does_not_override_seek_in_progress() {
+        let (mut playback, _senders) = clock_test_playback();
+        playback.video_eof = true;
+        playback.state = PlaybackState::Seeking;
+
+        playback.update_end_state();
+
+        assert!(matches!(playback.state, PlaybackState::Seeking));
     }
 
     fn audio_frame_lease(samples: usize, pts: i64) -> FrameLease {
