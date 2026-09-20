@@ -2806,8 +2806,9 @@ fn codec_preferences(decode_mode: DecodeMode) -> CodecPreferences {
             // Hardware implementations advertise better intrinsic priorities than
             // software. Android ranks direct MediaCodec first, then MediaCodec
             // readback, then h264_sw; FreeBSD ranks VDPAU before h264_sw; Windows
-            // ranks Vulkan Video before h264_sw. Factory failures therefore walk the
-            // same quality order without making the user's automatic request strict.
+            // ranks Vulkan direct first, then Vulkan readback, then h264_sw. Factory
+            // failures therefore walk the same quality order without making the
+            // user's automatic request strict.
             CodecPreferences::default()
         }
         DecodeMode::Cpu => CodecPreferences {
@@ -2816,7 +2817,7 @@ fn codec_preferences(decode_mode: DecodeMode) -> CodecPreferences {
         },
         DecodeMode::VulkanReadback => CodecPreferences {
             prefer: vec!["h264_vulkan".into()],
-            exclude: vec!["h264_sw".into()],
+            exclude: vec!["h264_vulkan_direct".into(), "h264_sw".into()],
             boost: 100,
             ..Default::default()
         },
@@ -4043,15 +4044,21 @@ mod tests {
     }
 
     #[test]
-    fn vulkan_selection_is_strict_without_requiring_hardware_audio() {
+    fn vulkan_readback_selection_forces_readback_without_requiring_hardware_audio() {
         let prefs = codec_preferences(DecodeMode::VulkanReadback);
         assert_eq!(prefs.prefer, vec!["h264_vulkan"]);
+        assert!(
+            prefs
+                .exclude
+                .iter()
+                .any(|name| name == "h264_vulkan_direct")
+        );
         assert!(prefs.exclude.iter().any(|name| name == "h264_sw"));
         assert!(!prefs.require_hardware);
     }
 
     #[test]
-    fn vulkan_direct_selection_is_strict_and_does_not_change_auto() {
+    fn vulkan_direct_selection_is_strict_while_auto_keeps_fallbacks_eligible() {
         let direct = codec_preferences(DecodeMode::VulkanDirect);
         assert_eq!(direct.prefer, vec!["h264_vulkan_direct"]);
         assert!(direct.exclude.iter().any(|name| name == "h264_vulkan"));

@@ -863,6 +863,16 @@ impl VideoRenderer {
             .as_hardware_video()
             .ok_or_else(|| "auto decode received an unknown frame lease kind".to_owned())?;
         match hardware.backend() {
+            "vulkan-video" => {
+                #[cfg(target_os = "windows")]
+                {
+                    self.upload_vulkan_direct(device, queue, lease, color)
+                }
+                #[cfg(not(target_os = "windows"))]
+                {
+                    Err("Vulkan Video direct frame reached a non-Windows renderer".into())
+                }
+            }
             "mediacodec" => {
                 #[cfg(target_os = "android")]
                 {

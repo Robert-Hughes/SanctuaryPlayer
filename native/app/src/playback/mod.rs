@@ -20,8 +20,8 @@ pub use dummy::DummyPlayback;
 pub enum DecodeMode {
     /// Prefer the platform's hardware path, then software decode.
     ///
-    /// Windows currently uses Vulkan Video with CPU readback; Android prefers
-    /// direct MediaCodec then MediaCodec readback; FreeBSD prefers VDPAU.
+    /// Windows prefers direct Vulkan Video then Vulkan Video readback; Android
+    /// prefers direct MediaCodec then MediaCodec readback; FreeBSD prefers VDPAU.
     #[default]
     Auto,
     Cpu,
@@ -36,6 +36,14 @@ pub enum DecodeMode {
 impl DecodeMode {
     pub const fn platform_default() -> Self {
         Self::Auto
+    }
+
+    pub(crate) const fn prefers_windows_shared_vulkan_device(self) -> bool {
+        cfg!(target_os = "windows") && matches!(self, Self::Auto | Self::VulkanDirect)
+    }
+
+    pub(crate) const fn requires_windows_shared_vulkan_device(self) -> bool {
+        cfg!(target_os = "windows") && matches!(self, Self::VulkanDirect)
     }
 
     const fn is_supported_with_backends(
@@ -451,6 +459,20 @@ mod decode_mode_tests {
                 .is_err()
         );
         assert!(DecodeMode::VdpauDirect.validate_current_platform().is_err());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_auto_prefers_shared_vulkan_while_direct_requires_it() {
+        assert!(DecodeMode::Auto.prefers_windows_shared_vulkan_device());
+        assert!(!DecodeMode::Auto.requires_windows_shared_vulkan_device());
+
+        assert!(DecodeMode::VulkanDirect.prefers_windows_shared_vulkan_device());
+        assert!(DecodeMode::VulkanDirect.requires_windows_shared_vulkan_device());
+
+        assert!(!DecodeMode::VulkanReadback.prefers_windows_shared_vulkan_device());
+        assert!(!DecodeMode::VulkanReadback.requires_windows_shared_vulkan_device());
+        assert!(!DecodeMode::Cpu.prefers_windows_shared_vulkan_device());
     }
 
     #[cfg(not(any(target_os = "freebsd", target_os = "android", target_os = "windows")))]

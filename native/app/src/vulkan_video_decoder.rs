@@ -204,9 +204,9 @@ pub(crate) fn request_shared_wgpu_device(
 
 /// Register Sanctuary's Windows Vulkan Video H.264 adapters.
 ///
-/// Readback remains the higher-priority hardware implementation so automatic
-/// selection is unchanged. The direct implementation is selected only by an
-/// explicit vulkan-direct request.
+/// Direct presentation is the preferred automatic Windows implementation.
+/// If its factory cannot initialise, normal OxideAV factory fallback walks to
+/// Vulkan readback and then software decoding.
 pub fn register(ctx: &mut ::oxideav::Registries) {
     ctx.codecs.register(
         CodecInfo::new(CodecId::new("h264"))
@@ -392,5 +392,25 @@ mod tests {
             }],
         });
         assert_eq!(stamp_missing_video_pts(frame, Some(123)).pts(), Some(456));
+    }
+
+    #[test]
+    fn direct_decoder_is_ranked_ahead_of_readback_for_automatic_selection() {
+        let mut registries = ::oxideav::Registries::new();
+        register(&mut registries);
+        let h264 = CodecId::new("h264");
+        let implementations = registries.codecs.implementations(&h264);
+        let direct = implementations
+            .iter()
+            .find(|implementation| implementation.caps.implementation == "h264_vulkan_direct")
+            .expect("direct Vulkan decoder must be registered");
+        let readback = implementations
+            .iter()
+            .find(|implementation| implementation.caps.implementation == "h264_vulkan")
+            .expect("readback Vulkan decoder must be registered");
+
+        assert!(direct.caps.priority < readback.caps.priority);
+        assert!(direct.caps.hardware_accelerated);
+        assert!(readback.caps.hardware_accelerated);
     }
 }

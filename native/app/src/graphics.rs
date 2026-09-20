@@ -67,8 +67,25 @@ impl Graphics {
             trace: wgpu::Trace::Off,
         };
         #[cfg(target_os = "windows")]
-        let (device, queue) = if decode_mode == DecodeMode::VulkanDirect {
-            crate::vulkan_video_decoder::request_shared_wgpu_device(&adapter, &device_desc)?
+        let (device, queue) = if decode_mode.prefers_windows_shared_vulkan_device() {
+            match crate::vulkan_video_decoder::request_shared_wgpu_device(&adapter, &device_desc) {
+                Ok(device_and_queue) => device_and_queue,
+                Err(error) if !decode_mode.requires_windows_shared_vulkan_device() => {
+                    log::warn!(
+                        "SanctuaryPlayer: shared Vulkan Video device unavailable in auto mode ({error}); falling back to ordinary wgpu device"
+                    );
+                    crate::vulkan_video_decoder::clear_direct_device();
+                    adapter
+                        .request_device(&device_desc)
+                        .await
+                        .map_err(|fallback_error| {
+                            format!(
+                                "request shared Vulkan Video device: {error}; fallback request_device: {fallback_error}"
+                            )
+                        })?
+                }
+                Err(error) => return Err(error),
+            }
         } else {
             crate::vulkan_video_decoder::clear_direct_device();
             adapter

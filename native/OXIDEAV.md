@@ -123,12 +123,13 @@ The local OxideAV workspace provides the pieces needed for native playback:
 - Windows Vulkan Video H.264 streaming hardware decode through the project fork
   (`oxideav-vulkan-video` `d13ada8`): the shared H.264 frontend supplies POC/DPB state
   for I/P/B pictures and the Vulkan backend maps that state to real reference slots,
-  rejecting unsupported stream tools instead of approximating them. The normal/automatic
-  Windows path remains `vulkan-readback`. An explicit `vulkan-direct` mode now creates
-  wgpu/egui and Vulkan Video queues on the same logical VkDevice, retains decoded NV12
-  frames entirely on the GPU, copies their Y/UV planes into wgpu-owned R8/RG8 textures on
-  the graphics queue, and samples those textures with the existing colour-conversion
-  model. No CPU pixel readback or NV12-to-I420 conversion occurs in that direct path.
+  rejecting unsupported stream tools instead of approximating them. The normal `auto`
+  Windows path now prefers direct Vulkan Video presentation: wgpu/egui and Vulkan Video
+  queues share one logical VkDevice, decoded NV12 frames stay on the GPU, their Y/UV
+  planes are copied into wgpu-owned R8/RG8 textures on the graphics queue, and the
+  existing colour-conversion model samples those textures. If shared-device/direct
+  initialisation is unavailable, `auto` retains Vulkan readback and software fallback;
+  explicit `vulkan-readback` remains the known-good CPU-materialisation fallback.
 - Retainable decoded-frame ownership through `FrameLease` (`c6e6f02`, `4c7099a`).
 - Native pooled software-H.264 arena output (`46f8433`, `94b6372`, `fda3143`),
   including arena-backed PAFF/SCP assembly and hard pool-exhaustion semantics
@@ -438,11 +439,12 @@ The Vulkan Video, MediaCodec and VDPAU explicit hardware modes remain strict for
 H.264: failure to obtain or execute the selected contract is an error, not a request to
 switch the video track silently. `require_hardware` is deliberately not used because
 the same job also decodes AAC; excluding unwanted H.264 implementations leaves software
-audio codecs selectable. The current Windows Vulkan mode is intentionally a readback
-path rather than zero-copy. The VDPAU direct path remains zero-CPU-copy rather than
-literal zero-copy: it still performs the GL YUV->RGBA render and one GPU-local Vulkan
-image copy. The MediaCodec direct path likewise performs a GPU YCbCr->RGBA render into
-a wgpu-owned texture, but does not perform a CPU pixel copy.
+audio codecs selectable. Windows `auto` prefers Vulkan direct but remains non-strict,
+so direct factory failure can fall through to Vulkan readback and then software decode.
+The VDPAU direct path remains zero-CPU-copy rather than literal zero-copy: it still
+performs the GL YUV->RGBA render and one GPU-local Vulkan image copy. The MediaCodec
+direct path likewise performs a GPU YCbCr->RGBA render into a wgpu-owned texture, but
+does not perform a CPU pixel copy.
 
 The corrected post-`e9f8acd` reference-player benchmark used the local 10.03 s,
 1280x720/60 fps Twitch segment (600 frames, five muted paced runs per path).
@@ -648,8 +650,8 @@ ABR remain later work.
 The desktop launcher accepts
 `--video <URL-or-ID>` (or a positional video), `--play`/`--autoplay`,
 `--mute`, and the platform-valid `--decode-mode` values. Windows adds
-`vulkan-readback`; FreeBSD adds `vdpau-readback` and `vdpau-direct`; `auto` and
-`cpu` are portable desktop choices. `VideoSource::parse` rules are shared with the
+`vulkan-readback` and `vulkan-direct`; FreeBSD adds `vdpau-readback` and
+`vdpau-direct`; `auto` and `cpu` are portable desktop choices. `VideoSource::parse` rules are shared with the
 in-app Change Video flow. The decode mode defaults to `auto`. `--mute` sets
 sysaudio's per-stream software gain to zero while leaving the audio callback and
 timestamp timeline active.
