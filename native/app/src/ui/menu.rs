@@ -493,7 +493,7 @@ fn render_saved_positions(
     }
 
     let positions = state.saved_positions();
-    let loading_status = state.saved_positions_loading().then(|| {
+    let loading_status = state.saved_positions_loading().then_some({
         if positions.is_empty() {
             "Loading saved positions…"
         } else {
