@@ -1493,16 +1493,15 @@ impl OxidePlayback {
         {
             return;
         }
-        if matches!(self.state, PlaybackState::Error(_)) {
+        if matches!(self.state, PlaybackState::Error(_) | PlaybackState::Ended) {
             return;
         }
-        if self.first_frame_presented {
-            self.state = PlaybackState::Ended;
-        } else if self.executor.is_none() {
-            self.state = PlaybackState::Error(
-                "OxideAV playback finished without producing a video frame".into(),
+        if !self.first_frame_presented {
+            log::info!(
+                "SanctuaryPlayer: playback ended without presenting a video frame; treating as normal end-of-media"
             );
         }
+        self.state = PlaybackState::Ended;
     }
 
     fn frame_position(&self, frame: &FrameLease) -> Option<Duration> {
