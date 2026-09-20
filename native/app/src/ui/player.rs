@@ -386,7 +386,6 @@ enum PlayerIcon {
     Play,
     Pause,
     Refresh,
-    Ended,
     Fullscreen,
 }
 
@@ -401,9 +400,6 @@ fn icon_image(icon: PlayerIcon) -> egui::Image<'static> {
         PlayerIcon::Refresh => egui::Image::new(egui::include_image!(
             "../../assets/player-icons/refresh.svg"
         )),
-        PlayerIcon::Ended => {
-            egui::Image::new(egui::include_image!("../../assets/player-icons/ended.svg"))
-        }
         PlayerIcon::Fullscreen => egui::Image::new(egui::include_image!(
             "../../assets/player-icons/fullscreen.svg"
         )),
@@ -502,7 +498,7 @@ fn primary_playback_control(
             (PlayerIcon::Pause, Some(AppCommand::TogglePlayback))
         }
         PlaybackState::Seeking => (PlayerIcon::Play, Some(AppCommand::TogglePlayback)),
-        PlaybackState::Ended => (PlayerIcon::Ended, None),
+        PlaybackState::Ended => (PlayerIcon::Play, None),
         PlaybackState::Loading => (PlayerIcon::Play, None),
     }
 }
@@ -814,6 +810,14 @@ mod tests {
             primary_playback_control(&PlaybackState::Error("network failed".into()), false);
         assert_eq!(icon, PlayerIcon::Refresh);
         assert_eq!(command, Some(AppCommand::RefreshPlayback));
+    }
+
+    #[test]
+    fn ended_state_keeps_disabled_play_control_and_status_text() {
+        let (icon, command) = primary_playback_control(&PlaybackState::Ended, false);
+        assert_eq!(icon, PlayerIcon::Play);
+        assert_eq!(command, None);
+        assert_eq!(playback_status_label(&PlaybackState::Ended), Some("Ended"));
     }
 
     #[test]
