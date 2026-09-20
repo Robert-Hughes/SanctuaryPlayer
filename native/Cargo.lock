@@ -2033,7 +2033,7 @@ dependencies = [
 [[package]]
 name = "oxideav-hls"
 version = "0.1.0"
-source = "git+https://github.com/Robert-Hughes/oxideav-hls.git?branch=dev#fa52a2a87d0f87e818eb382927773520896aa231"
+source = "git+https://github.com/Robert-Hughes/oxideav-hls.git?branch=dev#05037ec2de65ecd2b31f1ebbe375a087538a5a7e"
 dependencies = [
  "log",
  "m3u8-rs",
