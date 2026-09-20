@@ -6,6 +6,7 @@ use ::oxideav::core::{
 
 #[cfg(target_os = "android")]
 use crate::mediacodec_vulkan_bridge::MediaCodecVulkanBridge;
+use crate::model::{DebugEdge, DebugGraph, DebugGraphLane, DebugNode};
 use crate::playback::DecodeMode;
 #[cfg(target_os = "freebsd")]
 use crate::vdpau_vulkan_bridge::VdpauVulkanBridge;
@@ -487,6 +488,7 @@ impl VideoRenderer {
         self.presentation = Presentation::None;
     }
 
+    #[cfg(any(target_os = "android", target_os = "freebsd"))]
     pub(crate) fn debug_rows(&self) -> Vec<(String, String)> {
         let presentation = match self.presentation {
             Presentation::None => "none".to_owned(),
@@ -561,6 +563,228 @@ impl VideoRenderer {
             ),
         ));
         rows
+    }
+
+    pub(crate) fn debug_graph(&self) -> DebugGraph {
+        let mut graph = DebugGraph::default();
+        let content_size = self
+            .dims
+            .map(|(width, height)| format!("{width}x{height}"))
+            .unwrap_or_else(|| "none".into());
+
+        match self.presentation {
+            Presentation::None => {
+                graph.nodes.push(DebugNode::new(
+                    "video-presentation",
+                    "Video presentation",
+                    "no frame uploaded",
+                    DebugGraphLane::Video,
+                    5,
+                    vec![("content size".into(), content_size)],
+                ));
+                graph.edges.push(DebugEdge::flow(
+                    "video-lookahead",
+                    "video-presentation",
+                    "due frame",
+                ));
+            }
+            Presentation::Yuv => {
+                graph.nodes.push(DebugNode::new(
+                    "video-presentation",
+                    "CPU planar YUV frame / wgpu upload",
+                    "materialised YUV420P planes",
+                    DebugGraphLane::Video,
+                    5,
+                    vec![
+                        ("content size".into(), content_size.clone()),
+                        ("pixel storage".into(), "CPU materialised".into()),
+                        ("upload".into(), "wgpu queue.write_texture".into()),
+                    ],
+                ));
+                graph.nodes.push(DebugNode::new(
+                    "video-yuv-textures",
+                    "wgpu planar YUV textures",
+                    self.dims
+                        .map(|(width, height)| {
+                            format!("Y={}x{} U/V={}x{}", width, height, width / 2, height / 2)
+                        })
+                        .unwrap_or_else(|| "not allocated".into()),
+                    DebugGraphLane::Video,
+                    6,
+                    vec![
+                        ("format".into(), "R8Unorm Y/U/V".into()),
+                        ("allocated".into(), self.textures.is_some().to_string()),
+                    ],
+                ));
+                graph.nodes.push(DebugNode::new(
+                    "video-shader",
+                    "YUV → RGB shader",
+                    "yuv_to_rgb.wgsl",
+                    DebugGraphLane::Video,
+                    7,
+                    vec![
+                        ("shader".into(), "yuv_to_rgb.wgsl".into()),
+                        ("colour conversion".into(), "VideoColorInfo uniforms".into()),
+                    ],
+                ));
+                graph.edges.push(DebugEdge::flow(
+                    "video-lookahead",
+                    "video-presentation",
+                    "CPU FrameLease",
+                ));
+                graph.edges.push(DebugEdge::flow(
+                    "video-presentation",
+                    "video-yuv-textures",
+                    "plane upload",
+                ));
+                graph.edges.push(DebugEdge::flow(
+                    "video-yuv-textures",
+                    "video-shader",
+                    "sample Y/U/V",
+                ));
+            }
+            #[cfg(target_os = "windows")]
+            Presentation::VulkanDirect(slot) => {
+                graph.nodes.push(DebugNode::new(
+                    "video-presentation",
+                    "Retained Vulkan Video NV12 VkImage",
+                    format!("GPU-only frame · slot {slot}"),
+                    DebugGraphLane::Video,
+                    5,
+                    vec![
+                        ("content size".into(), content_size.clone()),
+                        ("storage".into(), "decoder-owned NV12 VkImage".into()),
+                        ("lease".into(), "retained until copy fence signals".into()),
+                    ],
+                ));
+                graph.nodes.push(DebugNode::new(
+                    "video-direct-copy",
+                    "Vulkan direct plane copy",
+                    format!(
+                        "{} slots · {} busy drops",
+                        self.vulkan_direct_bridges.len(),
+                        self.vulkan_direct_busy_drops
+                    ),
+                    DebugGraphLane::Video,
+                    6,
+                    vec![
+                        ("operation".into(), "vkCmdCopyImage".into()),
+                        ("source".into(), "NV12 planes 0/1".into()),
+                        ("slots".into(), self.vulkan_direct_bridges.len().to_string()),
+                        (
+                            "busy drops".into(),
+                            self.vulkan_direct_busy_drops.to_string(),
+                        ),
+                    ],
+                ));
+                graph.nodes.push(DebugNode::new(
+                    "video-yuv-textures",
+                    "wgpu R8/RG8 textures",
+                    self.dims
+                        .map(|(width, height)| {
+                            format!("Y={}x{} UV={}x{}", width, height, width / 2, height / 2)
+                        })
+                        .unwrap_or_else(|| "not allocated".into()),
+                    DebugGraphLane::Video,
+                    7,
+                    vec![
+                        ("Y".into(), "R8Unorm".into()),
+                        ("UV".into(), "Rg8Unorm".into()),
+                        ("copy domain".into(), "GPU → GPU".into()),
+                    ],
+                ));
+                graph.nodes.push(DebugNode::new(
+                    "video-shader",
+                    "NV12 → RGB shader",
+                    "nv12_to_rgb.wgsl",
+                    DebugGraphLane::Video,
+                    8,
+                    vec![
+                        ("shader".into(), "nv12_to_rgb.wgsl".into()),
+                        ("colour conversion".into(), "VideoColorInfo uniforms".into()),
+                    ],
+                ));
+                graph.edges.push(DebugEdge::flow(
+                    "video-lookahead",
+                    "video-presentation",
+                    "HardwareVideoFrame lease",
+                ));
+                graph.edges.push(DebugEdge::flow(
+                    "video-presentation",
+                    "video-direct-copy",
+                    "NV12 VkImage",
+                ));
+                graph.edges.push(DebugEdge::flow(
+                    "video-direct-copy",
+                    "video-yuv-textures",
+                    "GPU plane copy",
+                ));
+                graph.edges.push(DebugEdge::flow(
+                    "video-yuv-textures",
+                    "video-shader",
+                    "sample NV12",
+                ));
+            }
+            #[cfg(target_os = "android")]
+            Presentation::MediaCodecDirect(slot) => {
+                graph.nodes.push(DebugNode::new(
+                    "video-presentation",
+                    "MediaCodec direct frame",
+                    format!("GPU frame · slot {slot}"),
+                    DebugGraphLane::Video,
+                    5,
+                    self.debug_rows(),
+                ));
+                graph.nodes.push(DebugNode::new(
+                    "video-shader",
+                    "Direct video shader",
+                    "RGBA presentation",
+                    DebugGraphLane::Video,
+                    6,
+                    Vec::new(),
+                ));
+                graph.edges.push(DebugEdge::flow(
+                    "video-lookahead",
+                    "video-presentation",
+                    "HardwareVideoFrame lease",
+                ));
+                graph.edges.push(DebugEdge::flow(
+                    "video-presentation",
+                    "video-shader",
+                    "GPU texture",
+                ));
+            }
+            #[cfg(target_os = "freebsd")]
+            Presentation::VdpauDirect(slot) => {
+                graph.nodes.push(DebugNode::new(
+                    "video-presentation",
+                    "VDPAU direct frame",
+                    format!("GPU frame · slot {slot}"),
+                    DebugGraphLane::Video,
+                    5,
+                    self.debug_rows(),
+                ));
+                graph.nodes.push(DebugNode::new(
+                    "video-shader",
+                    "Direct video shader",
+                    "RGBA presentation",
+                    DebugGraphLane::Video,
+                    6,
+                    Vec::new(),
+                ));
+                graph.edges.push(DebugEdge::flow(
+                    "video-lookahead",
+                    "video-presentation",
+                    "HardwareVideoFrame lease",
+                ));
+                graph.edges.push(DebugEdge::flow(
+                    "video-presentation",
+                    "video-shader",
+                    "GPU texture",
+                ));
+            }
+        }
+        graph
     }
 
     pub fn upload_lease(

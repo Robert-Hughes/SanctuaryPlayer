@@ -8,7 +8,9 @@ use std::time::{Duration, Instant};
 use ::oxideav::core::{FrameLease, VideoColorInfo};
 use url::Url;
 
-use crate::model::{DebugInfoSection, PlaybackState, Quality};
+use crate::model::{
+    DebugGraph, DebugGraphLane, DebugInfoSection, DebugNode, PlaybackState, Quality,
+};
 use crate::video::VideoSource;
 
 pub use self::oxideav::OxidePlayback;
@@ -243,6 +245,28 @@ pub trait PlaybackBackend: Send {
 
     fn debug_info(&self) -> Vec<DebugInfoSection> {
         Vec::new()
+    }
+
+    fn debug_graph(&self) -> DebugGraph {
+        let nodes = self
+            .debug_info()
+            .into_iter()
+            .enumerate()
+            .map(|(index, section)| {
+                DebugNode::new(
+                    format!("playback-section-{index}"),
+                    section.title,
+                    "",
+                    DebugGraphLane::Shared,
+                    index as u8,
+                    section.rows,
+                )
+            })
+            .collect();
+        DebugGraph {
+            nodes,
+            edges: Vec::new(),
+        }
     }
 }
 

@@ -13,6 +13,26 @@ const SHARED_QUEUE_PRIORITIES: [f32; 2] = [1.0, 1.0];
 
 static DIRECT_DEVICE: OnceLock<RwLock<Option<ExternalDevice>>> = OnceLock::new();
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct DirectDeviceDebugInfo {
+    pub graphics_queue_family_index: u32,
+    pub video_queue_family_index: u32,
+    pub video_queue_index: u32,
+}
+
+static DIRECT_DEVICE_DEBUG: OnceLock<RwLock<Option<DirectDeviceDebugInfo>>> = OnceLock::new();
+
+fn direct_device_debug_slot() -> &'static RwLock<Option<DirectDeviceDebugInfo>> {
+    DIRECT_DEVICE_DEBUG.get_or_init(|| RwLock::new(None))
+}
+
+pub(crate) fn direct_device_debug_info() -> Option<DirectDeviceDebugInfo> {
+    direct_device_debug_slot()
+        .read()
+        .ok()
+        .and_then(|slot| *slot)
+}
+
 fn direct_device_slot() -> &'static RwLock<Option<ExternalDevice>> {
     DIRECT_DEVICE.get_or_init(|| RwLock::new(None))
 }
@@ -25,6 +45,9 @@ pub(crate) fn install_direct_device(device: ExternalDevice) {
 
 pub(crate) fn clear_direct_device() {
     if let Ok(mut slot) = direct_device_slot().write() {
+        *slot = None;
+    }
+    if let Ok(mut slot) = direct_device_debug_slot().write() {
         *slot = None;
     }
 }
@@ -162,6 +185,13 @@ pub(crate) fn request_shared_wgpu_device(
     .with_queue_index(video_queue_index)
     .with_consumer_queue_family_index(graphics_queue_family_index);
     install_direct_device(external);
+    if let Ok(mut slot) = direct_device_debug_slot().write() {
+        *slot = Some(DirectDeviceDebugInfo {
+            graphics_queue_family_index,
+            video_queue_family_index,
+            video_queue_index,
+        });
+    }
     log::info!(
         "SanctuaryPlayer: shared Vulkan device direct-video queues graphics_family={} decode_family={} decode_queue={}",
         graphics_queue_family_index,

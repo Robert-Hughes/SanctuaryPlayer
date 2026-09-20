@@ -6,7 +6,7 @@ use winit::keyboard::{KeyCode, ModifiersState, PhysicalKey};
 use winit::window::Window;
 
 use crate::app::AppState;
-use crate::model::{AppCommand, DebugInfoSection};
+use crate::model::{AppCommand, DebugEdge, DebugGraph, DebugGraphLane, DebugNode};
 use crate::playback::DecodeMode;
 use crate::ui;
 use crate::video_renderer::VideoRenderer;
@@ -193,6 +193,108 @@ impl Graphics {
         self.surface.configure(&self.device, &self.surface_config);
     }
 
+    fn debug_graph(&self) -> DebugGraph {
+        let adapter = self._adapter.get_info();
+        let mut graph = self.video_renderer.debug_graph();
+        let mut device_rows = vec![
+            ("adapter".into(), adapter.name),
+            ("backend".into(), format!("{:?}", adapter.backend)),
+            ("device type".into(), format!("{:?}", adapter.device_type)),
+            (
+                "max texture dimension".into(),
+                self.max_texture_dimension_2d.to_string(),
+            ),
+        ];
+
+        #[cfg(target_os = "windows")]
+        if let Some(info) = crate::vulkan_video_decoder::direct_device_debug_info() {
+            device_rows.extend([
+                ("shared Vulkan Video device".into(), "true".into()),
+                (
+                    "graphics queue family".into(),
+                    info.graphics_queue_family_index.to_string(),
+                ),
+                (
+                    "video decode queue family".into(),
+                    info.video_queue_family_index.to_string(),
+                ),
+                (
+                    "video decode queue index".into(),
+                    info.video_queue_index.to_string(),
+                ),
+            ]);
+            graph.edges.push(DebugEdge::relationship(
+                "oxideav-video-stage-0",
+                "wgpu-device",
+                "same VkDevice",
+            ));
+            graph.edges.push(DebugEdge::relationship(
+                "video-direct-copy",
+                "wgpu-device",
+                "wgpu graphics queue",
+            ));
+        }
+
+        graph.nodes.push(DebugNode::new(
+            "wgpu-device",
+            "wgpu device / graphics queue",
+            format!("{:?}", adapter.backend),
+            DebugGraphLane::Shared,
+            5,
+            device_rows,
+        ));
+        graph.nodes.push(DebugNode::new(
+            "presentation-surface",
+            "wgpu presentation surface",
+            format!(
+                "{}x{} {:?}",
+                self.surface_config.width, self.surface_config.height, self.surface_config.format
+            ),
+            DebugGraphLane::Video,
+            9,
+            vec![
+                (
+                    "size / format".into(),
+                    format!(
+                        "{}x{} {:?}",
+                        self.surface_config.width,
+                        self.surface_config.height,
+                        self.surface_config.format
+                    ),
+                ),
+                (
+                    "present mode".into(),
+                    format!("{:?}", self.surface_config.present_mode),
+                ),
+                (
+                    "alpha mode".into(),
+                    format!("{:?}", self.surface_config.alpha_mode),
+                ),
+                (
+                    "frame latency".into(),
+                    self.surface_config
+                        .desired_maximum_frame_latency
+                        .to_string(),
+                ),
+            ],
+        ));
+        let final_video_node = if graph.nodes.iter().any(|node| node.id == "video-shader") {
+            "video-shader"
+        } else {
+            "video-presentation"
+        };
+        graph.edges.push(DebugEdge::flow(
+            final_video_node,
+            "presentation-surface",
+            "render pass",
+        ));
+        graph.edges.push(DebugEdge::relationship(
+            "wgpu-device",
+            "presentation-surface",
+            "owns surface/render queue",
+        ));
+        graph
+    }
     pub(crate) fn render(
         &mut self,
         window: &Window,
@@ -262,47 +364,9 @@ impl Graphics {
         );
 
         if state.debug_info_visible() {
-            let adapter = self._adapter.get_info();
-            state.set_graphics_debug_info(vec![
-                DebugInfoSection::new(
-                    "Graphics / surface",
-                    vec![
-                        ("adapter".into(), adapter.name),
-                        ("backend".into(), format!("{:?}", adapter.backend)),
-                        ("device type".into(), format!("{:?}", adapter.device_type)),
-                        (
-                            "surface".into(),
-                            format!(
-                                "{}x{} {:?}",
-                                self.surface_config.width,
-                                self.surface_config.height,
-                                self.surface_config.format
-                            ),
-                        ),
-                        (
-                            "present mode".into(),
-                            format!("{:?}", self.surface_config.present_mode),
-                        ),
-                        (
-                            "alpha mode".into(),
-                            format!("{:?}", self.surface_config.alpha_mode),
-                        ),
-                        (
-                            "frame latency".into(),
-                            self.surface_config
-                                .desired_maximum_frame_latency
-                                .to_string(),
-                        ),
-                        (
-                            "max texture dimension".into(),
-                            self.max_texture_dimension_2d.to_string(),
-                        ),
-                    ],
-                ),
-                DebugInfoSection::new("Video renderer", self.video_renderer.debug_rows()),
-            ]);
+            state.set_graphics_debug_graph(self.debug_graph());
         } else {
-            state.set_graphics_debug_info(Vec::new());
+            state.set_graphics_debug_graph(DebugGraph::default());
         }
 
         let mut raw_input = self.egui_winit.take_egui_input(window);

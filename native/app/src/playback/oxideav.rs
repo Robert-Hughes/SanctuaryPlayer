@@ -1,4 +1,6 @@
 use std::collections::VecDeque;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError};
 use std::time::{Duration, Instant};
 
@@ -7,8 +9,8 @@ use ::oxideav::core::{
     VideoColorInfo,
 };
 use ::oxideav::pipeline::{
-    BarrierKind, ChannelCaps, CodecPreferences, Executor, ExecutorHandle, Job, JobSink, TrackSink,
-    TrackSinkInfo,
+    BarrierKind, ChannelCaps, CodecPreferences, Executor, ExecutorHandle, Job, JobSink,
+    PipelineStageInfo, TrackSink, TrackSinkInfo,
 };
 use oxideav_hls::{HlsPlaylistInfo, HlsVariant};
 use serde_json::json;
@@ -16,7 +18,9 @@ use url::Url;
 
 use crate::audio_output::AudioOutput;
 use crate::audio_timeline::QueueResult;
-use crate::model::{DebugInfoSection, PlaybackState, Quality};
+use crate::model::{
+    DebugEdge, DebugGraph, DebugGraphLane, DebugInfoSection, DebugNode, PlaybackState, Quality,
+};
 use crate::video::VideoSource;
 
 use super::{DecodeMode, PlaybackBackend, PlaybackWake, PlaybackWakeKind};
@@ -37,6 +41,38 @@ const DIAGNOSTIC_INTERVAL: Duration = Duration::from_secs(1);
 const BUFFERING_GRACE: Duration = Duration::from_millis(250);
 const TRACK_SINK_BACKPRESSURE_WAIT: Duration = Duration::from_millis(20);
 
+#[derive(Clone, Default)]
+struct SessionChannelDepths {
+    control: Arc<AtomicUsize>,
+    audio: Arc<AtomicUsize>,
+    video: Arc<AtomicUsize>,
+}
+
+impl SessionChannelDepths {
+    fn for_kind(&self, kind: MediaType) -> Arc<AtomicUsize> {
+        match kind {
+            MediaType::Audio => Arc::clone(&self.audio),
+            MediaType::Video => Arc::clone(&self.video),
+            _ => Arc::clone(&self.control),
+        }
+    }
+
+    fn current(&self, kind: MediaType) -> usize {
+        let depth = match kind {
+            MediaType::Audio => &self.audio,
+            MediaType::Video => &self.video,
+            _ => &self.control,
+        };
+        depth.load(Ordering::SeqCst).min(SESSION_CHANNEL_CAP)
+    }
+}
+
+fn release_session_depth(depth: &AtomicUsize) {
+    let _ = depth.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |value| {
+        Some(value.saturating_sub(1))
+    });
+}
+
 pub struct OxidePlayback {
     source: VideoSource,
     state: PlaybackState,
@@ -53,6 +89,7 @@ pub struct OxidePlayback {
     control_rx: Receiver<SessionMsg>,
     audio_rx: Receiver<SessionMsg>,
     video_rx: Receiver<SessionMsg>,
+    channel_depths: SessionChannelDepths,
     executor: Option<ExecutorHandle>,
     video_stream: StreamInfo,
     audio_stream: Option<StreamInfo>,
@@ -222,6 +259,7 @@ struct SessionSink {
     control_tx: SyncSender<SessionMsg>,
     audio_tx: SyncSender<SessionMsg>,
     video_tx: SyncSender<SessionMsg>,
+    depths: SessionChannelDepths,
     wake: PlaybackWake,
 }
 
@@ -230,21 +268,25 @@ impl SessionSink {
         control_tx: SyncSender<SessionMsg>,
         audio_tx: SyncSender<SessionMsg>,
         video_tx: SyncSender<SessionMsg>,
+        depths: SessionChannelDepths,
         wake: PlaybackWake,
     ) -> Self {
         Self {
             control_tx,
             audio_tx,
             video_tx,
+            depths,
             wake,
         }
     }
 
     fn send_control(&mut self, message: SessionMsg) -> ::oxideav::core::Result<()> {
         let wake_kind = message.wake_kind();
-        self.control_tx
-            .send(message)
-            .map_err(|_| Error::other("SanctuaryPlayer: control receiver dropped"))?;
+        self.depths.control.fetch_add(1, Ordering::SeqCst);
+        if self.control_tx.send(message).is_err() {
+            release_session_depth(&self.depths.control);
+            return Err(Error::other("SanctuaryPlayer: control receiver dropped"));
+        }
         self.wake.wake(wake_kind);
         Ok(())
     }
@@ -254,13 +296,28 @@ impl SessionSink {
         kind: MediaType,
         message: SessionMsg,
     ) -> ::oxideav::core::Result<()> {
-        let (tx, wake_kind, label) = match kind {
-            MediaType::Audio => (&self.audio_tx, PlaybackWakeKind::Audio, "audio"),
-            MediaType::Video => (&self.video_tx, PlaybackWakeKind::Video, "video"),
+        let (tx, depth, wake_kind, label) = match kind {
+            MediaType::Audio => (
+                &self.audio_tx,
+                &self.depths.audio,
+                PlaybackWakeKind::Audio,
+                "audio",
+            ),
+            MediaType::Video => (
+                &self.video_tx,
+                &self.depths.video,
+                PlaybackWakeKind::Video,
+                "video",
+            ),
             _ => return Ok(()),
         };
-        tx.send(message)
-            .map_err(|_| Error::other(format!("SanctuaryPlayer: {label} receiver dropped")))?;
+        depth.fetch_add(1, Ordering::SeqCst);
+        if tx.send(message).is_err() {
+            release_session_depth(depth);
+            return Err(Error::other(format!(
+                "SanctuaryPlayer: {label} receiver dropped"
+            )));
+        }
         self.wake.wake(wake_kind);
         Ok(())
     }
@@ -269,6 +326,7 @@ impl SessionSink {
 struct SessionTrackSink {
     kind: MediaType,
     tx: SyncSender<SessionMsg>,
+    depth: Arc<AtomicUsize>,
     wake: PlaybackWake,
     cancellation: CancellationToken,
     blocked_sends: u64,
@@ -279,12 +337,14 @@ impl SessionTrackSink {
     fn new(
         kind: MediaType,
         tx: SyncSender<SessionMsg>,
+        depth: Arc<AtomicUsize>,
         wake: PlaybackWake,
         cancellation: CancellationToken,
     ) -> Self {
         Self {
             kind,
             tx,
+            depth,
             wake,
             cancellation,
             blocked_sends: 0,
@@ -310,12 +370,14 @@ impl SessionTrackSink {
                     "SanctuaryPlayer: {label} TrackSink send cancelled"
                 )));
             }
+            self.depth.fetch_add(1, Ordering::SeqCst);
             match self.tx.try_send(message) {
                 Ok(()) => {
                     self.wake.wake(wake_kind);
                     return Ok(());
                 }
                 Err(TrySendError::Full(returned)) => {
+                    release_session_depth(&self.depth);
                     message = returned;
                     self.blocked_sends = self.blocked_sends.saturating_add(1);
                     let now = Instant::now();
@@ -344,6 +406,7 @@ impl SessionTrackSink {
                     std::thread::sleep(TRACK_SINK_BACKPRESSURE_WAIT);
                 }
                 Err(TrySendError::Disconnected(_)) => {
+                    release_session_depth(&self.depth);
                     if self.cancellation.is_cancelled() {
                         return Err(Error::cancelled(format!(
                             "SanctuaryPlayer: {label} TrackSink receiver dropped during cancellation"
@@ -419,6 +482,7 @@ impl JobSink for SessionSink {
             sinks.push(Box::new(SessionTrackSink::new(
                 kind,
                 tx,
+                self.depths.for_kind(kind),
                 self.wake.clone(),
                 cancellation.clone(),
             )));
@@ -470,6 +534,7 @@ struct PlaybackSession {
     control_rx: Receiver<SessionMsg>,
     audio_rx: Receiver<SessionMsg>,
     video_rx: Receiver<SessionMsg>,
+    channel_depths: SessionChannelDepths,
     executor: Option<ExecutorHandle>,
     video_stream: StreamInfo,
     audio_stream: Option<StreamInfo>,
@@ -530,7 +595,14 @@ fn open_variant_session(
     let (control_tx, control_rx) = mpsc::sync_channel(SESSION_CHANNEL_CAP);
     let (audio_tx, audio_rx) = mpsc::sync_channel(SESSION_CHANNEL_CAP);
     let (video_tx, video_rx) = mpsc::sync_channel(SESSION_CHANNEL_CAP);
-    let sink = Box::new(SessionSink::new(control_tx, audio_tx, video_tx, wake));
+    let channel_depths = SessionChannelDepths::default();
+    let sink = Box::new(SessionSink::new(
+        control_tx,
+        audio_tx,
+        video_tx,
+        channel_depths.clone(),
+        wake,
+    ));
     log::info!(
         "SanctuaryPlayer: OxideAV compressed packet queue cap={} per track",
         PLAYBACK_PACKET_CHANNEL_CAP
@@ -576,8 +648,12 @@ fn open_variant_session(
     );
 
     let streams = match control_rx.recv_timeout(OPEN_TIMEOUT) {
-        Ok(SessionMsg::Started(streams)) => streams,
+        Ok(SessionMsg::Started(streams)) => {
+            release_session_depth(&channel_depths.control);
+            streams
+        }
         Ok(_) => {
+            release_session_depth(&channel_depths.control);
             stop_executor(executor);
             return Err("OxideAV emitted media before stream initialisation".into());
         }
@@ -640,6 +716,7 @@ fn open_variant_session(
         control_rx,
         audio_rx,
         video_rx,
+        channel_depths,
         executor: Some(executor),
         video_stream,
         audio_stream,
@@ -693,6 +770,7 @@ impl OxidePlayback {
             control_rx: session.control_rx,
             audio_rx: session.audio_rx,
             video_rx: session.video_rx,
+            channel_depths: session.channel_depths,
             executor: session.executor,
             video_stream: session.video_stream,
             audio_stream: session.audio_stream,
@@ -815,6 +893,7 @@ impl OxidePlayback {
         while !self.sink_finished && !matches!(self.state, PlaybackState::Error(_)) {
             match self.control_rx.try_recv() {
                 Ok(message) => {
+                    release_session_depth(&self.channel_depths.control);
                     if let Err(error) = self.handle_session_message(message) {
                         self.fail(error);
                         break;
@@ -831,6 +910,7 @@ impl OxidePlayback {
         while self.should_pump_audio_channel() {
             match self.audio_rx.try_recv() {
                 Ok(message) => {
+                    release_session_depth(&self.channel_depths.audio);
                     if let Err(error) = self.handle_session_message(message) {
                         self.fail(error);
                         break;
@@ -846,6 +926,7 @@ impl OxidePlayback {
             }
             match self.video_rx.try_recv() {
                 Ok(message) => {
+                    release_session_depth(&self.channel_depths.video);
                     if let Err(error) = self.handle_session_message(message) {
                         self.fail(error);
                         break;
@@ -2250,6 +2331,329 @@ impl PlaybackBackend for OxidePlayback {
         ]
     }
 
+    fn debug_graph(&self) -> DebugGraph {
+        let sections = self.debug_info();
+        let rows_for = |title: &str| {
+            sections
+                .iter()
+                .find(|section| section.title == title)
+                .map(|section| section.rows.clone())
+                .unwrap_or_default()
+        };
+        let row_value = |title: &str, name: &str| {
+            sections
+                .iter()
+                .find(|section| section.title == title)
+                .and_then(|section| section.rows.iter().find(|(label, _)| label == name))
+                .map(|(_, value)| value.clone())
+                .unwrap_or_else(|| "-".into())
+        };
+
+        let mut graph = DebugGraph::default();
+        let transport_rows = rows_for("Transport / pipeline");
+        let packet_queue_depths = self
+            .executor
+            .as_ref()
+            .map(ExecutorHandle::pipeline_packet_queue_depths)
+            .unwrap_or_default();
+        let topology = self
+            .executor
+            .as_ref()
+            .map(ExecutorHandle::pipeline_topology);
+        let source_summary = topology
+            .and_then(|topology| topology.tracks.first())
+            .map(|track| format!("{:?}", track.source_shape))
+            .unwrap_or_else(|| "not open".into());
+        let mut source_rows = vec![
+            (
+                "HLS host".into(),
+                row_value("Transport / pipeline", "HLS host"),
+            ),
+            (
+                "network / stream".into(),
+                row_value("Transport / pipeline", "network / stream"),
+            ),
+            ("source shape".into(), source_summary.clone()),
+        ];
+        if let Some(topology) = topology {
+            source_rows.push(("executor output".into(), topology.output_name.clone()));
+        }
+        graph.nodes.push(DebugNode::new(
+            "media-source",
+            "HLS / OxideAV source",
+            source_summary,
+            DebugGraphLane::Shared,
+            0,
+            source_rows,
+        ));
+
+        if let Some(topology) = topology {
+            for (track_index, track) in topology.tracks.iter().enumerate() {
+                let (lane, lane_name) = match track.media_type {
+                    MediaType::Video => (DebugGraphLane::Video, "video"),
+                    MediaType::Audio => (DebugGraphLane::Audio, "audio"),
+                    _ => continue,
+                };
+                let packet_depth = packet_queue_depths.get(track_index).copied().unwrap_or(0);
+                let queue_id = format!("oxideav-{lane_name}-packet-queue");
+                graph.nodes.push(DebugNode::new(
+                    queue_id.clone(),
+                    format!("OxideAV {lane_name} packet queue"),
+                    format!("{packet_depth} / {}", topology.packet_channel_capacity),
+                    lane,
+                    1,
+                    vec![
+                        ("source stream".into(), track.source_stream.to_string()),
+                        ("codec".into(), track.codec_id.to_string()),
+                        (
+                            "capacity".into(),
+                            topology.packet_channel_capacity.to_string(),
+                        ),
+                        ("live depth".into(), packet_depth.to_string()),
+                        ("source shape".into(), format!("{:?}", track.source_shape)),
+                    ],
+                ));
+                graph.edges.push(DebugEdge::flow(
+                    "media-source",
+                    queue_id.clone(),
+                    "compressed packets",
+                ));
+
+                let mut previous = queue_id;
+                let mut next_column = 2_u8;
+                for (stage_index, stage) in track.stages.iter().enumerate() {
+                    let stage_id = format!("oxideav-{lane_name}-stage-{stage_index}");
+                    let (title, summary, rows) = match stage {
+                        PipelineStageInfo::Copy => (
+                            "OxideAV stream copy".to_owned(),
+                            track.codec_id.to_string(),
+                            vec![("codec".into(), track.codec_id.to_string())],
+                        ),
+                        PipelineStageInfo::Decode { capabilities } => {
+                            let acceleration = if capabilities.hardware_accelerated {
+                                "hardware"
+                            } else {
+                                "software"
+                            };
+                            (
+                                capabilities.implementation.clone(),
+                                format!("{} · {acceleration}", track.codec_id),
+                                vec![
+                                    ("stage".into(), "decode".into()),
+                                    ("codec".into(), track.codec_id.to_string()),
+                                    ("implementation".into(), capabilities.implementation.clone()),
+                                    ("acceleration".into(), acceleration.into()),
+                                ],
+                            )
+                        }
+                        PipelineStageInfo::Filter { name } => (
+                            format!("OxideAV filter: {name}"),
+                            "frame filter".into(),
+                            vec![
+                                ("stage".into(), "filter".into()),
+                                ("implementation".into(), name.clone()),
+                            ],
+                        ),
+                        PipelineStageInfo::PixelFormatConvert { target } => (
+                            "OxideAV pixel conversion".into(),
+                            format!("{target:?}"),
+                            vec![
+                                ("stage".into(), "pixel conversion".into()),
+                                ("target".into(), format!("{target:?}")),
+                            ],
+                        ),
+                        PipelineStageInfo::Encode { capabilities } => {
+                            let acceleration = if capabilities.hardware_accelerated {
+                                "hardware"
+                            } else {
+                                "software"
+                            };
+                            (
+                                capabilities.implementation.clone(),
+                                format!("encoder · {acceleration}"),
+                                vec![
+                                    ("stage".into(), "encode".into()),
+                                    ("implementation".into(), capabilities.implementation.clone()),
+                                    ("acceleration".into(), acceleration.into()),
+                                ],
+                            )
+                        }
+                    };
+                    graph.nodes.push(DebugNode::new(
+                        stage_id.clone(),
+                        title,
+                        summary,
+                        lane,
+                        next_column,
+                        rows,
+                    ));
+                    graph
+                        .edges
+                        .push(DebugEdge::flow(previous, stage_id.clone(), ""));
+                    previous = stage_id;
+                    next_column = next_column.saturating_add(1);
+                }
+
+                let session_depth = self.channel_depths.current(track.media_type);
+                let session_id = format!("sanctuary-{lane_name}-session-channel");
+                graph.nodes.push(DebugNode::new(
+                    session_id.clone(),
+                    format!("Sanctuary {lane_name} TrackSink / session channel"),
+                    format!("{session_depth} / {SESSION_CHANNEL_CAP}"),
+                    lane,
+                    next_column,
+                    vec![
+                        ("capacity".into(), SESSION_CHANNEL_CAP.to_string()),
+                        ("live depth".into(), session_depth.to_string()),
+                        ("track".into(), track_index.to_string()),
+                    ],
+                ));
+                graph.edges.push(DebugEdge::flow(
+                    previous,
+                    session_id.clone(),
+                    "decoded frames",
+                ));
+
+                match track.media_type {
+                    MediaType::Video => {
+                        graph.nodes.push(DebugNode::new(
+                            "video-lookahead",
+                            "Decoded video lookahead",
+                            format!("{} / {}", self.video_queue.len(), VIDEO_QUEUE_CAP),
+                            DebugGraphLane::Video,
+                            next_column.saturating_add(1),
+                            rows_for("Video"),
+                        ));
+                        graph.edges.push(DebugEdge::flow(
+                            session_id,
+                            "video-lookahead",
+                            "FrameLease",
+                        ));
+                    }
+                    MediaType::Audio => {
+                        graph.nodes.push(DebugNode::new(
+                            "audio-convert",
+                            "AudioOutput PCM conversion",
+                            "decoded audio → interleaved f32",
+                            DebugGraphLane::Audio,
+                            next_column.saturating_add(1),
+                            vec![
+                                ("conversion".into(), "decode_to_f32".into()),
+                                ("layout".into(), "interleaved f32".into()),
+                                ("source format".into(), row_value("Audio", "sample format")),
+                                ("source rate".into(), row_value("Audio", "sample rate")),
+                                ("channels".into(), row_value("Audio", "channels")),
+                            ],
+                        ));
+                        graph.edges.push(DebugEdge::flow(
+                            session_id,
+                            "audio-convert",
+                            "decoded frames",
+                        ));
+                        graph.nodes.push(DebugNode::new(
+                            "audio-pcm-ring",
+                            "PcmTimeline ring",
+                            row_value("Audio", "ring queued"),
+                            DebugGraphLane::Audio,
+                            next_column.saturating_add(2),
+                            vec![
+                                ("queued".into(), row_value("Audio", "ring queued")),
+                                ("target".into(), row_value("Audio", "ring target")),
+                                ("headroom".into(), row_value("Audio", "ring headroom")),
+                                (
+                                    "next output PTS".into(),
+                                    row_value("Audio", "next output PTS"),
+                                ),
+                                ("media origin".into(), row_value("Audio", "media origin")),
+                                (
+                                    "pending decoded frame".into(),
+                                    row_value("Audio", "pending frame"),
+                                ),
+                            ],
+                        ));
+                        graph.edges.push(DebugEdge::flow(
+                            "audio-convert",
+                            "audio-pcm-ring",
+                            "f32 PCM",
+                        ));
+                        let backend = row_value("Audio", "output backend");
+                        graph.nodes.push(DebugNode::new(
+                            "audio-device",
+                            format!("sysaudio {backend}"),
+                            format!(
+                                "{} · {}",
+                                row_value("Audio", "playing"),
+                                row_value("Audio", "device rate")
+                            ),
+                            DebugGraphLane::Audio,
+                            next_column.saturating_add(3),
+                            vec![
+                                ("backend".into(), backend),
+                                ("device rate".into(), row_value("Audio", "device rate")),
+                                ("playing".into(), row_value("Audio", "playing")),
+                                (
+                                    "submitted samples".into(),
+                                    row_value("Audio", "submitted samples"),
+                                ),
+                                ("underruns".into(), row_value("Audio", "underruns")),
+                            ],
+                        ));
+                        graph.edges.push(DebugEdge::flow(
+                            "audio-pcm-ring",
+                            "audio-device",
+                            "device callback",
+                        ));
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        graph.nodes.push(DebugNode::new(
+            "playback-control",
+            "Playback / control",
+            row_value("Playback", "state"),
+            DebugGraphLane::Shared,
+            2,
+            rows_for("Playback"),
+        ));
+        graph.nodes.push(DebugNode::new(
+            "timeline",
+            "Timeline / seek",
+            row_value("Timeline / seek", "timeline origin"),
+            DebugGraphLane::Shared,
+            3,
+            rows_for("Timeline / seek"),
+        ));
+        graph.edges.push(DebugEdge::relationship(
+            "timeline",
+            "video-lookahead",
+            "video clock",
+        ));
+        graph.edges.push(DebugEdge::relationship(
+            "timeline",
+            "audio-pcm-ring",
+            "audio PTS",
+        ));
+
+        if !transport_rows.is_empty() {
+            graph.nodes.push(DebugNode::new(
+                "pipeline-control",
+                "OxideAV executor",
+                row_value("Transport / pipeline", "executor"),
+                DebugGraphLane::Shared,
+                1,
+                transport_rows,
+            ));
+            graph.edges.push(DebugEdge::relationship(
+                "pipeline-control",
+                "media-source",
+                "owns source pump",
+            ));
+        }
+
+        graph
+    }
 }
 
 impl Drop for OxidePlayback {
@@ -2579,6 +2983,7 @@ mod tests {
                 control_rx,
                 audio_rx,
                 video_rx,
+                channel_depths: SessionChannelDepths::default(),
                 executor: None,
                 video_stream,
                 audio_stream: None,
@@ -2883,6 +3288,32 @@ mod tests {
     }
 
     #[test]
+    fn debug_graph_does_not_invent_decoder_nodes_without_runtime_topology() {
+        let (mut playback, _senders) = clock_test_playback();
+        playback.decode_mode = DecodeMode::VulkanDirect;
+        playback.video_decoder = Some(DecoderDebugInfo {
+            implementation: "h264_vulkan_direct".into(),
+            hardware_accelerated: true,
+        });
+
+        let graph = playback.debug_graph();
+
+        assert!(graph.nodes.iter().any(|node| node.id == "media-source"));
+        assert!(
+            graph
+                .nodes
+                .iter()
+                .all(|node| !node.id.starts_with("oxideav-video-stage-"))
+        );
+        assert!(
+            graph
+                .nodes
+                .iter()
+                .all(|node| node.title != "h264_vulkan_direct")
+        );
+    }
+
+    #[test]
     fn playback_error_freezes_video_clock_and_position() {
         let (mut playback, _tx) = clock_test_playback();
         playback
@@ -3174,10 +3605,20 @@ mod tests {
         let (control_tx, control_rx) = mpsc::sync_channel(1);
         let (audio_tx, audio_rx) = mpsc::sync_channel(1);
         let (video_tx, video_rx) = mpsc::sync_channel(1);
-        let mut sink = SessionSink::new(control_tx, audio_tx, video_tx, PlaybackWake::noop());
+        let depths = SessionChannelDepths::default();
+        let mut sink = SessionSink::new(
+            control_tx,
+            audio_tx,
+            video_tx,
+            depths.clone(),
+            PlaybackWake::noop(),
+        );
 
         sink.send_control(SessionMsg::Finished).unwrap();
+        assert_eq!(depths.control.load(Ordering::SeqCst), 1);
         assert!(matches!(control_rx.try_recv(), Ok(SessionMsg::Finished)));
+        release_session_depth(&depths.control);
+        assert_eq!(depths.control.load(Ordering::SeqCst), 0);
         assert!(matches!(audio_rx.try_recv(), Err(TryRecvError::Empty)));
         assert!(matches!(video_rx.try_recv(), Err(TryRecvError::Empty)));
 
@@ -3189,6 +3630,7 @@ mod tests {
             },
         )
         .unwrap();
+        assert_eq!(depths.audio.load(Ordering::SeqCst), 1);
         assert!(matches!(
             audio_rx.try_recv(),
             Ok(SessionMsg::Frame {
@@ -3196,6 +3638,8 @@ mod tests {
                 ..
             })
         ));
+        release_session_depth(&depths.audio);
+        assert_eq!(depths.audio.load(Ordering::SeqCst), 0);
         assert!(matches!(control_rx.try_recv(), Err(TryRecvError::Empty)));
         assert!(matches!(video_rx.try_recv(), Err(TryRecvError::Empty)));
 
@@ -3207,6 +3651,7 @@ mod tests {
             },
         )
         .unwrap();
+        assert_eq!(depths.video.load(Ordering::SeqCst), 1);
         assert!(matches!(
             video_rx.try_recv(),
             Ok(SessionMsg::Frame {
@@ -3214,8 +3659,32 @@ mod tests {
                 ..
             })
         ));
+        release_session_depth(&depths.video);
+        assert_eq!(depths.video.load(Ordering::SeqCst), 0);
         assert!(matches!(control_rx.try_recv(), Err(TryRecvError::Empty)));
         assert!(matches!(audio_rx.try_recv(), Err(TryRecvError::Empty)));
+    }
+
+    #[test]
+    fn session_channel_depth_tracks_real_video_receive_boundary() {
+        let (mut playback, senders) = clock_test_playback();
+        let depth = Arc::clone(&playback.channel_depths.video);
+        let mut sink = SessionTrackSink::new(
+            MediaType::Video,
+            senders._video_tx,
+            Arc::clone(&depth),
+            PlaybackWake::noop(),
+            CancellationToken::new(),
+        );
+
+        sink.write_frame_lease(0, MediaType::Video, video_frame_lease(Some(180_000)))
+            .unwrap();
+        assert_eq!(depth.load(Ordering::SeqCst), 1);
+
+        playback.pump_session();
+
+        assert_eq!(depth.load(Ordering::SeqCst), 0);
+        assert_eq!(playback.diagnostics.received_video_frames, 1);
     }
 
     #[test]
@@ -3226,8 +3695,13 @@ mod tests {
             wake_tx.send(()).unwrap();
         });
         let wake_probe = wake.clone();
-        let mut sink =
-            SessionTrackSink::new(MediaType::Video, video_tx, wake, CancellationToken::new());
+        let mut sink = SessionTrackSink::new(
+            MediaType::Video,
+            video_tx,
+            Arc::new(AtomicUsize::new(0)),
+            wake,
+            CancellationToken::new(),
+        );
 
         sink.write_frame_lease(0, MediaType::Video, video_frame_lease(Some(90_000)))
             .unwrap();
@@ -3251,12 +3725,14 @@ mod tests {
         let mut video_sink = SessionTrackSink::new(
             MediaType::Video,
             video_tx,
+            Arc::new(AtomicUsize::new(0)),
             PlaybackWake::noop(),
             cancellation.clone(),
         );
         let mut audio_sink = SessionTrackSink::new(
             MediaType::Audio,
             audio_tx,
+            Arc::new(AtomicUsize::new(0)),
             PlaybackWake::noop(),
             cancellation,
         );
@@ -3533,6 +4009,7 @@ mod tests {
         let mut sink = SessionTrackSink::new(
             MediaType::Video,
             video_tx,
+            Arc::new(AtomicUsize::new(0)),
             PlaybackWake::noop(),
             cancellation.clone(),
         );

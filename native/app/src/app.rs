@@ -9,7 +9,7 @@ use url::Url;
 
 use ::oxideav::core::{FrameLease, VideoColorInfo};
 
-use crate::model::{AppCommand, DebugInfoSection, PlaybackState, Quality};
+use crate::model::{AppCommand, DebugGraph, DebugGraphLane, DebugNode, PlaybackState, Quality};
 use crate::playback::{
     DecodeMode, DummyPlayback, OxidePlayback, PendingPlaybackWakes, PlaybackBackend, PlaybackWake,
 };
@@ -133,7 +133,7 @@ pub struct AppState {
     pending_video_open: Option<PendingVideoOpen>,
     play_when_opened: bool,
     muted: bool,
-    graphics_debug_info: Vec<DebugInfoSection>,
+    graphics_debug_graph: DebugGraph,
     pub(crate) ui: UiState,
 }
 
@@ -273,7 +273,7 @@ impl Default for AppState {
             pending_video_open: None,
             play_when_opened: false,
             muted: false,
-            graphics_debug_info: Vec::new(),
+            graphics_debug_graph: DebugGraph::default(),
             ui: UiState::default(),
         }
     }
@@ -1457,14 +1457,19 @@ impl AppState {
         self.ui.debug_info_visible
     }
 
-    pub(crate) fn set_graphics_debug_info(&mut self, sections: Vec<DebugInfoSection>) {
-        self.graphics_debug_info = sections;
+    pub(crate) fn set_graphics_debug_graph(&mut self, graph: DebugGraph) {
+        self.graphics_debug_graph = graph;
     }
 
-    pub(crate) fn debug_info_sections(&self) -> Vec<DebugInfoSection> {
+    pub(crate) fn debug_info_graph(&self) -> DebugGraph {
         let source = self.playback.source();
-        let mut sections = vec![DebugInfoSection::new(
+        let mut graph = self.playback.debug_graph();
+        graph.nodes.push(DebugNode::new(
+            "application",
             "Application",
+            format!("{:?}", self.playback.state()),
+            DebugGraphLane::Shared,
+            4,
             vec![
                 (
                     "source".into(),
@@ -1493,10 +1498,10 @@ impl AppState {
                     self.ui.controls_locked.to_string(),
                 ),
             ],
-        )];
-        sections.extend(self.playback.debug_info());
-        sections.extend(self.graphics_debug_info.clone());
-        sections
+        ));
+        graph.extend(self.graphics_debug_graph.clone());
+        graph.retain_resolved_edges();
+        graph
     }
 
     pub fn position(&self) -> Duration {

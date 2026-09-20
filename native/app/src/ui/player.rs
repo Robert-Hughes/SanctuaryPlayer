@@ -1,6 +1,7 @@
 use crate::app::AppState;
-use crate::model::{AppCommand, PlaybackState};
+use crate::model::{AppCommand, DebugEdgeKind, DebugGraphLane, DebugNode, PlaybackState};
 use crate::time_format::{format_age, format_colon_time};
+use std::collections::HashMap;
 
 use super::{menu, theme};
 
@@ -38,16 +39,16 @@ fn paint_debug_info(ui: &egui::Ui, state: &AppState, commands: &mut Vec<AppComma
     let ctx = ui.ctx().clone();
     let screen = ctx.content_rect();
     let vmin = theme::vmin(ui);
-    let width = (52.0 * vmin).min(screen.width() * 0.62).max(28.0 * vmin);
+    let width = (screen.width() - 2.0 * vmin).max(30.0 * vmin);
     let max_height = (screen.height() - 14.0 * vmin).max(20.0 * vmin);
-    let sections = state.debug_info_sections();
+    let graph = state.debug_info_graph();
 
     egui::Area::new(egui::Id::new("playback-debug-info"))
         .fixed_pos(egui::pos2(screen.left() + vmin, screen.top() + 10.0 * vmin))
         .order(egui::Order::Foreground)
         .show(&ctx, |ui| {
             egui::Frame::new()
-                .fill(egui::Color32::from_black_alpha(210))
+                .fill(egui::Color32::from_black_alpha(220))
                 .stroke(egui::Stroke::new(1.0_f32, theme::TOP_INFO))
                 .corner_radius((0.8 * vmin).round() as u8)
                 .inner_margin(egui::Margin::same((0.8 * vmin).round() as i8))
@@ -56,7 +57,7 @@ fn paint_debug_info(ui: &egui::Ui, state: &AppState, commands: &mut Vec<AppComma
                     ui.set_max_height(max_height);
                     ui.horizontal(|ui| {
                         ui.label(
-                            egui::RichText::new("Debug info")
+                            egui::RichText::new("Debug graph")
                                 .monospace()
                                 .strong()
                                 .size((2.2 * vmin).max(13.0))
@@ -79,57 +80,278 @@ fn paint_debug_info(ui: &egui::Ui, state: &AppState, commands: &mut Vec<AppComma
                     });
                     ui.separator();
                     egui::ScrollArea::both()
-                        .id_salt("playback-debug-scroll")
+                        .id_salt("playback-debug-graph-scroll")
                         .max_height(max_height - 4.0 * vmin)
                         .show(ui, |ui| {
-                            ui.set_min_width(width - 2.0 * vmin);
-                            for (section_index, section) in sections.iter().enumerate() {
-                                if section_index != 0 {
-                                    ui.add_space(0.5 * vmin);
-                                }
-                                egui::CollapsingHeader::new(
-                                    egui::RichText::new(&section.title)
-                                        .monospace()
-                                        .strong()
-                                        .size((1.9 * vmin).max(12.0))
-                                        .color(theme::TOP_INFO),
-                                )
-                                .id_salt(("playback-debug-section", &section.title))
-                                .default_open(true)
-                                .show(ui, |ui| {
-                                    ui.scope(|ui| {
-                                        // The application theme is light, but this overlay is
-                                        // deliberately dark. Give striped rows a local dark-purple
-                                        // fill so white/light-grey diagnostic text retains contrast.
-                                        ui.visuals_mut().faint_bg_color =
-                                            egui::Color32::from_rgb(48, 42, 105);
-                                        egui::Grid::new(("debug-info-grid", &section.title))
-                                            .num_columns(2)
-                                            .spacing(egui::vec2(vmin, 0.2 * vmin))
-                                            .striped(true)
-                                            .show(ui, |ui| {
-                                                for (label, value) in &section.rows {
-                                                    ui.label(
-                                                        egui::RichText::new(label)
-                                                            .monospace()
-                                                            .size((1.7 * vmin).max(11.0))
-                                                            .color(egui::Color32::LIGHT_GRAY),
-                                                    );
-                                                    ui.label(
-                                                        egui::RichText::new(value)
-                                                            .monospace()
-                                                            .size((1.7 * vmin).max(11.0))
-                                                            .color(egui::Color32::WHITE),
-                                                    );
-                                                    ui.end_row();
-                                                }
-                                            });
-                                    });
-                                });
-                            }
+                            let card_width = (22.0 * vmin).clamp(210.0, 320.0);
+                            let column_gap = (2.0 * vmin).max(14.0);
+                            let mut node_rects = HashMap::new();
+                            let edge_shape_index = ui.painter().add(egui::Shape::Noop);
+                            paint_debug_lane(
+                                ui,
+                                &graph.nodes,
+                                DebugGraphLane::Shared,
+                                "SHARED / CONTROL",
+                                card_width,
+                                column_gap,
+                                vmin,
+                                &mut node_rects,
+                            );
+                            paint_debug_lane(
+                                ui,
+                                &graph.nodes,
+                                DebugGraphLane::Video,
+                                "VIDEO PATH",
+                                card_width,
+                                column_gap,
+                                vmin,
+                                &mut node_rects,
+                            );
+                            paint_debug_lane(
+                                ui,
+                                &graph.nodes,
+                                DebugGraphLane::Audio,
+                                "AUDIO PATH",
+                                card_width,
+                                column_gap,
+                                vmin,
+                                &mut node_rects,
+                            );
+                            paint_debug_edges(
+                                ui,
+                                &graph.edges,
+                                &node_rects,
+                                vmin,
+                                edge_shape_index,
+                            );
                         });
                 });
         });
+}
+
+#[allow(clippy::too_many_arguments)]
+fn paint_debug_lane(
+    ui: &mut egui::Ui,
+    all_nodes: &[DebugNode],
+    lane: DebugGraphLane,
+    label: &str,
+    card_width: f32,
+    column_gap: f32,
+    vmin: f32,
+    node_rects: &mut HashMap<String, egui::Rect>,
+) {
+    let mut nodes = all_nodes
+        .iter()
+        .filter(|node| node.lane == lane)
+        .collect::<Vec<_>>();
+    if nodes.is_empty() {
+        return;
+    }
+    nodes.sort_by_key(|node| node.column);
+
+    ui.add_space((0.7 * vmin).max(5.0));
+    ui.label(
+        egui::RichText::new(label)
+            .monospace()
+            .strong()
+            .size((1.7 * vmin).max(11.0))
+            .color(theme::TOP_INFO),
+    );
+    ui.add_space((0.3 * vmin).max(2.0));
+
+    ui.with_layout(egui::Layout::left_to_right(egui::Align::Min), |ui| {
+        let mut next_column = 0_u8;
+        for node in nodes {
+            if node.column > next_column {
+                let missing = f32::from(node.column - next_column);
+                ui.add_space(missing * (card_width + column_gap));
+            }
+            let rect = paint_debug_node(ui, node, card_width, vmin);
+            node_rects.insert(node.id.clone(), rect);
+            ui.add_space(column_gap);
+            next_column = node.column.saturating_add(1);
+        }
+    });
+}
+
+fn paint_debug_node(ui: &mut egui::Ui, node: &DebugNode, card_width: f32, vmin: f32) -> egui::Rect {
+    let expansion_id = egui::Id::new(("debug-graph-node-expanded", node.id.as_str()));
+    let expanded = ui
+        .ctx()
+        .data(|data| data.get_temp::<bool>(expansion_id).unwrap_or(false));
+    let arrow = if expanded { "▾" } else { "▸" };
+
+    let frame = egui::Frame::new()
+        .fill(egui::Color32::from_rgb(28, 25, 58))
+        .stroke(egui::Stroke::new(
+            1.0_f32,
+            egui::Color32::from_rgb(88, 81, 155),
+        ))
+        .corner_radius((0.6 * vmin).round() as u8)
+        .inner_margin(egui::Margin::same((0.7 * vmin).round() as i8))
+        .show(ui, |ui| {
+            ui.set_width(card_width);
+            ui.set_max_width(card_width);
+            let header = ui.add(
+                egui::Button::new(
+                    egui::RichText::new(format!("{arrow} {}", node.title))
+                        .monospace()
+                        .strong()
+                        .size((1.65 * vmin).max(11.0))
+                        .color(egui::Color32::WHITE),
+                )
+                .frame(false),
+            );
+            if header.clicked() {
+                ui.ctx()
+                    .data_mut(|data| data.insert_temp(expansion_id, !expanded));
+            }
+
+            if !node.summary.is_empty() {
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(&node.summary)
+                            .monospace()
+                            .size((1.45 * vmin).max(10.0))
+                            .color(egui::Color32::LIGHT_GRAY),
+                    )
+                    .truncate(),
+                )
+                .on_hover_text(&node.summary);
+            }
+
+            if expanded {
+                ui.separator();
+                ui.scope(|ui| {
+                    ui.visuals_mut().faint_bg_color = egui::Color32::from_rgb(48, 42, 105);
+                    egui::ScrollArea::both()
+                        .id_salt(("debug-node-properties", node.id.as_str()))
+                        .max_height((17.0 * vmin).clamp(110.0, 220.0))
+                        .show(ui, |ui| {
+                            egui::Grid::new(("debug-node-grid", node.id.as_str()))
+                                .num_columns(2)
+                                .spacing(egui::vec2((0.8 * vmin).max(6.0), 0.2 * vmin))
+                                .striped(true)
+                                .show(ui, |ui| {
+                                    for (key, value) in &node.rows {
+                                        ui.label(
+                                            egui::RichText::new(key)
+                                                .monospace()
+                                                .size((1.35 * vmin).max(10.0))
+                                                .color(egui::Color32::LIGHT_GRAY),
+                                        );
+                                        ui.label(
+                                            egui::RichText::new(value)
+                                                .monospace()
+                                                .size((1.35 * vmin).max(10.0))
+                                                .color(egui::Color32::WHITE),
+                                        );
+                                        ui.end_row();
+                                    }
+                                });
+                        });
+                });
+            }
+        });
+    frame.response.rect
+}
+
+fn paint_debug_edges(
+    ui: &egui::Ui,
+    edges: &[crate::model::DebugEdge],
+    node_rects: &HashMap<String, egui::Rect>,
+    vmin: f32,
+    edge_shape_index: egui::layers::ShapeIdx,
+) {
+    let painter = ui.painter();
+    let mut background_shapes = Vec::new();
+    for edge in edges {
+        let (Some(from), Some(to)) = (node_rects.get(&edge.from), node_rects.get(&edge.to)) else {
+            continue;
+        };
+        let horizontal =
+            (to.center().x - from.center().x).abs() >= (to.center().y - from.center().y).abs();
+        let (start, end, path) = if horizontal {
+            let start = if to.center().x >= from.center().x {
+                egui::pos2(from.right(), from.center().y)
+            } else {
+                egui::pos2(from.left(), from.center().y)
+            };
+            let end = if to.center().x >= from.center().x {
+                egui::pos2(to.left(), to.center().y)
+            } else {
+                egui::pos2(to.right(), to.center().y)
+            };
+            let elbow_x = (start.x + end.x) * 0.5;
+            (
+                start,
+                end,
+                vec![
+                    start,
+                    egui::pos2(elbow_x, start.y),
+                    egui::pos2(elbow_x, end.y),
+                    end,
+                ],
+            )
+        } else {
+            let start = if to.center().y >= from.center().y {
+                egui::pos2(from.center().x, from.bottom())
+            } else {
+                egui::pos2(from.center().x, from.top())
+            };
+            let end = if to.center().y >= from.center().y {
+                egui::pos2(to.center().x, to.top())
+            } else {
+                egui::pos2(to.center().x, to.bottom())
+            };
+            let elbow_y = (start.y + end.y) * 0.5;
+            (
+                start,
+                end,
+                vec![
+                    start,
+                    egui::pos2(start.x, elbow_y),
+                    egui::pos2(end.x, elbow_y),
+                    end,
+                ],
+            )
+        };
+
+        let (stroke, label_color) = match edge.kind {
+            DebugEdgeKind::Flow => (
+                egui::Stroke::new(1.5_f32, theme::TOP_INFO),
+                egui::Color32::WHITE,
+            ),
+            DebugEdgeKind::Relationship => (
+                egui::Stroke::new(1.0_f32, egui::Color32::GRAY),
+                egui::Color32::LIGHT_GRAY,
+            ),
+        };
+        match edge.kind {
+            DebugEdgeKind::Flow => {
+                background_shapes.push(egui::Shape::line(path.clone(), stroke));
+            }
+            DebugEdgeKind::Relationship => {
+                background_shapes.extend(egui::Shape::dashed_line(
+                    &path,
+                    stroke,
+                    (0.7 * vmin).max(4.0),
+                    (0.5 * vmin).max(3.0),
+                ));
+            }
+        }
+
+        if !edge.label.is_empty() {
+            painter.text(
+                egui::pos2((start.x + end.x) * 0.5, (start.y + end.y) * 0.5),
+                egui::Align2::CENTER_CENTER,
+                &edge.label,
+                egui::FontId::monospace((1.2 * vmin).max(9.0)),
+                label_color,
+            );
+        }
+    }
+    painter.set(edge_shape_index, egui::Shape::Vec(background_shapes));
 }
 
 fn paint_top_info(ui: &mut egui::Ui, state: &AppState) -> egui::Rect {
