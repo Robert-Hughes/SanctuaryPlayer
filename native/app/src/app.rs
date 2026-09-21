@@ -11,7 +11,7 @@ use ::oxideav::core::{CancellationToken, FrameLease, VideoColorInfo};
 
 use crate::model::{AppCommand, DebugGraph, DebugGraphLane, DebugNode, PlaybackState, Quality};
 use crate::playback::{
-    DecodeMode, DummyPlayback, OxidePlayback, PendingPlaybackWakes, PlaybackBackend, PlaybackWake,
+    DecodeMode, OxidePlayback, PendingPlaybackWakes, PlaybackBackend, PlaybackWake,
 };
 use crate::services::{PositionService, RemotePositionService, SavedPosition, VideoMetadata};
 use crate::session::{SessionState, SessionStore};
@@ -30,7 +30,7 @@ const SESSION_SAVE_INTERVAL: Duration = Duration::from_secs(3);
 const DEFAULT_WINDOW_TITLE: &str = "Sanctuary Player";
 
 type TwitchResolver = fn(&str) -> Result<ResolvedTwitchVod, TwitchVodResolveError>;
-type PlaybackFactory = fn(
+type PlaybackFactory<P> = fn(
     VideoSource,
     Url,
     String,
@@ -38,8 +38,20 @@ type PlaybackFactory = fn(
     bool,
     PlaybackWake,
     CancellationToken,
-) -> Result<Box<dyn PlaybackBackend>, String>;
+) -> Result<P, String>;
 
+#[cfg(test)]
+fn unavailable_test_playback_factory<P: PlaybackBackend>(
+    _source: VideoSource,
+    _url: Url,
+    _initial_qualities: String,
+    _decode_mode: DecodeMode,
+    _muted: bool,
+    _wake: PlaybackWake,
+    _cancellation: CancellationToken,
+) -> Result<P, String> {
+    Err("test playback factory is unavailable".into())
+}
 fn open_oxide_playback(
     source: VideoSource,
     url: Url,
@@ -48,7 +60,7 @@ fn open_oxide_playback(
     muted: bool,
     wake: PlaybackWake,
     cancellation: CancellationToken,
-) -> Result<Box<dyn PlaybackBackend>, String> {
+) -> Result<OxidePlayback, String> {
     OxidePlayback::open(
         source,
         url,
@@ -58,7 +70,6 @@ fn open_oxide_playback(
         wake,
         cancellation,
     )
-    .map(|playback| Box::new(playback) as Box<dyn PlaybackBackend>)
 }
 
 fn video_metadata_from_twitch(metadata: TwitchVodMetadata) -> VideoMetadata {
@@ -74,13 +85,13 @@ fn video_metadata_from_twitch(metadata: TwitchVodMetadata) -> VideoMetadata {
     }
 }
 
-struct OpenedVideo {
-    playback: Box<dyn PlaybackBackend>,
+struct OpenedVideo<P> {
+    playback: P,
     metadata: Option<VideoMetadata>,
 }
 
-struct PendingVideoOpen {
-    receiver: Receiver<Result<OpenedVideo, String>>,
+struct PendingVideoOpen<P> {
+    receiver: Receiver<Result<OpenedVideo<P>, String>>,
     cancellation: CancellationToken,
 }
 
@@ -116,8 +127,8 @@ fn same_position_key(left: &PositionSaveRequest, right: &PositionSaveRequest) ->
         && left.source.id == right.source.id
 }
 
-pub struct AppState {
-    playback: Box<dyn PlaybackBackend>,
+pub struct AppState<P: PlaybackBackend = OxidePlayback> {
+    playback: Option<P>,
     positions_service: Arc<dyn PositionService>,
     saved_positions: Vec<SavedPosition>,
     positions_error: Option<String>,
@@ -139,10 +150,10 @@ pub struct AppState {
     account: AccountState,
     preferences: Preferences,
     twitch_resolver: TwitchResolver,
-    playback_factory: PlaybackFactory,
+    playback_factory: PlaybackFactory<P>,
     playback_wake: PlaybackWake,
     decode_mode: DecodeMode,
-    pending_video_open: Option<PendingVideoOpen>,
+    pending_video_open: Option<PendingVideoOpen<P>>,
     play_when_opened: bool,
     muted: bool,
     graphics_debug_graph: DebugGraph,
@@ -255,10 +266,10 @@ pub(crate) enum DialogState {
     },
 }
 
-impl Default for AppState {
-    fn default() -> Self {
+impl<P: PlaybackBackend + 'static> AppState<P> {
+    fn from_factory(playback_factory: PlaybackFactory<P>) -> Self {
         Self {
-            playback: Box::new(DummyPlayback::new()),
+            playback: None,
             positions_service: Arc::new(RemotePositionService::new()),
             saved_positions: Vec::new(),
             positions_error: None,
@@ -280,7 +291,7 @@ impl Default for AppState {
             account: AccountState::default(),
             preferences: Preferences::default(),
             twitch_resolver: resolve_vod,
-            playback_factory: open_oxide_playback,
+            playback_factory,
             playback_wake: PlaybackWake::default(),
             decode_mode: DecodeMode::Cpu,
             pending_video_open: None,
@@ -290,9 +301,27 @@ impl Default for AppState {
             ui: UiState::default(),
         }
     }
+
+    #[cfg(test)]
+    fn new_for_test(playback_factory: PlaybackFactory<P>) -> Self {
+        Self::from_factory(playback_factory)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_test_playback(playback: P) -> Self {
+        let mut state = Self::from_factory(unavailable_test_playback_factory::<P>);
+        state.playback = Some(playback);
+        state
+    }
 }
 
-impl AppState {
+impl Default for AppState<OxidePlayback> {
+    fn default() -> Self {
+        Self::from_factory(open_oxide_playback)
+    }
+}
+
+impl AppState<OxidePlayback> {
     pub fn new() -> Self {
         Self::default()
     }
@@ -303,7 +332,9 @@ impl AppState {
             ..Self::default()
         }
     }
+}
 
+impl<P: PlaybackBackend + 'static> AppState<P> {
     pub fn set_muted(&mut self, muted: bool) {
         self.muted = muted;
     }
@@ -547,7 +578,7 @@ impl AppState {
                         .map(|source| source.id.as_str())
                         .unwrap_or("?")
                 );
-                self.playback = opened.playback;
+                self.playback = Some(opened.playback);
                 self.metadata = opened.metadata;
                 let start_time = self
                     .playback
@@ -637,7 +668,7 @@ impl AppState {
 
         if clear_current {
             self.unconfirmed_start_position = None;
-            self.playback = Box::new(DummyPlayback::new());
+            self.playback = None;
             self.metadata = None;
         }
         self.pending_video_open = Some(PendingVideoOpen {
@@ -1716,6 +1747,7 @@ impl AppState {
 
 #[cfg(test)]
 mod tests {
+    use crate::playback::DummyPlayback;
     use crate::services::{DummyMetadataService, MetadataService};
 
     use super::*;
@@ -1882,6 +1914,133 @@ mod tests {
         }
     }
 
+    enum TestPlayback {
+        Dummy(DummyPlayback),
+        Error(ErrorOnUpdatePlayback),
+        Quality(QualityReloadPlayback),
+    }
+
+    impl PlaybackBackend for TestPlayback {
+        fn open(&mut self, source: &VideoSource) -> Result<(), String> {
+            match self {
+                Self::Dummy(p) => p.open(source),
+                Self::Error(p) => p.open(source),
+                Self::Quality(p) => p.open(source),
+            }
+        }
+        fn source(&self) -> Option<&VideoSource> {
+            match self {
+                Self::Dummy(p) => p.source(),
+                Self::Error(p) => p.source(),
+                Self::Quality(p) => p.source(),
+            }
+        }
+        fn state(&self) -> &PlaybackState {
+            match self {
+                Self::Dummy(p) => p.state(),
+                Self::Error(p) => p.state(),
+                Self::Quality(p) => p.state(),
+            }
+        }
+        fn intends_playing(&self) -> bool {
+            match self {
+                Self::Dummy(p) => p.intends_playing(),
+                Self::Error(p) => p.intends_playing(),
+                Self::Quality(p) => p.intends_playing(),
+            }
+        }
+        fn play(&mut self) {
+            match self {
+                Self::Dummy(p) => p.play(),
+                Self::Error(p) => p.play(),
+                Self::Quality(p) => p.play(),
+            }
+        }
+        fn pause(&mut self) {
+            match self {
+                Self::Dummy(p) => p.pause(),
+                Self::Error(p) => p.pause(),
+                Self::Quality(p) => p.pause(),
+            }
+        }
+        fn position(&self) -> Duration {
+            match self {
+                Self::Dummy(p) => p.position(),
+                Self::Error(p) => p.position(),
+                Self::Quality(p) => p.position(),
+            }
+        }
+        fn duration(&self) -> Option<Duration> {
+            match self {
+                Self::Dummy(p) => p.duration(),
+                Self::Error(p) => p.duration(),
+                Self::Quality(p) => p.duration(),
+            }
+        }
+        fn seek(&mut self, position: Duration) {
+            match self {
+                Self::Dummy(p) => p.seek(position),
+                Self::Error(p) => p.seek(position),
+                Self::Quality(p) => p.seek(position),
+            }
+        }
+        fn available_rates(&self) -> &[f32] {
+            match self {
+                Self::Dummy(p) => p.available_rates(),
+                Self::Error(p) => p.available_rates(),
+                Self::Quality(p) => p.available_rates(),
+            }
+        }
+        fn playback_rate(&self) -> f32 {
+            match self {
+                Self::Dummy(p) => p.playback_rate(),
+                Self::Error(p) => p.playback_rate(),
+                Self::Quality(p) => p.playback_rate(),
+            }
+        }
+        fn set_playback_rate(&mut self, rate: f32) {
+            match self {
+                Self::Dummy(p) => p.set_playback_rate(rate),
+                Self::Error(p) => p.set_playback_rate(rate),
+                Self::Quality(p) => p.set_playback_rate(rate),
+            }
+        }
+        fn available_qualities(&self) -> &[Quality] {
+            match self {
+                Self::Dummy(p) => p.available_qualities(),
+                Self::Error(p) => p.available_qualities(),
+                Self::Quality(p) => p.available_qualities(),
+            }
+        }
+        fn quality(&self) -> Option<&Quality> {
+            match self {
+                Self::Dummy(p) => p.quality(),
+                Self::Error(p) => p.quality(),
+                Self::Quality(p) => p.quality(),
+            }
+        }
+        fn quality_master_url(&self) -> Option<&Url> {
+            match self {
+                Self::Dummy(p) => p.quality_master_url(),
+                Self::Error(p) => p.quality_master_url(),
+                Self::Quality(p) => p.quality_master_url(),
+            }
+        }
+        fn set_quality(&mut self, quality_id: &str) {
+            match self {
+                Self::Dummy(p) => p.set_quality(quality_id),
+                Self::Error(p) => p.set_quality(quality_id),
+                Self::Quality(p) => p.set_quality(quality_id),
+            }
+        }
+        fn update(&mut self, elapsed: Duration) {
+            match self {
+                Self::Dummy(p) => p.update(elapsed),
+                Self::Error(p) => p.update(elapsed),
+                Self::Quality(p) => p.update(elapsed),
+            }
+        }
+    }
     fn quality_replacement_test_factory(
         source: VideoSource,
         _url: Url,
@@ -1890,25 +2049,27 @@ mod tests {
         _muted: bool,
         _wake: PlaybackWake,
         _cancellation: CancellationToken,
-    ) -> Result<Box<dyn PlaybackBackend>, String> {
+    ) -> Result<TestPlayback, String> {
         if initial_qualities == "480p" {
             std::thread::sleep(Duration::from_millis(30));
         }
         let mut playback = QualityReloadPlayback::new(Duration::ZERO, false);
         playback.open(&source)?;
         playback.set_quality(&initial_qualities);
-        Ok(Box::new(playback))
+        Ok(TestPlayback::Quality(playback))
     }
 
-    fn loaded_state() -> AppState {
-        let mut state = AppState::new();
+    fn loaded_state() -> AppState<TestPlayback> {
+        let mut state = AppState::new_for_test(test_playback_factory);
         let source = VideoSource::parse("2386400830").unwrap();
-        state.playback.open(&source).unwrap();
+        let mut playback = DummyPlayback::new();
+        playback.open(&source).unwrap();
+        state.playback = Some(TestPlayback::Dummy(playback));
         state.metadata = Some(DummyMetadataService.metadata_for(&source));
         state
     }
 
-    fn settle_position_saves(state: &mut AppState) {
+    fn settle_position_saves(state: &mut AppState<TestPlayback>) {
         for _ in 0..500 {
             state.update(Duration::from_millis(200));
             if state.pending_position_save.is_none()
@@ -2014,10 +2175,10 @@ mod tests {
         _muted: bool,
         _wake: PlaybackWake,
         _cancellation: CancellationToken,
-    ) -> Result<Box<dyn PlaybackBackend>, String> {
+    ) -> Result<TestPlayback, String> {
         let mut playback = DummyPlayback::new();
         playback.open(&source)?;
-        Ok(Box::new(playback))
+        Ok(TestPlayback::Dummy(playback))
     }
 
     fn test_playback_factory_requires_initial_quality_and_app_start_seek(
@@ -2028,7 +2189,7 @@ mod tests {
         _muted: bool,
         _wake: PlaybackWake,
         _cancellation: CancellationToken,
-    ) -> Result<Box<dyn PlaybackBackend>, String> {
+    ) -> Result<TestPlayback, String> {
         if initial_qualities != "480p" {
             return Err(format!(
                 "expected initial favourite quality 480p, got {initial_qualities:?}"
@@ -2042,7 +2203,7 @@ mod tests {
         // dispatch the actual HLS seek after opening.
         playback.seek(Duration::ZERO);
         playback.update(Duration::from_secs(1));
-        Ok(Box::new(playback))
+        Ok(TestPlayback::Dummy(playback))
     }
 
     fn test_playback_factory_requires_muted(
@@ -2053,19 +2214,19 @@ mod tests {
         muted: bool,
         _wake: PlaybackWake,
         _cancellation: CancellationToken,
-    ) -> Result<Box<dyn PlaybackBackend>, String> {
+    ) -> Result<TestPlayback, String> {
         if !muted {
             return Err("expected muted playback factory invocation".into());
         }
         let mut playback = DummyPlayback::new();
         playback.open(&source)?;
-        Ok(Box::new(playback))
+        Ok(TestPlayback::Dummy(playback))
     }
 
     #[test]
     fn playback_error_transition_opens_message_dialog_once() {
-        let mut state = AppState::new();
-        state.playback = Box::new(ErrorOnUpdatePlayback::new());
+        let mut state = AppState::<TestPlayback>::new_for_test(test_playback_factory);
+        state.playback = Some(TestPlayback::Error(ErrorOnUpdatePlayback::new()));
 
         state.update(Duration::from_millis(16));
 
@@ -2145,10 +2306,10 @@ mod tests {
 
     #[test]
     fn refresh_playback_reopens_error_at_same_twitch_position_and_resumes() {
-        let mut state = AppState::new();
+        let mut state = AppState::<TestPlayback>::new_for_test(test_playback_factory);
         let mut failed = ErrorOnUpdatePlayback::new();
         failed.state = PlaybackState::Error("synthetic executor failure".into());
-        state.playback = Box::new(failed);
+        state.playback = Some(TestPlayback::Error(failed));
         state.twitch_resolver = test_twitch_resolver;
         state.playback_factory = test_playback_factory;
 
@@ -2179,12 +2340,12 @@ mod tests {
 
     #[test]
     fn refresh_playback_uses_requested_start_when_error_backend_reports_zero() {
-        let mut state = AppState::new();
+        let mut state = AppState::<TestPlayback>::new_for_test(test_playback_factory);
         let mut failed = ErrorOnUpdatePlayback::new();
         failed.state = PlaybackState::Error("synthetic executor failure".into());
         failed.position = Duration::ZERO;
         failed.source.start_time = Some(Duration::from_secs(123));
-        state.playback = Box::new(failed);
+        state.playback = Some(TestPlayback::Error(failed));
         state.twitch_resolver = test_twitch_resolver;
         state.playback_factory = test_playback_factory;
 
@@ -2209,11 +2370,11 @@ mod tests {
 
     #[test]
     fn unconfirmed_resume_position_cannot_replace_last_safe_session() {
-        let mut state = AppState::new();
+        let mut state = AppState::<TestPlayback>::new_for_test(test_playback_factory);
         let mut playback = ErrorOnUpdatePlayback::new();
         playback.state = PlaybackState::Paused;
         playback.position = Duration::from_secs(3);
-        state.playback = Box::new(playback);
+        state.playback = Some(TestPlayback::Error(playback));
         let source = VideoSource::parse("2386400830").unwrap();
         state.last_safe_session = Some(SessionState {
             source: source.clone(),
@@ -2230,10 +2391,10 @@ mod tests {
     }
     #[test]
     fn failed_error_refresh_keeps_terminal_backend_available_for_another_attempt() {
-        let mut state = AppState::new();
+        let mut state = AppState::<TestPlayback>::new_for_test(test_playback_factory);
         let mut failed = ErrorOnUpdatePlayback::new();
         failed.state = PlaybackState::Error("synthetic executor failure".into());
-        state.playback = Box::new(failed);
+        state.playback = Some(TestPlayback::Error(failed));
         state.twitch_resolver = test_twitch_resolver_failure;
         state.playback_factory = test_playback_factory;
 
@@ -2265,7 +2426,7 @@ mod tests {
 
     #[test]
     fn video_start_time_survives_initial_favourite_quality_selection() {
-        let mut state = AppState::new();
+        let mut state = AppState::<TestPlayback>::new_for_test(test_playback_factory);
         state.twitch_resolver = test_twitch_resolver;
         state.playback_factory = test_playback_factory_requires_initial_quality_and_app_start_seek;
         state.preferences.favourite_qualities = "480p".into();
@@ -2290,7 +2451,7 @@ mod tests {
 
     #[test]
     fn youtube_open_reports_currently_unsupported() {
-        let mut state = AppState::new();
+        let mut state = AppState::<TestPlayback>::new_for_test(test_playback_factory);
         state.apply(AppCommand::OpenVideo(
             VideoSource::parse("3fgD9k8Hkbc").unwrap(),
         ));
@@ -2306,7 +2467,7 @@ mod tests {
 
     #[test]
     fn twitch_open_resolves_hls_url_without_blocking_the_command() {
-        let mut state = AppState::new();
+        let mut state = AppState::<TestPlayback>::new_for_test(test_playback_factory);
         state.twitch_resolver = test_twitch_resolver;
         state.playback_factory = test_playback_factory;
         state.apply(AppCommand::OpenVideo(
@@ -2342,7 +2503,7 @@ mod tests {
 
     #[test]
     fn window_title_falls_back_without_usable_metadata() {
-        let mut state = AppState::new();
+        let mut state = AppState::<TestPlayback>::new_for_test(test_playback_factory);
         assert_eq!(state.window_title(), "Sanctuary Player");
 
         state.metadata = Some(VideoMetadata {
@@ -2354,7 +2515,7 @@ mod tests {
 
     #[test]
     fn opening_new_video_clears_previous_window_title_until_metadata_arrives() {
-        let mut state = AppState::new();
+        let mut state = AppState::<TestPlayback>::new_for_test(test_playback_factory);
         state.metadata = Some(VideoMetadata {
             title: "Alpha vs Beta - Game 3".into(),
             release_age: Duration::ZERO,
@@ -2373,7 +2534,7 @@ mod tests {
 
     #[test]
     fn mute_option_is_forwarded_to_playback_factory() {
-        let mut state = AppState::new();
+        let mut state = AppState::<TestPlayback>::new_for_test(test_playback_factory);
         state.twitch_resolver = test_twitch_resolver_without_metadata;
         state.playback_factory = test_playback_factory_requires_muted;
         state.set_muted(true);
@@ -2394,7 +2555,7 @@ mod tests {
     }
     #[test]
     fn missing_twitch_metadata_does_not_block_video_open() {
-        let mut state = AppState::new();
+        let mut state = AppState::<TestPlayback>::new_for_test(test_playback_factory);
         state.twitch_resolver = test_twitch_resolver_without_metadata;
         state.playback_factory = test_playback_factory;
         state.apply(AppCommand::OpenVideo(
@@ -2417,7 +2578,7 @@ mod tests {
 
     #[test]
     fn autoplay_starts_after_async_video_open_completes() {
-        let mut state = AppState::new();
+        let mut state = AppState::<TestPlayback>::new_for_test(test_playback_factory);
         state.twitch_resolver = test_twitch_resolver;
         state.playback_factory = test_playback_factory;
         state.play_when_opened();
@@ -2617,7 +2778,10 @@ mod tests {
     #[test]
     fn quality_change_reuses_video_replacement_path_and_preserves_playing_position() {
         let mut state = loaded_state();
-        state.playback = Box::new(QualityReloadPlayback::new(Duration::from_secs(37), true));
+        state.playback = Some(TestPlayback::Quality(QualityReloadPlayback::new(
+            Duration::from_secs(37),
+            true,
+        )));
         state.playback_factory = quality_replacement_test_factory;
 
         state.apply(AppCommand::SetQuality("480p".into()));
@@ -2646,7 +2810,10 @@ mod tests {
     #[test]
     fn repeated_quality_changes_keep_the_latest_replacement_request() {
         let mut state = loaded_state();
-        state.playback = Box::new(QualityReloadPlayback::new(Duration::from_secs(12), true));
+        state.playback = Some(TestPlayback::Quality(QualityReloadPlayback::new(
+            Duration::from_secs(12),
+            true,
+        )));
         state.playback_factory = quality_replacement_test_factory;
 
         state.apply(AppCommand::SetQuality("480p".into()));
@@ -2678,7 +2845,10 @@ mod tests {
     #[test]
     fn refresh_cancels_inflight_quality_change_and_reuses_manual_quality() {
         let mut state = loaded_state();
-        state.playback = Box::new(QualityReloadPlayback::new(Duration::from_secs(12), true));
+        state.playback = Some(TestPlayback::Quality(QualityReloadPlayback::new(
+            Duration::from_secs(12),
+            true,
+        )));
         state.playback_factory = quality_replacement_test_factory;
         state.twitch_resolver = test_twitch_resolver;
 
@@ -2733,7 +2903,7 @@ mod tests {
             })
             .unwrap();
 
-        let mut state = AppState::new();
+        let mut state = AppState::<TestPlayback>::new_for_test(test_playback_factory);
         state.twitch_resolver = test_twitch_resolver;
         state.playback_factory = test_playback_factory_requires_initial_quality_and_app_start_seek;
         state.preferences.favourite_qualities = "480p".into();
@@ -2790,7 +2960,7 @@ mod tests {
     #[test]
     fn persisted_account_and_favourites_are_restored_on_restart() {
         let path = temporary_settings_path("restore");
-        let mut first = AppState::new();
+        let mut first = AppState::<TestPlayback>::new_for_test(test_playback_factory);
         first.set_settings_path(path.clone());
         first.apply(AppCommand::SignIn {
             user_id: "test-user".into(),
@@ -2798,7 +2968,7 @@ mod tests {
         });
         first.apply(AppCommand::SetFavouriteQualities("1080p60,720p60".into()));
 
-        let mut second = AppState::new();
+        let mut second = AppState::<TestPlayback>::new_for_test(test_playback_factory);
         second.set_settings_path(path.clone());
         assert!(second.signed_in());
         assert_eq!(second.user_id(), Some("test-user"));
@@ -2812,7 +2982,7 @@ mod tests {
     #[test]
     fn sign_out_clears_persisted_account_but_keeps_preferences() {
         let path = temporary_settings_path("signout");
-        let mut first = AppState::new();
+        let mut first = AppState::<TestPlayback>::new_for_test(test_playback_factory);
         first.set_settings_path(path.clone());
         first.apply(AppCommand::SignIn {
             user_id: "test-user".into(),
@@ -2821,7 +2991,7 @@ mod tests {
         first.apply(AppCommand::SetFavouriteQualities("720p60".into()));
         first.apply(AppCommand::SignOut);
 
-        let mut second = AppState::new();
+        let mut second = AppState::<TestPlayback>::new_for_test(test_playback_factory);
         second.set_settings_path(path.clone());
         assert!(!second.signed_in());
         assert_eq!(second.user_id(), None);
@@ -3003,7 +3173,7 @@ mod tests {
             device_id: "Native".into(),
         });
 
-        fn settle(state: &mut AppState) {
+        fn settle(state: &mut AppState<TestPlayback>) {
             for _ in 0..200 {
                 state.update(Duration::from_millis(200));
                 if state.pending_position_save.is_none()
@@ -3081,7 +3251,7 @@ mod tests {
 
     #[test]
     fn fullscreen_command_is_returned_as_platform_effect() {
-        let mut state = AppState::new();
+        let mut state = AppState::<TestPlayback>::new_for_test(test_playback_factory);
         assert_eq!(
             state.apply(AppCommand::ToggleFullscreen),
             Some(AppEffect::ToggleFullscreen)

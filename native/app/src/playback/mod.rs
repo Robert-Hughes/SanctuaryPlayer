@@ -278,6 +278,130 @@ pub trait PlaybackBackend: Send {
     }
 }
 
+static NO_PLAYBACK_STATE: PlaybackState = PlaybackState::Loading;
+static NO_PLAYBACK_RATES: [f32; 0] = [];
+static NO_PLAYBACK_QUALITIES: [Quality; 0] = [];
+
+impl<P: PlaybackBackend> PlaybackBackend for Option<P> {
+    fn open(&mut self, source: &VideoSource) -> Result<(), String> {
+        match self.as_mut() {
+            Some(playback) => playback.open(source),
+            None => Err("no playback backend".into()),
+        }
+    }
+
+    fn source(&self) -> Option<&VideoSource> {
+        self.as_ref().and_then(PlaybackBackend::source)
+    }
+
+    fn state(&self) -> &PlaybackState {
+        self.as_ref()
+            .map(PlaybackBackend::state)
+            .unwrap_or(&NO_PLAYBACK_STATE)
+    }
+
+    fn intends_playing(&self) -> bool {
+        self.as_ref().is_some_and(PlaybackBackend::intends_playing)
+    }
+
+    fn play(&mut self) {
+        if let Some(playback) = self.as_mut() {
+            playback.play();
+        }
+    }
+
+    fn pause(&mut self) {
+        if let Some(playback) = self.as_mut() {
+            playback.pause();
+        }
+    }
+
+    fn position(&self) -> Duration {
+        self.as_ref()
+            .map(PlaybackBackend::position)
+            .unwrap_or(Duration::ZERO)
+    }
+
+    fn duration(&self) -> Option<Duration> {
+        self.as_ref().and_then(PlaybackBackend::duration)
+    }
+
+    fn seek(&mut self, position: Duration) {
+        if let Some(playback) = self.as_mut() {
+            playback.seek(position);
+        }
+    }
+
+    fn available_rates(&self) -> &[f32] {
+        self.as_ref()
+            .map(PlaybackBackend::available_rates)
+            .unwrap_or(&NO_PLAYBACK_RATES)
+    }
+
+    fn playback_rate(&self) -> f32 {
+        self.as_ref()
+            .map(PlaybackBackend::playback_rate)
+            .unwrap_or(1.0)
+    }
+
+    fn set_playback_rate(&mut self, rate: f32) {
+        if let Some(playback) = self.as_mut() {
+            playback.set_playback_rate(rate);
+        }
+    }
+
+    fn available_qualities(&self) -> &[Quality] {
+        self.as_ref()
+            .map(PlaybackBackend::available_qualities)
+            .unwrap_or(&NO_PLAYBACK_QUALITIES)
+    }
+
+    fn quality(&self) -> Option<&Quality> {
+        self.as_ref().and_then(PlaybackBackend::quality)
+    }
+
+    fn quality_master_url(&self) -> Option<&Url> {
+        self.as_ref().and_then(PlaybackBackend::quality_master_url)
+    }
+
+    fn set_quality(&mut self, quality_id: &str) {
+        if let Some(playback) = self.as_mut() {
+            playback.set_quality(quality_id);
+        }
+    }
+
+    fn update(&mut self, elapsed: Duration) {
+        if let Some(playback) = self.as_mut() {
+            playback.update(elapsed);
+        }
+    }
+
+    fn next_wake_deadline(&self, now: Instant) -> Option<Instant> {
+        self.as_ref()
+            .and_then(|playback| playback.next_wake_deadline(now))
+    }
+
+    fn take_video_frame_lease(&mut self) -> Option<FrameLease> {
+        self.as_mut()
+            .and_then(PlaybackBackend::take_video_frame_lease)
+    }
+
+    fn video_color_info(&self) -> Option<VideoColorInfo> {
+        self.as_ref().and_then(PlaybackBackend::video_color_info)
+    }
+
+    fn debug_info(&self) -> Vec<DebugInfoSection> {
+        self.as_ref()
+            .map(PlaybackBackend::debug_info)
+            .unwrap_or_default()
+    }
+
+    fn debug_graph(&self) -> DebugGraph {
+        self.as_ref()
+            .map(PlaybackBackend::debug_graph)
+            .unwrap_or_default()
+    }
+}
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};

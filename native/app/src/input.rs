@@ -2,8 +2,12 @@ use winit::keyboard::KeyCode;
 
 use crate::app::AppState;
 use crate::model::AppCommand;
+use crate::playback::PlaybackBackend;
 
-pub(crate) fn command_for_key(code: KeyCode, state: &AppState) -> Option<AppCommand> {
+pub(crate) fn command_for_key<P: PlaybackBackend + 'static>(
+    code: KeyCode,
+    state: &AppState<P>,
+) -> Option<AppCommand> {
     if state.ui.dialog.is_some() {
         return None;
     }
@@ -26,15 +30,10 @@ pub(crate) fn command_for_key(code: KeyCode, state: &AppState) -> Option<AppComm
 mod tests {
     use super::*;
     use crate::model::AppCommand;
-    use crate::video::VideoSource;
+    use crate::playback::DummyPlayback;
 
-    fn state() -> AppState {
-        let mut state = AppState::new();
-        state.apply(AppCommand::OpenVideo(
-            VideoSource::parse("2386400830").unwrap(),
-        ));
-        state.close_dialog();
-        state
+    fn state() -> AppState<DummyPlayback> {
+        AppState::with_test_playback(DummyPlayback::new())
     }
 
     #[test]
