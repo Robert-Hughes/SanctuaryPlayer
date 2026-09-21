@@ -1597,6 +1597,24 @@ impl AppState {
         self.playback.quality()
     }
 
+    pub fn quality_for_ui(&self) -> Option<&Quality> {
+        if self.pending_video_open.is_some()
+            && let Some(requested) = self.preferences.manually_selected_quality.as_deref()
+            && let Some(quality) = self
+                .playback
+                .available_qualities()
+                .iter()
+                .find(|quality| quality.id == requested)
+        {
+            return Some(quality);
+        }
+        self.playback.quality()
+    }
+
+    pub fn opening_video(&self) -> bool {
+        self.pending_video_open.is_some()
+    }
+
     pub fn take_video_frame_lease(&mut self) -> Option<FrameLease> {
         self.playback.take_video_frame_lease()
     }
@@ -2605,6 +2623,7 @@ mod tests {
         state.apply(AppCommand::SetQuality("480p".into()));
 
         assert!(state.pending_video_open.is_some());
+        assert_eq!(state.quality_for_ui().unwrap().id, "480p");
         assert_eq!(state.playback_state(), &PlaybackState::Paused);
         assert!(!matches!(state.playback_state(), PlaybackState::Ended));
 

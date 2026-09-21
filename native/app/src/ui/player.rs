@@ -500,7 +500,10 @@ fn primary_playback_control(
     }
 }
 
-fn playback_status_label(state: &PlaybackState) -> Option<&'static str> {
+fn playback_status_label(state: &PlaybackState, opening: bool) -> Option<&'static str> {
+    if opening {
+        return Some("Opening…");
+    }
     match state {
         PlaybackState::Playing | PlaybackState::Paused => None,
         PlaybackState::Loading => Some("Loading…"),
@@ -512,7 +515,7 @@ fn playback_status_label(state: &PlaybackState) -> Option<&'static str> {
 }
 
 fn paint_centre_status(ui: &egui::Ui, state: &AppState, controls_rect: egui::Rect) {
-    let Some(label) = playback_status_label(state.playback_state()) else {
+    let Some(label) = playback_status_label(state.playback_state(), state.opening_video()) else {
         return;
     };
     let ctx = ui.ctx().clone();
@@ -824,7 +827,10 @@ mod tests {
         let (icon, command) = primary_playback_control(&PlaybackState::Ended, false);
         assert_eq!(icon, PlayerIcon::Play);
         assert_eq!(command, None);
-        assert_eq!(playback_status_label(&PlaybackState::Ended), Some("Ended"));
+        assert_eq!(
+            playback_status_label(&PlaybackState::Ended, false),
+            Some("Ended")
+        );
     }
 
     #[test]
@@ -840,20 +846,27 @@ mod tests {
 
     #[test]
     fn centre_status_hides_obvious_states_and_labels_transitional_states() {
-        assert_eq!(playback_status_label(&PlaybackState::Playing), None);
-        assert_eq!(playback_status_label(&PlaybackState::Paused), None);
+        assert_eq!(playback_status_label(&PlaybackState::Playing, false), None);
+        assert_eq!(playback_status_label(&PlaybackState::Paused, false), None);
         assert_eq!(
-            playback_status_label(&PlaybackState::Buffering),
+            playback_status_label(&PlaybackState::Buffering, false),
             Some("Buffering…")
         );
         assert_eq!(
-            playback_status_label(&PlaybackState::Seeking),
+            playback_status_label(&PlaybackState::Seeking, false),
             Some("Seeking…")
         );
-        assert_eq!(playback_status_label(&PlaybackState::Ended), Some("Ended"));
         assert_eq!(
-            playback_status_label(&PlaybackState::Error("failed".into())),
+            playback_status_label(&PlaybackState::Ended, false),
+            Some("Ended")
+        );
+        assert_eq!(
+            playback_status_label(&PlaybackState::Error("failed".into()), false),
             Some("Error")
+        );
+        assert_eq!(
+            playback_status_label(&PlaybackState::Paused, true),
+            Some("Opening…")
         );
     }
 

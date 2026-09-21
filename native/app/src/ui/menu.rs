@@ -180,7 +180,7 @@ fn intrinsic_menu_width(
                 .color(theme::PURPLE),
         );
         let selected_quality = state
-            .quality()
+            .quality_for_ui()
             .map(|quality| quality.label.as_str())
             .unwrap_or("Unknown");
         let selected_width =
@@ -309,7 +309,7 @@ pub fn render(
                     if state.has_video() {
                         menu_content_row(ui, vmin, |ui| {
                             let qualities = state.available_qualities().to_vec();
-                            let current = state.quality().map(|quality| quality.id.clone());
+                            let current = state.quality_for_ui().map(|quality| quality.id.clone());
                             ui.horizontal_wrapped(|ui| {
                                 ui.label(
                                     egui::RichText::new("Quality:")
@@ -320,7 +320,7 @@ pub fn render(
                                 egui::ComboBox::from_id_salt("quality-select")
                                     .selected_text(
                                         state
-                                            .quality()
+                                            .quality_for_ui()
                                             .map(|quality| quality.label.as_str())
                                             .unwrap_or("Unknown"),
                                     )

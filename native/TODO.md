@@ -1,12 +1,5 @@
 # Native TODO
 
-## Player UI and interaction
-
-- Represent buffering/rebuffering explicitly in playback state and UI rather than leaving a starved session looking like ordinary `Playing` playback.
-- Add user-visible playback/network error reporting and recovery controls instead of relying mainly on stderr diagnostics.
-- Improve end-of-media/restart behaviour and expose an intentional replay/restart action rather than only disabling play once `Ended` is reached.
-- Keep current quality/rate UI synchronised with asynchronous backend changes such as source changes or device/player constraints.
-
 ## Quality, rate and A/V timing
 
 - Re-enable non-1.0x playback rates for real A/V playback with pitch-preserving audio time-stretch and correct A/V clocking.
@@ -15,7 +8,6 @@
 
 ## Playback resilience and lifecycle
 
-- Add playback-level retry/reopen recovery for transient playlist, segment, decoder and network failures without losing the current media position.
 - Ensure seeking and playback state remain recoverable when a seek target is unavailable, outside the live window, or fails after source/network changes.
 
 ## Testing and diagnostics
