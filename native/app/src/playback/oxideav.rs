@@ -776,7 +776,7 @@ impl OxidePlayback {
         wake: PlaybackWake,
         cancellation: CancellationToken,
     ) -> Result<Self, String> {
-        let quality_set = inspect_hls_qualities(&m3u8_url)?;
+        let quality_set = inspect_hls_qualities(&m3u8_url, &cancellation)?;
         if cancellation.is_cancelled() {
             return Err("OxideAV open cancelled after HLS inspection".into());
         }
@@ -2770,8 +2770,11 @@ fn select_initial_quality_index(
     fallback_index
 }
 
-fn inspect_hls_qualities(master_url: &Url) -> Result<HlsQualitySet, String> {
-    let inspected = oxideav_hls::inspect_hls(&hls_uri(master_url))
+fn inspect_hls_qualities(
+    master_url: &Url,
+    cancellation: &CancellationToken,
+) -> Result<HlsQualitySet, String> {
+    let inspected = oxideav_hls::inspect_hls_cancellable(&hls_uri(master_url), cancellation)
         .map_err(|error| format!("inspect HLS playlist qualities: {error}"))?;
     match inspected {
         HlsPlaylistInfo::Media { url } => Ok(HlsQualitySet {
