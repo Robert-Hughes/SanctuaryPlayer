@@ -121,6 +121,7 @@ pub struct AppState {
     session_store: Option<SessionStore>,
     startup_session: Option<SessionState>,
     last_safe_session: Option<SessionState>,
+    unconfirmed_start_position: Option<(String, Duration)>,
     last_persisted_session: Option<SessionState>,
     next_session_save_allowed: Instant,
     metadata: Option<VideoMetadata>,
@@ -261,6 +262,7 @@ impl Default for AppState {
             session_store: None,
             startup_session: None,
             last_safe_session: None,
+            unconfirmed_start_position: None,
             last_persisted_session: None,
             next_session_save_allowed: Instant::now(),
             metadata: None,
@@ -456,6 +458,9 @@ impl AppState {
         self.playback.update(elapsed);
         let seek_completed =
             was_seeking && !matches!(self.playback.state(), PlaybackState::Seeking);
+        if seek_completed && !matches!(self.playback.state(), PlaybackState::Error(_)) {
+            self.unconfirmed_start_position = None;
+        }
         let playback_error = match self.playback.state() {
             PlaybackState::Error(message) if !was_error => Some(message.clone()),
             _ => None,
@@ -534,6 +539,9 @@ impl AppState {
                     .and_then(|source| source.start_time)
                     .filter(|position| !position.is_zero());
                 if let Some(position) = start_time {
+                    if let Some(source) = self.playback.source() {
+                        self.unconfirmed_start_position = Some((source.id.clone(), position));
+                    }
                     self.playback.seek(position);
                 } else {
                     if self.play_when_opened {
@@ -599,6 +607,7 @@ impl AppState {
         });
 
         if clear_current {
+            self.unconfirmed_start_position = None;
             self.playback = Box::new(DummyPlayback::new());
             self.metadata = None;
         }
@@ -666,7 +675,20 @@ impl AppState {
         let Some(mut source) = self.playback.source().cloned() else {
             return;
         };
-        let position = self.playback.position();
+        let backend_position = self.playback.position();
+        let position = if !backend_position.is_zero() {
+            backend_position
+        } else if let Some(requested) = source.start_time.filter(|position| !position.is_zero()) {
+            requested
+        } else if let Some(session) = self
+            .last_safe_session
+            .as_ref()
+            .filter(|session| session.source.id == source.id && !session.position.is_zero())
+        {
+            session.position
+        } else {
+            Duration::ZERO
+        };
         source.start_time = (!position.is_zero()).then_some(position);
 
         // Freeze healthy active playback at the captured refresh position while
@@ -721,6 +743,13 @@ impl AppState {
         let Some(mut source) = self.playback.source().cloned() else {
             return;
         };
+        if self
+            .unconfirmed_start_position
+            .as_ref()
+            .is_some_and(|(video_id, _)| video_id == &source.id)
+        {
+            return;
+        }
         source.start_time = None;
         self.last_safe_session = Some(SessionState {
             source,
@@ -1647,6 +1676,7 @@ mod tests {
     struct ErrorOnUpdatePlayback {
         source: VideoSource,
         state: PlaybackState,
+        position: Duration,
     }
 
     impl ErrorOnUpdatePlayback {
@@ -1654,6 +1684,7 @@ mod tests {
             Self {
                 source: VideoSource::parse("2386400830").unwrap(),
                 state: PlaybackState::Playing,
+                position: Duration::from_secs(123),
             }
         }
     }
@@ -1683,7 +1714,7 @@ mod tests {
         fn pause(&mut self) {}
 
         fn position(&self) -> Duration {
-            Duration::from_secs(123)
+            self.position
         }
 
         fn duration(&self) -> Option<Duration> {
@@ -2084,6 +2115,57 @@ mod tests {
         assert!(!state.play_when_opened);
     }
 
+    #[test]
+    fn refresh_playback_uses_requested_start_when_error_backend_reports_zero() {
+        let mut state = AppState::new();
+        let mut failed = ErrorOnUpdatePlayback::new();
+        failed.state = PlaybackState::Error("synthetic executor failure".into());
+        failed.position = Duration::ZERO;
+        failed.source.start_time = Some(Duration::from_secs(123));
+        state.playback = Box::new(failed);
+        state.twitch_resolver = test_twitch_resolver;
+        state.playback_factory = test_playback_factory;
+
+        state.apply(AppCommand::RefreshPlayback);
+
+        for _ in 0..200 {
+            state.update(Duration::from_millis(200));
+            if state.pending_video_open.is_none()
+                && matches!(state.playback_state(), PlaybackState::Playing)
+            {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+
+        assert_eq!(state.position(), Duration::from_secs(123));
+        assert_eq!(
+            state.source().and_then(|source| source.start_time),
+            Some(Duration::from_secs(123))
+        );
+    }
+
+    #[test]
+    fn unconfirmed_resume_position_cannot_replace_last_safe_session() {
+        let mut state = AppState::new();
+        let mut playback = ErrorOnUpdatePlayback::new();
+        playback.state = PlaybackState::Paused;
+        playback.position = Duration::from_secs(3);
+        state.playback = Box::new(playback);
+        let source = VideoSource::parse("2386400830").unwrap();
+        state.last_safe_session = Some(SessionState {
+            source: source.clone(),
+            position: Duration::from_secs(14_524),
+        });
+        state.unconfirmed_start_position = Some((source.id.clone(), Duration::from_secs(14_524)));
+
+        state.refresh_safe_session();
+
+        assert_eq!(
+            state.last_safe_session.as_ref().unwrap().position,
+            Duration::from_secs(14_524)
+        );
+    }
     #[test]
     fn failed_error_refresh_keeps_terminal_backend_available_for_another_attempt() {
         let mut state = AppState::new();
