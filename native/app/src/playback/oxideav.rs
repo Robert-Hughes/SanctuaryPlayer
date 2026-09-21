@@ -598,6 +598,7 @@ fn open_variant_session(
     variant_url: &Url,
     decode_mode: DecodeMode,
     wake: PlaybackWake,
+    cancellation: CancellationToken,
 ) -> Result<PlaybackSession, String> {
     decode_mode.validate_current_platform()?;
     let input = hls_uri(variant_url);
@@ -647,6 +648,7 @@ fn open_variant_session(
             ..ChannelCaps::default()
         })
         .with_eof_mode(EofMode::WaitForSeek)
+        .with_cancellation_token(cancellation.clone())
         .with_threads(0)
         .spawn()
         .map_err(|error| format!("start OxideAV playback: {error}"))?;
@@ -772,8 +774,12 @@ impl OxidePlayback {
         decode_mode: DecodeMode,
         muted: bool,
         wake: PlaybackWake,
+        cancellation: CancellationToken,
     ) -> Result<Self, String> {
         let quality_set = inspect_hls_qualities(&m3u8_url)?;
+        if cancellation.is_cancelled() {
+            return Err("OxideAV open cancelled after HLS inspection".into());
+        }
         let initial_quality_index = select_initial_quality_index(
             &quality_set.qualities,
             quality_set.preferred_index,
@@ -785,7 +791,12 @@ impl OxidePlayback {
             quality_set.qualities[initial_quality_index].label,
             selected_url
         );
-        let session = open_variant_session(&selected_url, decode_mode, wake.clone())?;
+        let session = open_variant_session(
+            &selected_url,
+            decode_mode,
+            wake.clone(),
+            cancellation.clone(),
+        )?;
 
         Ok(Self {
             source,

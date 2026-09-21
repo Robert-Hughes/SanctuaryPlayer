@@ -7,7 +7,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use url::Url;
 
-use ::oxideav::core::{FrameLease, VideoColorInfo};
+use ::oxideav::core::{CancellationToken, FrameLease, VideoColorInfo};
 
 use crate::model::{AppCommand, DebugGraph, DebugGraphLane, DebugNode, PlaybackState, Quality};
 use crate::playback::{
@@ -37,6 +37,7 @@ type PlaybackFactory = fn(
     DecodeMode,
     bool,
     PlaybackWake,
+    CancellationToken,
 ) -> Result<Box<dyn PlaybackBackend>, String>;
 
 fn open_oxide_playback(
@@ -46,9 +47,18 @@ fn open_oxide_playback(
     decode_mode: DecodeMode,
     muted: bool,
     wake: PlaybackWake,
+    cancellation: CancellationToken,
 ) -> Result<Box<dyn PlaybackBackend>, String> {
-    OxidePlayback::open(source, url, &initial_qualities, decode_mode, muted, wake)
-        .map(|playback| Box::new(playback) as Box<dyn PlaybackBackend>)
+    OxidePlayback::open(
+        source,
+        url,
+        &initial_qualities,
+        decode_mode,
+        muted,
+        wake,
+        cancellation,
+    )
+    .map(|playback| Box::new(playback) as Box<dyn PlaybackBackend>)
 }
 
 fn video_metadata_from_twitch(metadata: TwitchVodMetadata) -> VideoMetadata {
@@ -71,6 +81,7 @@ struct OpenedVideo {
 
 struct PendingVideoOpen {
     receiver: Receiver<Result<OpenedVideo, String>>,
+    cancellation: CancellationToken,
 }
 
 struct PendingPositionsFetch {
@@ -152,7 +163,7 @@ struct AccountState {
 #[derive(Debug, Default)]
 struct Preferences {
     favourite_qualities: String,
-    manually_selected_quality: bool,
+    manually_selected_quality: Option<String>,
 }
 
 #[derive(Debug)]
@@ -503,6 +514,12 @@ impl AppState {
         }
     }
 
+    fn cancel_pending_video_open(&mut self) {
+        if let Some(pending) = self.pending_video_open.take() {
+            pending.cancellation.cancel();
+            log::info!("SanctuaryPlayer: cancelled superseded video open");
+        }
+    }
     fn poll_video_open(&mut self) {
         let Some(pending) = self.pending_video_open.as_ref() else {
             return;
@@ -532,7 +549,6 @@ impl AppState {
                 );
                 self.playback = opened.playback;
                 self.metadata = opened.metadata;
-                self.preferences.manually_selected_quality = false;
                 let start_time = self
                     .playback
                     .source()
@@ -566,6 +582,7 @@ impl AppState {
     }
 
     fn begin_twitch_resolution(&mut self, source: VideoSource) {
+        self.preferences.manually_selected_quality = None;
         self.start_twitch_resolution(source, true);
     }
 
@@ -574,17 +591,25 @@ impl AppState {
     }
 
     fn start_twitch_resolution(&mut self, source: VideoSource, clear_current: bool) {
+        self.cancel_pending_video_open();
         let resolver = self.twitch_resolver;
         let playback_factory = self.playback_factory;
         let playback_wake = self.playback_wake.clone();
-        let initial_qualities = self.preferences.favourite_qualities.clone();
+        let initial_qualities = self
+            .preferences
+            .manually_selected_quality
+            .clone()
+            .unwrap_or_else(|| self.preferences.favourite_qualities.clone());
         let decode_mode = self.decode_mode;
         let muted = self.muted;
         let video_id = source.id.clone();
+        let cancellation = CancellationToken::new();
+        let worker_cancellation = cancellation.clone();
         log::info!(
-            "SanctuaryPlayer: Twitch video open begin video_id={} retry={}",
+            "SanctuaryPlayer: Twitch video open begin video_id={} retry={} quality={}",
             video_id,
-            !clear_current
+            !clear_current,
+            initial_qualities
         );
         let worker_video_id = video_id.clone();
         let (sender, receiver) = mpsc::channel();
@@ -592,6 +617,9 @@ impl AppState {
             let result = resolver(&worker_video_id)
                 .map_err(|error| error.to_string())
                 .and_then(|resolved| {
+                    if worker_cancellation.is_cancelled() {
+                        return Err("video open cancelled".into());
+                    }
                     let metadata = resolved.metadata.map(video_metadata_from_twitch);
                     playback_factory(
                         source,
@@ -600,6 +628,7 @@ impl AppState {
                         decode_mode,
                         muted,
                         playback_wake,
+                        worker_cancellation.clone(),
                     )
                     .map(|playback| OpenedVideo { playback, metadata })
                 });
@@ -611,13 +640,17 @@ impl AppState {
             self.playback = Box::new(DummyPlayback::new());
             self.metadata = None;
         }
-        self.pending_video_open = Some(PendingVideoOpen { receiver });
+        self.pending_video_open = Some(PendingVideoOpen {
+            receiver,
+            cancellation,
+        });
         self.ui.menu_open = false;
         self.ui.dialog = Some(DialogState::TwitchResolving { video_id });
         self.note_interaction();
     }
 
     fn start_quality_replacement(&mut self, quality_id: String) {
+        self.cancel_pending_video_open();
         let Some(master_url) = self.playback.quality_master_url().cloned() else {
             self.playback.set_quality(&quality_id);
             return;
@@ -642,6 +675,9 @@ impl AppState {
         let decode_mode = self.decode_mode;
         let muted = self.muted;
         let metadata = self.metadata.clone();
+        let cancellation = CancellationToken::new();
+        let worker_cancellation = cancellation.clone();
+        let worker_quality = quality_id.clone();
         let (sender, receiver) = mpsc::channel();
         log::info!(
             "SanctuaryPlayer: quality replacement begin quality={} position={:.3}s resume_playing={}",
@@ -653,15 +689,19 @@ impl AppState {
             let result = playback_factory(
                 source,
                 master_url,
-                quality_id,
+                worker_quality,
                 decode_mode,
                 muted,
                 playback_wake,
+                worker_cancellation.clone(),
             )
             .map(|playback| OpenedVideo { playback, metadata });
             let _ = sender.send(result);
         });
-        self.pending_video_open = Some(PendingVideoOpen { receiver });
+        self.pending_video_open = Some(PendingVideoOpen {
+            receiver,
+            cancellation,
+        });
     }
     fn refresh_playback(&mut self) {
         let resume_playing = matches!(
@@ -1311,13 +1351,13 @@ impl AppState {
             }
             AppCommand::SetPlaybackRate(rate) => self.playback.set_playback_rate(rate),
             AppCommand::SetQuality(quality) => {
-                self.preferences.manually_selected_quality = true;
+                self.preferences.manually_selected_quality = Some(quality.clone());
                 self.start_quality_replacement(quality);
             }
             AppCommand::SetFavouriteQualities(qualities) => {
                 self.preferences.favourite_qualities = qualities;
                 self.persist_settings();
-                if !self.preferences.manually_selected_quality {
+                if self.preferences.manually_selected_quality.is_none() {
                     self.apply_favourite_quality();
                 }
             }
@@ -1831,6 +1871,7 @@ mod tests {
         _decode_mode: DecodeMode,
         _muted: bool,
         _wake: PlaybackWake,
+        _cancellation: CancellationToken,
     ) -> Result<Box<dyn PlaybackBackend>, String> {
         if initial_qualities == "480p" {
             std::thread::sleep(Duration::from_millis(30));
@@ -1954,6 +1995,7 @@ mod tests {
         _decode_mode: DecodeMode,
         _muted: bool,
         _wake: PlaybackWake,
+        _cancellation: CancellationToken,
     ) -> Result<Box<dyn PlaybackBackend>, String> {
         let mut playback = DummyPlayback::new();
         playback.open(&source)?;
@@ -1967,6 +2009,7 @@ mod tests {
         _decode_mode: DecodeMode,
         _muted: bool,
         _wake: PlaybackWake,
+        _cancellation: CancellationToken,
     ) -> Result<Box<dyn PlaybackBackend>, String> {
         if initial_qualities != "480p" {
             return Err(format!(
@@ -1991,6 +2034,7 @@ mod tests {
         _decode_mode: DecodeMode,
         muted: bool,
         _wake: PlaybackWake,
+        _cancellation: CancellationToken,
     ) -> Result<Box<dyn PlaybackBackend>, String> {
         if !muted {
             return Err("expected muted playback factory invocation".into());
@@ -2587,7 +2631,14 @@ mod tests {
         state.playback_factory = quality_replacement_test_factory;
 
         state.apply(AppCommand::SetQuality("480p".into()));
+        let first_cancellation = state
+            .pending_video_open
+            .as_ref()
+            .expect("first quality replacement")
+            .cancellation
+            .clone();
         state.apply(AppCommand::SetQuality("1080p60".into()));
+        assert!(first_cancellation.is_cancelled());
 
         for _ in 0..500 {
             state.update(Duration::from_millis(1));
@@ -2603,6 +2654,43 @@ mod tests {
         assert_eq!(state.quality().unwrap().id, "1080p60");
         assert_eq!(state.position(), Duration::from_secs(12));
         assert_eq!(state.playback_state(), &PlaybackState::Playing);
+    }
+
+    #[test]
+    fn refresh_cancels_inflight_quality_change_and_reuses_manual_quality() {
+        let mut state = loaded_state();
+        state.playback = Box::new(QualityReloadPlayback::new(Duration::from_secs(12), true));
+        state.playback_factory = quality_replacement_test_factory;
+        state.twitch_resolver = test_twitch_resolver;
+
+        state.apply(AppCommand::SetQuality("480p".into()));
+        let quality_cancellation = state
+            .pending_video_open
+            .as_ref()
+            .expect("quality replacement")
+            .cancellation
+            .clone();
+
+        state.apply(AppCommand::RefreshPlayback);
+        assert!(quality_cancellation.is_cancelled());
+
+        for _ in 0..500 {
+            state.update(Duration::from_millis(1));
+            if state.pending_video_open.is_none()
+                && matches!(state.playback_state(), PlaybackState::Playing)
+            {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+
+        assert!(state.pending_video_open.is_none());
+        assert_eq!(state.quality().unwrap().id, "480p");
+        assert_eq!(state.position(), Duration::from_secs(12));
+        assert_eq!(
+            state.preferences.manually_selected_quality.as_deref(),
+            Some("480p")
+        );
     }
 
     #[test]
