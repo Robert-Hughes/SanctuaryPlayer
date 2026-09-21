@@ -4,7 +4,6 @@
 
     <application
         android:allowBackup="false"
-        android:debuggable="true"
         android:fullBackupContent="false"
         android:icon="@drawable/app_icon"
         android:label="Sanctuary Player"
