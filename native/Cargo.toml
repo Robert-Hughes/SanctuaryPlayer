@@ -41,6 +41,7 @@ oxideav-pixfmt = "0.1"
 oxideav-audio-filter = "0.1"
 oxideav-sysaudio = { version = "0.1", default-features = false }
 oxideav-hls = "0.1"
+oxideav-http = "0.0.8"
 oxideav-vdpau = "0.0.2"
 oxideav-mediacodec = "0.0.1"
 oxideav-vulkan-video = "0.0.2"

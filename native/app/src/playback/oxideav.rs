@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError};
+use std::sync::{Arc, Once};
 use std::time::{Duration, Instant};
 
 use ::oxideav::core::{
@@ -40,6 +40,18 @@ const OPEN_TIMEOUT: Duration = Duration::from_secs(30);
 const DIAGNOSTIC_INTERVAL: Duration = Duration::from_secs(1);
 const BUFFERING_GRACE: Duration = Duration::from_millis(250);
 const TRACK_SINK_BACKPRESSURE_WAIT: Duration = Duration::from_millis(20);
+static HTTP_RANGE_PROBE_CONFIG: Once = Once::new();
+
+fn enable_http_range_probe() {
+    HTTP_RANGE_PROBE_CONFIG.call_once(|| {
+        let config = oxideav_http::HttpConfig::builder()
+            .range_probe(true)
+            .build();
+        if let Err(error) = oxideav_http::install_default_config(config) {
+            log::warn!("SanctuaryPlayer: could not enable HTTP range probing: {error}");
+        }
+    });
+}
 
 #[derive(Clone, Default)]
 struct SessionChannelDepths {
@@ -777,6 +789,9 @@ impl OxidePlayback {
         wake: PlaybackWake,
         cancellation: CancellationToken,
     ) -> Result<Self, String> {
+        // HLS segment opens share oxideav-http's process-wide source. The
+        // fallback probes only when HEAD cannot establish a seekable length.
+        enable_http_range_probe();
         let quality_set = inspect_hls_qualities(&m3u8_url, &cancellation)?;
         if cancellation.is_cancelled() {
             return Err("OxideAV open cancelled after HLS inspection".into());
@@ -3038,6 +3053,41 @@ mod tests {
     use ::oxideav::core::{AudioFrame, CodecId, CodecParameters, SampleFormat, VideoFrame};
 
     use super::*;
+
+    #[test]
+    #[ignore = "requires live YouTube requests"]
+    fn probe_live_youtube_segment_http_open() {
+        let source = VideoSource::parse("https://www.youtube.com/watch?v=TNHNaHOBYG8&t=389s")
+            .expect("source");
+        let manifest = crate::youtube::resolve_vod_m3u8(&source.id).expect("manifest");
+        let quality_set =
+            inspect_hls_qualities(&manifest, &CancellationToken::new()).expect("qualities");
+        let variant = &quality_set.urls[quality_set.preferred_index];
+        let playlist = ureq::get(variant.as_str())
+            .call()
+            .expect("playlist")
+            .body_mut()
+            .read_to_string()
+            .expect("playlist body");
+        let segment_ref = playlist
+            .lines()
+            .find(|line| !line.is_empty() && !line.starts_with('#'))
+            .expect("segment reference");
+        let segment = variant.join(segment_ref).expect("segment URL");
+        let config = oxideav_http::HttpConfig::builder()
+            .range_probe(true)
+            .build();
+        let mut src = oxideav_http::HttpSource::open_with_config(segment.as_str(), &config)
+            .expect("segment open");
+        println!("YouTube segment length={}", src.len());
+        let mut first = [0u8; 16];
+        use std::io::{Read as _, Seek as _, SeekFrom};
+        src.read_exact(&mut first).expect("read segment");
+        src.seek(SeekFrom::Start(0)).expect("rewind segment");
+        let mut again = [0u8; 16];
+        src.read_exact(&mut again).expect("reread segment");
+        assert_eq!(first, again);
+    }
 
     struct TestSessionSenders {
         _control_tx: SyncSender<SessionMsg>,

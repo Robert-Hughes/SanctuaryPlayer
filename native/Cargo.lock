@@ -2697,6 +2697,7 @@ dependencies = [
  "oxideav",
  "oxideav-audio-filter",
  "oxideav-hls",
+ "oxideav-http",
  "oxideav-mediacodec",
  "oxideav-meta",
  "oxideav-pixfmt",
