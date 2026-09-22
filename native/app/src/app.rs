@@ -19,6 +19,7 @@ use crate::settings::{Settings, SettingsStore};
 use crate::spoilers::sanitise_title;
 use crate::twitch::{ResolvedTwitchVod, TwitchVodMetadata, TwitchVodResolveError, resolve_vod};
 use crate::video::{VideoPlatform, VideoSource};
+use crate::youtube::{YoutubeResolveError, resolve_vod_m3u8 as resolve_youtube_vod_m3u8};
 
 const CONTROLS_HIDE_AFTER: Duration = Duration::from_secs(2);
 const LOCK_SLIDE_BACK_DURATION: Duration = Duration::from_millis(500);
@@ -30,6 +31,7 @@ const SESSION_SAVE_INTERVAL: Duration = Duration::from_secs(3);
 const DEFAULT_WINDOW_TITLE: &str = "Sanctuary Player";
 
 type TwitchResolver = fn(&str) -> Result<ResolvedTwitchVod, TwitchVodResolveError>;
+type YoutubeResolver = fn(&str) -> Result<Url, YoutubeResolveError>;
 type PlaybackFactory<P> = fn(
     VideoSource,
     Url,
@@ -93,6 +95,7 @@ struct OpenedVideo<P> {
 struct PendingVideoOpen<P> {
     receiver: Receiver<Result<OpenedVideo<P>, String>>,
     cancellation: CancellationToken,
+    platform: VideoPlatform,
 }
 
 struct PendingPositionsFetch {
@@ -150,6 +153,7 @@ pub struct AppState<P: PlaybackBackend = OxidePlayback> {
     account: AccountState,
     preferences: Preferences,
     twitch_resolver: TwitchResolver,
+    youtube_resolver: YoutubeResolver,
     playback_factory: PlaybackFactory<P>,
     playback_wake: PlaybackWake,
     decode_mode: DecodeMode,
@@ -290,6 +294,7 @@ impl<P: PlaybackBackend + 'static> AppState<P> {
             account: AccountState::default(),
             preferences: Preferences::default(),
             twitch_resolver: resolve_vod,
+            youtube_resolver: resolve_youtube_vod_m3u8,
             playback_factory,
             playback_wake: PlaybackWake::default(),
             decode_mode: DecodeMode::Cpu,
@@ -576,11 +581,12 @@ impl<P: PlaybackBackend + 'static> AppState<P> {
             return;
         };
 
+        let platform = pending.platform;
         self.pending_video_open = None;
         match result {
             Ok(opened) => {
                 log::info!(
-                    "SanctuaryPlayer: Twitch video open complete video_id={}",
+                    "SanctuaryPlayer: {platform} video open complete video_id={}",
                     opened
                         .playback
                         .source()
@@ -610,10 +616,10 @@ impl<P: PlaybackBackend + 'static> AppState<P> {
                 self.ui.dialog = None;
             }
             Err(message) => {
-                log::error!("SanctuaryPlayer: Twitch video open failed: {message}");
+                log::error!("SanctuaryPlayer: {platform} video open failed: {message}");
                 self.play_when_opened = false;
                 self.ui.dialog = Some(DialogState::Message {
-                    title: "Unable to open Twitch video".into(),
+                    title: format!("Unable to open {platform} video"),
                     message,
                 });
             }
@@ -621,18 +627,19 @@ impl<P: PlaybackBackend + 'static> AppState<P> {
         self.note_interaction();
     }
 
-    fn begin_twitch_resolution(&mut self, source: VideoSource) {
+    fn begin_video_resolution(&mut self, source: VideoSource) {
         self.preferences.manually_selected_quality = None;
-        self.start_twitch_resolution(source, true);
+        self.start_video_resolution(source, true);
     }
 
-    fn refresh_twitch_resolution(&mut self, source: VideoSource) {
-        self.start_twitch_resolution(source, false);
+    fn refresh_video_resolution(&mut self, source: VideoSource) {
+        self.start_video_resolution(source, false);
     }
 
-    fn start_twitch_resolution(&mut self, source: VideoSource, clear_current: bool) {
+    fn start_video_resolution(&mut self, source: VideoSource, clear_current: bool) {
         self.cancel_pending_video_open();
-        let resolver = self.twitch_resolver;
+        let twitch_resolver = self.twitch_resolver;
+        let youtube_resolver = self.youtube_resolver;
         let playback_factory = self.playback_factory;
         let playback_wake = self.playback_wake.clone();
         let initial_qualities = self
@@ -642,11 +649,12 @@ impl<P: PlaybackBackend + 'static> AppState<P> {
             .unwrap_or_else(|| self.preferences.favourite_qualities.clone());
         let decode_mode = self.decode_mode;
         let muted = self.muted;
+        let platform = source.platform;
         let video_id = source.id.clone();
         let cancellation = CancellationToken::new();
         let worker_cancellation = cancellation.clone();
         log::info!(
-            "SanctuaryPlayer: Twitch video open begin video_id={} retry={} quality={}",
+            "SanctuaryPlayer: {platform} video open begin video_id={} retry={} quality={}",
             video_id,
             !clear_current,
             initial_qualities
@@ -654,24 +662,34 @@ impl<P: PlaybackBackend + 'static> AppState<P> {
         let worker_video_id = video_id.clone();
         let (sender, receiver) = mpsc::channel();
         thread::spawn(move || {
-            let result = resolver(&worker_video_id)
-                .map_err(|error| error.to_string())
-                .and_then(|resolved| {
-                    if worker_cancellation.is_cancelled() {
-                        return Err("video open cancelled".into());
-                    }
-                    let metadata = resolved.metadata.map(video_metadata_from_twitch);
-                    playback_factory(
-                        source,
-                        resolved.hls_url,
-                        initial_qualities,
-                        decode_mode,
-                        muted,
-                        playback_wake,
-                        worker_cancellation.clone(),
-                    )
-                    .map(|playback| OpenedVideo { playback, metadata })
-                });
+            let resolved = match platform {
+                VideoPlatform::Twitch => twitch_resolver(&worker_video_id)
+                    .map(|resolved| {
+                        (
+                            resolved.hls_url,
+                            resolved.metadata.map(video_metadata_from_twitch),
+                        )
+                    })
+                    .map_err(|error| error.to_string()),
+                VideoPlatform::YouTube => youtube_resolver(&worker_video_id)
+                    .map(|url| (url, None))
+                    .map_err(|error| error.to_string()),
+            };
+            let result = resolved.and_then(|(hls_url, metadata)| {
+                if worker_cancellation.is_cancelled() {
+                    return Err("video open cancelled".into());
+                }
+                playback_factory(
+                    source,
+                    hls_url,
+                    initial_qualities,
+                    decode_mode,
+                    muted,
+                    playback_wake,
+                    worker_cancellation.clone(),
+                )
+                .map(|playback| OpenedVideo { playback, metadata })
+            });
             let _ = sender.send(result);
         });
 
@@ -683,6 +701,7 @@ impl<P: PlaybackBackend + 'static> AppState<P> {
         self.pending_video_open = Some(PendingVideoOpen {
             receiver,
             cancellation,
+            platform,
         });
         self.ui.menu_open = false;
         self.note_interaction();
@@ -714,6 +733,7 @@ impl<P: PlaybackBackend + 'static> AppState<P> {
         let decode_mode = self.decode_mode;
         let muted = self.muted;
         let metadata = self.metadata.clone();
+        let platform = source.platform;
         let cancellation = CancellationToken::new();
         let worker_cancellation = cancellation.clone();
         let worker_quality = quality_id.clone();
@@ -740,6 +760,7 @@ impl<P: PlaybackBackend + 'static> AppState<P> {
         self.pending_video_open = Some(PendingVideoOpen {
             receiver,
             cancellation,
+            platform,
         });
     }
     fn refresh_playback(&mut self) {
@@ -790,13 +811,7 @@ impl<P: PlaybackBackend + 'static> AppState<P> {
             position.as_secs_f64(),
             resume_playing
         );
-        match source.platform {
-            VideoPlatform::Twitch => self.refresh_twitch_resolution(source),
-            VideoPlatform::YouTube => self.show_message(
-                "YouTube is not supported yet",
-                "SanctuaryPlayer recognises YouTube video IDs and URLs, but YouTube playback is currently unsupported.",
-            ),
-        }
+        self.refresh_video_resolution(source);
     }
 
     fn show_message(&mut self, title: impl Into<String>, message: impl Into<String>) {
@@ -1335,13 +1350,7 @@ impl<P: PlaybackBackend + 'static> AppState<P> {
                 self.startup_video_pending = false;
                 self.flush_local_session();
                 self.force_remote_position_save();
-                match source.platform {
-                    VideoPlatform::Twitch => self.begin_twitch_resolution(source),
-                    VideoPlatform::YouTube => self.show_message(
-                        "YouTube is not supported yet",
-                        "SanctuaryPlayer recognises YouTube video IDs and URLs, but YouTube playback is currently unsupported.",
-                    ),
-                }
+                self.begin_video_resolution(source);
             }
             AppCommand::TogglePlayback => match self.playback.state() {
                 PlaybackState::Playing | PlaybackState::Buffering => {
@@ -2180,6 +2189,10 @@ mod tests {
         })
     }
 
+    fn test_youtube_resolver(_video_id: &str) -> Result<Url, YoutubeResolveError> {
+        Ok(Url::parse("https://manifest.googlevideo.com/api/manifest/hls_playlist/test").unwrap())
+    }
+
     fn test_playback_factory(
         source: VideoSource,
         _url: Url,
@@ -2463,30 +2476,43 @@ mod tests {
     }
 
     #[test]
-    fn youtube_open_reports_currently_unsupported() {
+    fn youtube_open_resolves_hls_without_blocking_command() {
         let mut state = AppState::<TestPlayback>::new_for_test(test_playback_factory);
+        state.youtube_resolver = test_youtube_resolver;
         state.apply(AppCommand::OpenVideo(
             VideoSource::parse("3fgD9k8Hkbc").unwrap(),
         ));
-
-        assert!(matches!(
-            state.ui.dialog,
-            Some(DialogState::Message { ref title, ref message })
-                if title.contains("YouTube") && message.contains("unsupported")
-        ));
+        assert!(state.pending_video_open.is_some());
+        for _ in 0..1000 {
+            state.update(Duration::from_millis(1));
+            if state.pending_video_open.is_none() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
         assert!(state.pending_video_open.is_none());
-        assert!(!state.has_video());
+        assert!(state.has_video());
+        assert_eq!(state.source().unwrap().id, "3fgD9k8Hkbc");
     }
 
     #[test]
     fn startup_video_pending_is_exposed_until_open_is_dispatched() {
         let mut state = AppState::<TestPlayback>::new_for_test(test_playback_factory);
+        state.youtube_resolver = test_youtube_resolver;
         state.set_startup_video_pending(true);
         assert!(state.opening_video());
 
         state.apply(AppCommand::OpenVideo(
             VideoSource::parse("3fgD9k8Hkbc").unwrap(),
         ));
+        assert!(state.opening_video());
+        for _ in 0..1000 {
+            state.update(Duration::from_millis(1));
+            if !state.opening_video() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
         assert!(!state.opening_video());
     }
 

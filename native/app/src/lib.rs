@@ -34,6 +34,7 @@ pub mod video_renderer;
 mod vulkan_video_decoder;
 #[cfg(target_os = "windows")]
 mod vulkan_video_vulkan_bridge;
+pub mod youtube;
 
 #[cfg(not(target_os = "android"))]
 use std::path::PathBuf;
