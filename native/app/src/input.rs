@@ -13,12 +13,12 @@ pub(crate) fn command_for_key<P: PlaybackBackend + 'static>(
     }
     match code {
         KeyCode::Space => Some(AppCommand::TogglePlayback),
-        KeyCode::ArrowLeft => Some(AppCommand::SeekRelative(-5)),
-        KeyCode::ArrowRight => Some(AppCommand::SeekRelative(5)),
-        KeyCode::ArrowUp => state
+        KeyCode::ArrowLeft if state.has_video() => Some(AppCommand::SeekRelative(-5)),
+        KeyCode::ArrowRight if state.has_video() => Some(AppCommand::SeekRelative(5)),
+        KeyCode::ArrowUp if state.has_video() => state
             .adjacent_playback_rate(1)
             .map(AppCommand::SetPlaybackRate),
-        KeyCode::ArrowDown => state
+        KeyCode::ArrowDown if state.has_video() => state
             .adjacent_playback_rate(-1)
             .map(AppCommand::SetPlaybackRate),
         KeyCode::KeyF => Some(AppCommand::ToggleFullscreen),
@@ -30,10 +30,15 @@ pub(crate) fn command_for_key<P: PlaybackBackend + 'static>(
 mod tests {
     use super::*;
     use crate::model::AppCommand;
-    use crate::playback::DummyPlayback;
+    use crate::playback::{DummyPlayback, PlaybackBackend};
+    use crate::video::VideoSource;
 
     fn state() -> AppState<DummyPlayback> {
-        AppState::with_test_playback(DummyPlayback::new())
+        let mut playback = DummyPlayback::new();
+        playback
+            .open(&VideoSource::parse("2386400830").unwrap())
+            .unwrap();
+        AppState::with_test_playback(playback)
     }
 
     #[test]

@@ -617,7 +617,7 @@ fn paint_bottom_controls(ui: &mut egui::Ui, state: &mut AppState, commands: &mut
     let ctx = ui.ctx().clone();
     let screen = ctx.content_rect();
     let vmin = theme::vmin(ui);
-    let enabled = !state.ui.controls_locked;
+    let enabled = state.has_video() && !state.ui.controls_locked;
     let gap = vmin;
     let font_size = 5.0 * vmin;
     let padding = 0.2 * vmin;

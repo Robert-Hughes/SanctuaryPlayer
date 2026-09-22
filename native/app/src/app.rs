@@ -257,9 +257,6 @@ pub(crate) enum DialogState {
         device_id: String,
     },
     ConfirmSignOut,
-    TwitchResolving {
-        video_id: String,
-    },
     Message {
         title: String,
         message: String,
@@ -676,7 +673,6 @@ impl<P: PlaybackBackend + 'static> AppState<P> {
             cancellation,
         });
         self.ui.menu_open = false;
-        self.ui.dialog = Some(DialogState::TwitchResolving { video_id });
         self.note_interaction();
     }
 
@@ -2476,10 +2472,8 @@ mod tests {
 
         assert!(state.pending_video_open.is_some());
         assert!(state.needs_animation());
-        assert!(matches!(
-            state.ui.dialog,
-            Some(DialogState::TwitchResolving { .. })
-        ));
+        assert!(!state.has_video());
+        assert!(state.ui.dialog.is_none());
 
         for _ in 0..100 {
             state.update(Duration::ZERO);

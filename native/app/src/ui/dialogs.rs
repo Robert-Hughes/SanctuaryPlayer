@@ -159,19 +159,6 @@ pub fn render(ui: &mut egui::Ui, state: &mut AppState, commands: &mut Vec<AppCom
                 });
             });
         }
-        DialogState::TwitchResolving { video_id } => {
-            show_modal(
-                &ctx,
-                "twitch-resolving-dialog",
-                "Opening Twitch video",
-                |ui| {
-                    ui.horizontal(|ui| {
-                        super::animated_spinner(ui);
-                        ui.label(format!("Resolving Twitch VOD {video_id}…"));
-                    });
-                },
-            );
-        }
         DialogState::Message { title, message } => {
             show_modal(&ctx, "message-dialog", title.as_str(), |ui| {
                 ui.label(message.as_str());
