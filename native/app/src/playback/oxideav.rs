@@ -21,7 +21,7 @@ use crate::audio_timeline::QueueResult;
 use crate::model::{
     DebugEdge, DebugGraph, DebugGraphLane, DebugInfoSection, DebugNode, PlaybackState, Quality,
 };
-use crate::video::VideoSource;
+use crate::video::{VideoPlatform, VideoSource};
 
 use super::{DecodeMode, PlaybackBackend, PlaybackWake, PlaybackWakeKind};
 
@@ -610,17 +610,23 @@ fn selected_decoder_info(
 fn open_variant_session(
     variant_url: &Url,
     decode_mode: DecodeMode,
+    include_audio: bool,
     wake: PlaybackWake,
     cancellation: CancellationToken,
 ) -> Result<PlaybackSession, String> {
     decode_mode.validate_current_platform()?;
     let input = hls_uri(variant_url);
-    let job_json = serde_json::to_string(&json!({
-        "@in": { "all": [{ "from": input }] },
-        "@display": {
+    let display = if include_audio {
+        json!({
             "audio": [{ "from": "@in" }],
             "video": [{ "from": "@in" }]
-        },
+        })
+    } else {
+        json!({ "video": [{ "from": "@in" }] })
+    };
+    let job_json = serde_json::to_string(&json!({
+        "@in": { "all": [{ "from": input }] },
+        "@display": display,
     }))
     .map_err(|error| format!("build OxideAV playback job: {error}"))?;
     let job = Job::from_json(&job_json).map_err(|error| error.to_string())?;
@@ -810,6 +816,9 @@ impl OxidePlayback {
         let session = open_variant_session(
             &selected_url,
             decode_mode,
+            // YouTube's selected video playlist has separate audio in the
+            // master. Until HLS can merge that rendition, request video only.
+            source.platform != VideoPlatform::YouTube,
             wake.clone(),
             cancellation.clone(),
         )?;
@@ -2822,21 +2831,33 @@ fn quality_set_from_variants(
         .get(preferred_variant)
         .map(|variant| variant.url.clone())
         .ok_or_else(|| "HLS preferred variant index is out of range".to_owned())?;
+    let preferred_height = variants[preferred_variant].height;
 
     let video_variants: Vec<HlsVariant> = variants
         .into_iter()
         .filter(|variant| {
             variant.width.is_some_and(|width| width > 0)
                 && variant.height.is_some_and(|height| height > 0)
+                && variant_uses_supported_video_codec(variant)
         })
         .collect();
     if video_variants.is_empty() {
-        return Err("HLS master contains no video variants with a declared resolution".into());
+        return Err("HLS master contains no video variants with a supported codec".into());
     }
 
     let preferred_index = video_variants
         .iter()
         .position(|variant| variant.url == preferred_url)
+        .or_else(|| {
+            video_variants
+                .iter()
+                .enumerate()
+                .filter(|(_, variant)| {
+                    preferred_height.is_none_or(|height| variant.height.unwrap_or(0) <= height)
+                })
+                .max_by_key(|(_, variant)| (variant.height.unwrap_or(0), variant.bandwidth))
+                .map(|(index, _)| index)
+        })
         .or_else(|| {
             video_variants
                 .iter()
@@ -2879,6 +2900,14 @@ fn quality_set_from_variants(
         qualities,
         urls,
         preferred_index,
+    })
+}
+
+fn variant_uses_supported_video_codec(variant: &HlsVariant) -> bool {
+    variant.codecs.as_deref().is_none_or(|codecs| {
+        codecs
+            .split(',')
+            .any(|codec| matches!(codec.trim().split('.').next(), Some("avc1" | "avc3")))
     })
 }
 
@@ -3053,6 +3082,96 @@ mod tests {
     use ::oxideav::core::{AudioFrame, CodecId, CodecParameters, SampleFormat, VideoFrame};
 
     use super::*;
+
+    #[test]
+    #[ignore = "requires live YouTube requests"]
+    fn probe_live_youtube_playback_open_with_map() {
+        let source = VideoSource::parse("https://www.youtube.com/watch?v=TNHNaHOBYG8&t=389s")
+            .expect("source");
+        let manifest = crate::youtube::resolve_vod_m3u8(&source.id).expect("manifest");
+        let mut playback = OxidePlayback::open(
+            source,
+            manifest,
+            "auto",
+            DecodeMode::Cpu,
+            true,
+            PlaybackWake::noop(),
+            CancellationToken::new(),
+        )
+        .expect("playback open");
+        println!(
+            "YouTube opened: video={:?}, audio={:?}, duration={:?}",
+            playback.video_stream.params.codec_id,
+            playback.audio_stream.as_ref().map(|s| &s.params.codec_id),
+            playback.duration
+        );
+        playback.seek(Duration::from_secs(389));
+        playback.play();
+        let deadline = Instant::now() + Duration::from_secs(12);
+        loop {
+            playback.update(Duration::from_millis(10));
+            if !matches!(playback.state(), PlaybackState::Seeking)
+                && playback.take_video_frame_lease().is_some()
+            {
+                break;
+            }
+            if let PlaybackState::Error(error) = playback.state() {
+                panic!("YouTube seek failed: {error}");
+            }
+            assert!(
+                Instant::now() < deadline,
+                "no frame after YouTube seek: state={:?} pending={:?} position={:?} queue={} sink_finished={} received_video={} dropped_video={} executor_finished={}",
+                playback.state,
+                playback.seek_pending,
+                playback.position,
+                playback.video_queue.len(),
+                playback.sink_finished,
+                playback.diagnostics.received_video_frames,
+                playback.diagnostics.dropped_video_frames,
+                playback
+                    .executor
+                    .as_ref()
+                    .is_none_or(ExecutorHandle::has_finished)
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        println!("YouTube seek position={:?}", playback.position());
+    }
+
+    #[test]
+    #[ignore = "requires live YouTube requests"]
+    fn probe_live_youtube_hls_source_seek() {
+        enable_http_range_probe();
+        let manifest = crate::youtube::resolve_vod_m3u8("TNHNaHOBYG8").expect("manifest");
+        let HlsPlaylistInfo::Master { variants, .. } =
+            oxideav_hls::inspect_hls(&hls_uri(&manifest)).expect("inspect")
+        else {
+            panic!("expected master playlist")
+        };
+        let video = variants
+            .iter()
+            .find(|variant| {
+                variant.height == Some(720)
+                    && variant
+                        .codecs
+                        .as_deref()
+                        .is_some_and(|codecs| codecs.starts_with("avc1."))
+            })
+            .expect("720p H.264 rendition");
+        let mut source = oxideav_hls::open_hls(&hls_uri(&video.url)).expect("source");
+        let stream = source.streams()[0].clone();
+        println!(
+            "HLS stream start={:?} base={:?}",
+            stream.start_time, stream.time_base
+        );
+        let ticks = (389.0 / stream.time_base.as_rational().as_f64()).round() as i64;
+        let target = stream.start_time.unwrap_or(0) + ticks;
+        println!("HLS seek target={target}");
+        let landed = source.seek_to(stream.index, target).expect("seek");
+        println!("HLS seek landed={landed}");
+        let packet = source.next_packet().expect("packet after seek");
+        println!("HLS packet pts={:?}", packet.pts);
+    }
 
     #[test]
     #[ignore = "requires live YouTube requests"]
@@ -3678,6 +3797,34 @@ mod tests {
         assert_eq!(set.qualities[1].id, "720p60");
         assert_eq!(set.preferred_index, 1);
         assert_eq!(set.urls[1].as_str(), "https://example.test/720.m3u8");
+    }
+
+    #[test]
+    fn hls_quality_list_skips_unsupported_vp9_and_prefers_h264_at_same_height() {
+        let mut h264 = hls_variant(
+            "https://example.test/h264-720.m3u8",
+            None,
+            None,
+            Some(1280),
+            Some(720),
+            None,
+            2_000_000,
+        );
+        h264.codecs = Some("avc1.4D4020,mp4a.40.2".into());
+        let mut vp9 = hls_variant(
+            "https://example.test/vp9-720.m3u8",
+            None,
+            None,
+            Some(1280),
+            Some(720),
+            None,
+            3_000_000,
+        );
+        vp9.codecs = Some("vp09.00.40.08,mp4a.40.2".into());
+        let set = quality_set_from_variants(vec![h264, vp9], 1).unwrap();
+        assert_eq!(set.urls.len(), 1);
+        assert_eq!(set.preferred_index, 0);
+        assert_eq!(set.urls[0].as_str(), "https://example.test/h264-720.m3u8");
     }
 
     #[test]
