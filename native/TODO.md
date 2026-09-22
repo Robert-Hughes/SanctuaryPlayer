@@ -1,5 +1,10 @@
 # Native TODO
 
+- Audio boost
+  - are we interpreting AAC and the rest of hte pipeline etc. correctly are making it too quiet?>
+  - Some sort of proper oxcide filter for localised audio boost
+  - Just multiply by something
+
 ## Quality, rate and A/V timing
 
 - Re-enable non-1.0x playback rates for real A/V playback with pitch-preserving audio time-stretch and correct A/V clocking.
@@ -40,7 +45,6 @@
 
 ## Video decode and presentation
 
-- Add hardware video decoding and efficient GPU presentation paths on Windows.
 - Add transfer-function/colour-primaries handling and HDR/tone-mapping/output support for HDR sources rather than treating all decoded video as SDR.
 
 ## Platform integration
