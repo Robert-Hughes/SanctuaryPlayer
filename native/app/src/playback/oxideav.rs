@@ -86,6 +86,7 @@ pub struct OxidePlayback {
     master_url: Url,
     decode_mode: DecodeMode,
     muted: bool,
+    volume: f32,
     control_rx: Receiver<SessionMsg>,
     audio_rx: Receiver<SessionMsg>,
     video_rx: Receiver<SessionMsg>,
@@ -811,6 +812,7 @@ impl OxidePlayback {
             master_url: m3u8_url,
             decode_mode,
             muted,
+            volume: 1.0,
             control_rx: session.control_rx,
             audio_rx: session.audio_rx,
             video_rx: session.video_rx,
@@ -1123,6 +1125,7 @@ impl OxidePlayback {
                 if self.audio_output.is_none() {
                     let mut audio = open_audio(&stream, self.muted)
                         .map_err(|error| format!("open authoritative audio output: {error}"))?;
+                    audio.set_volume(if self.muted { 0.0 } else { self.volume });
                     audio.set_paused(!matches!(self.state, PlaybackState::Playing))?;
                     self.audio_output = Some(audio);
                 }
@@ -1287,10 +1290,10 @@ impl OxidePlayback {
         });
         if let Some(stream) = self.audio_stream.as_ref() {
             if audio_stream_is_authoritative(stream) {
-                self.audio_output = Some(
-                    AudioOutput::open(&stream.params, stream.time_base, self.muted)
-                        .map_err(|error| format!("reopen audio output after seek: {error}"))?,
-                );
+                let audio = AudioOutput::open(&stream.params, stream.time_base, self.muted)
+                    .map_err(|error| format!("reopen audio output after seek: {error}"))?;
+                audio.set_volume(if self.muted { 0.0 } else { self.volume });
+                self.audio_output = Some(audio);
             } else {
                 // A freshly opened rendition can complete its seek before AAC
                 // has decoded enough data to publish rate/channels. The first
@@ -1963,6 +1966,13 @@ impl PlaybackBackend for OxidePlayback {
             .any(|candidate| (*candidate - rate).abs() < f32::EPSILON)
         {
             self.rate = rate;
+        }
+    }
+
+    fn set_volume(&mut self, volume: f32) {
+        self.volume = volume.clamp(0.0, 2.0);
+        if let Some(audio) = self.audio_output.as_ref() {
+            audio.set_volume(if self.muted { 0.0 } else { self.volume });
         }
     }
 
@@ -3060,6 +3070,7 @@ mod tests {
                 master_url: Url::parse("https://example.test/master.m3u8").unwrap(),
                 decode_mode: DecodeMode::Cpu,
                 muted: false,
+                volume: 1.0,
                 control_rx,
                 audio_rx,
                 video_rx,

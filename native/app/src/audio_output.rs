@@ -4,7 +4,9 @@ use std::time::Duration;
 
 use ::oxideav::core::{AudioFrame, CodecParameters, TimeBase};
 use oxideav_audio_filter::{AudioStreamParams, sample_convert::decode_to_f32};
-use oxideav_sysaudio::{self as sysaudio, Driver, StreamFormat, StreamRequest};
+use oxideav_sysaudio::{
+    self as sysaudio, ContentType, Driver, StreamFormat, StreamRequest, StreamUsage,
+};
 
 use crate::audio_timeline::{PcmTimelineProducer, QueueResult, pcm_timeline_ring};
 
@@ -82,7 +84,9 @@ impl AudioOutput {
         let callback_active = Arc::new(AtomicBool::new(false));
         let callback_active_cb = Arc::clone(&callback_active);
 
-        let request = StreamRequest::new(source_rate, source_channels);
+        let request = StreamRequest::new(source_rate, source_channels)
+            .with_usage(StreamUsage::Media)
+            .with_content_type(ContentType::Movie);
         let mut stream = sysaudio::open(driver, request, move |out, _info| {
             let stats = consumer.fill(out);
             if callback_active_cb.load(Ordering::Relaxed) {
@@ -234,6 +238,10 @@ impl AudioOutput {
                 if should_play { "play" } else { "pause" }
             )
         })
+    }
+
+    pub(crate) fn set_volume(&self, volume: f32) {
+        self.stream.set_volume(volume);
     }
 
     pub(crate) fn preroll_ready(&self) -> bool {

@@ -247,6 +247,15 @@ fn intrinsic_menu_width(
         }
     }
 
+    let volume_label_width = (10.5 * vmin).max(112.0);
+    let volume_slider_width = (18.0 * vmin).max(180.0);
+    width = width.max(
+        content_horizontal_padding
+            + volume_label_width
+            + ui.spacing().item_spacing.x
+            + volume_slider_width,
+    );
+
     let account_label = if state.signed_in() {
         format!(
             "Sign out ({}/{})…",
@@ -352,6 +361,64 @@ pub fn render(
 
                     menu_content_row(ui, vmin, |ui| {
                         render_saved_positions(ui, state, commands, vmin, font_size);
+                    });
+
+                    menu_content_row(ui, vmin, |ui| {
+                        let mut volume = state.volume();
+                        let label_width = (10.5 * vmin).max(112.0);
+                        let slider_width = (18.0 * vmin).max(180.0);
+                        let label = egui::WidgetText::from(
+                            egui::RichText::new(format!("Volume: {:.0}%", volume * 100.0))
+                                .size(font_size)
+                                .strong()
+                                .color(theme::PURPLE),
+                        );
+                        let galley = label.into_galley(
+                            ui,
+                            Some(egui::TextWrapMode::Extend),
+                            f32::INFINITY,
+                            egui::TextStyle::Body,
+                        );
+                        let slider_height = galley.size().y;
+                        ui.horizontal(|ui| {
+                            let (label_rect, _) = ui.allocate_exact_size(
+                                egui::vec2(label_width, slider_height),
+                                egui::Sense::hover(),
+                            );
+                            ui.painter().galley(
+                                egui::pos2(
+                                    label_rect.left(),
+                                    label_rect.center().y - galley.size().y * 0.5,
+                                ),
+                                galley,
+                                theme::PURPLE,
+                            );
+
+                            ui.scope(|ui| {
+                                ui.spacing_mut().slider_rail_height = (1.2 * vmin).max(10.0);
+                                ui.visuals_mut().selection.bg_fill = theme::PURPLE;
+                                ui.visuals_mut().widgets.inactive.bg_fill = theme::LIGHT_PURPLE;
+                                ui.visuals_mut().widgets.hovered.bg_fill = theme::WHITE;
+                                ui.visuals_mut().widgets.active.bg_fill = theme::WHITE;
+                                let handle_stroke =
+                                    egui::Stroke::new((0.18 * vmin).max(1.5), theme::PURPLE);
+                                ui.visuals_mut().widgets.inactive.fg_stroke = handle_stroke;
+                                ui.visuals_mut().widgets.hovered.fg_stroke = handle_stroke;
+                                ui.visuals_mut().widgets.active.fg_stroke = handle_stroke;
+
+                                let slider = egui::Slider::new(&mut volume, 0.0..=2.0)
+                                    .show_value(false)
+                                    .trailing_fill(true)
+                                    .handle_shape(egui::style::HandleShape::Circle)
+                                    .clamping(egui::SliderClamping::Always);
+                                if ui
+                                    .add_sized([slider_width, slider_height], slider)
+                                    .changed()
+                                {
+                                    commands.push(AppCommand::SetVolume(volume));
+                                }
+                            });
+                        });
                     });
 
                     if state.signed_in() {

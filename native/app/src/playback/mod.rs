@@ -231,6 +231,7 @@ pub trait PlaybackBackend: Send {
     fn available_rates(&self) -> &[f32];
     fn playback_rate(&self) -> f32;
     fn set_playback_rate(&mut self, rate: f32);
+    fn set_volume(&mut self, _volume: f32) {}
     fn available_qualities(&self) -> &[Quality];
     fn quality(&self) -> Option<&Quality>;
     fn quality_master_url(&self) -> Option<&Url> {
@@ -347,6 +348,12 @@ impl<P: PlaybackBackend> PlaybackBackend for Option<P> {
     fn set_playback_rate(&mut self, rate: f32) {
         if let Some(playback) = self.as_mut() {
             playback.set_playback_rate(rate);
+        }
+    }
+
+    fn set_volume(&mut self, volume: f32) {
+        if let Some(playback) = self.as_mut() {
+            playback.set_volume(volume);
         }
     }
 

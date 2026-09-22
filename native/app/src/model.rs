@@ -152,6 +152,7 @@ pub enum AppCommand {
     SeekAbsolute(Duration),
     SeekRelative(i64),
     SetPlaybackRate(f32),
+    SetVolume(f32),
     SetQuality(String),
     SetFavouriteQualities(String),
     SignIn { user_id: String, device_id: String },

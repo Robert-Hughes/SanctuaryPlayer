@@ -157,6 +157,7 @@ pub struct AppState<P: PlaybackBackend = OxidePlayback> {
     startup_video_pending: bool,
     play_when_opened: bool,
     muted: bool,
+    volume: f32,
     graphics_debug_graph: DebugGraph,
     pub(crate) ui: UiState,
 }
@@ -296,6 +297,7 @@ impl<P: PlaybackBackend + 'static> AppState<P> {
             startup_video_pending: false,
             play_when_opened: false,
             muted: false,
+            volume: 1.0,
             graphics_debug_graph: DebugGraph::default(),
             ui: UiState::default(),
         }
@@ -336,6 +338,10 @@ impl AppState<OxidePlayback> {
 impl<P: PlaybackBackend + 'static> AppState<P> {
     pub fn set_muted(&mut self, muted: bool) {
         self.muted = muted;
+    }
+
+    pub(crate) fn volume(&self) -> f32 {
+        self.volume
     }
 
     pub fn set_playback_wake(&mut self, wake: PlaybackWake) {
@@ -1384,6 +1390,10 @@ impl<P: PlaybackBackend + 'static> AppState<P> {
                 self.playback.seek(target);
             }
             AppCommand::SetPlaybackRate(rate) => self.playback.set_playback_rate(rate),
+            AppCommand::SetVolume(volume) => {
+                self.volume = volume.clamp(0.0, 2.0);
+                self.playback.set_volume(self.volume);
+            }
             AppCommand::SetQuality(quality) => {
                 self.preferences.manually_selected_quality = Some(quality.clone());
                 self.start_quality_replacement(quality);
