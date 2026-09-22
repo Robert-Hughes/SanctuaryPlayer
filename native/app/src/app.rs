@@ -154,6 +154,7 @@ pub struct AppState<P: PlaybackBackend = OxidePlayback> {
     playback_wake: PlaybackWake,
     decode_mode: DecodeMode,
     pending_video_open: Option<PendingVideoOpen<P>>,
+    startup_video_pending: bool,
     play_when_opened: bool,
     muted: bool,
     graphics_debug_graph: DebugGraph,
@@ -292,6 +293,7 @@ impl<P: PlaybackBackend + 'static> AppState<P> {
             playback_wake: PlaybackWake::default(),
             decode_mode: DecodeMode::Cpu,
             pending_video_open: None,
+            startup_video_pending: false,
             play_when_opened: false,
             muted: false,
             graphics_debug_graph: DebugGraph::default(),
@@ -466,6 +468,10 @@ impl<P: PlaybackBackend + 'static> AppState<P> {
         self.startup_session
             .take()
             .map(|session| session.restore_source())
+    }
+
+    pub fn set_startup_video_pending(&mut self, pending: bool) {
+        self.startup_video_pending = pending;
     }
 
     fn persist_settings(&self) {
@@ -1320,6 +1326,7 @@ impl<P: PlaybackBackend + 'static> AppState<P> {
 
         match command {
             AppCommand::OpenVideo(source) => {
+                self.startup_video_pending = false;
                 self.flush_local_session();
                 self.force_remote_position_save();
                 match source.platform {
@@ -1639,7 +1646,7 @@ impl<P: PlaybackBackend + 'static> AppState<P> {
     }
 
     pub fn opening_video(&self) -> bool {
-        self.pending_video_open.is_some()
+        self.startup_video_pending || self.pending_video_open.is_some()
     }
 
     pub fn take_video_frame_lease(&mut self) -> Option<FrameLease> {
@@ -2459,6 +2466,18 @@ mod tests {
         ));
         assert!(state.pending_video_open.is_none());
         assert!(!state.has_video());
+    }
+
+    #[test]
+    fn startup_video_pending_is_exposed_until_open_is_dispatched() {
+        let mut state = AppState::<TestPlayback>::new_for_test(test_playback_factory);
+        state.set_startup_video_pending(true);
+        assert!(state.opening_video());
+
+        state.apply(AppCommand::OpenVideo(
+            VideoSource::parse("3fgD9k8Hkbc").unwrap(),
+        ));
+        assert!(!state.opening_video());
     }
 
     #[test]

@@ -338,11 +338,14 @@ mod android {
         }
     }
 
+    const PERMANENT_FOCUS_LOSS_AUTO_RESUME_WINDOW: Duration = Duration::from_secs(10);
+
     #[derive(Default)]
     struct AndroidMediaFocus {
         request_active: bool,
         has_focus: bool,
         resume_after_transient_loss: bool,
+        resume_after_permanent_loss_until: Option<Instant>,
     }
 
     impl AndroidMediaFocus {
@@ -368,7 +371,7 @@ mod android {
             }
         }
 
-        fn abandon(&mut self, app: &AndroidApp) {
+        fn abandon_focus_request(&mut self, app: &AndroidApp) {
             if self.request_active
                 && let Err(error) = android_abandon_audio_focus(app)
             {
@@ -379,15 +382,57 @@ mod android {
             self.resume_after_transient_loss = false;
         }
 
+        fn abandon(&mut self, app: &AndroidApp) {
+            self.abandon_focus_request(app);
+            self.resume_after_permanent_loss_until = None;
+        }
+
+        fn abandon_for_background(&mut self, app: &AndroidApp) {
+            self.abandon_focus_request(app);
+        }
+
+        fn maybe_resume_after_recent_permanent_loss(
+            &mut self,
+            app: &AndroidApp,
+            state: &mut AppState,
+            now: Instant,
+        ) {
+            let Some(deadline) = self.resume_after_permanent_loss_until.take() else {
+                return;
+            };
+            if now > deadline {
+                log::info!(
+                    "SanctuaryPlayer: recent permanent Android audio-focus loss resume window expired"
+                );
+                return;
+            }
+            if !matches!(state.playback_state(), PlaybackState::Paused) {
+                return;
+            }
+            if self.ensure_focus(app) {
+                log::info!(
+                    "SanctuaryPlayer: resuming after recent permanent Android audio-focus loss"
+                );
+                state.resume_after_platform_interruption();
+            } else {
+                log::info!(
+                    "SanctuaryPlayer: could not reacquire Android audio focus for recent-loss resume"
+                );
+            }
+        }
+
         fn sync_playback_state(&mut self, app: &AndroidApp, state: &mut AppState) {
             match state.playback_state() {
                 PlaybackState::Playing => {
+                    self.resume_after_permanent_loss_until = None;
                     if !self.ensure_focus(app) {
                         state.pause_for_platform_interruption();
                     }
                 }
                 PlaybackState::Seeking if self.request_active => {}
-                PlaybackState::Paused if self.resume_after_transient_loss => {}
+                PlaybackState::Paused
+                    if self.resume_after_transient_loss
+                        || self.resume_after_permanent_loss_until.is_some() => {}
                 _ => self.abandon(app),
             }
         }
@@ -421,8 +466,10 @@ mod android {
                         return;
                     }
                     log::info!("SanctuaryPlayer: Android audio focus lost permanently");
-                    state.pause_for_platform_interruption();
-                    self.abandon(app);
+                    let was_active = state.pause_for_platform_interruption();
+                    self.abandon_focus_request(app);
+                    self.resume_after_permanent_loss_until = was_active
+                        .then(|| Instant::now() + PERMANENT_FOCUS_LOSS_AUTO_RESUME_WINDOW);
                 }
                 AndroidMediaEvent::AudioFocusChange(
                     AUDIOFOCUS_LOSS_TRANSIENT | AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK,
@@ -1662,6 +1709,7 @@ mod android {
         let restored_source = state.take_startup_session_source();
         let mut startup_source =
             android_take_pending_deep_link_source(&android_app).or(restored_source);
+        state.set_startup_video_pending(startup_source.is_some());
         let (media_event_tx, media_event_rx): (
             Sender<AndroidMediaEvent>,
             Receiver<AndroidMediaEvent>,
@@ -1765,13 +1813,18 @@ mod android {
                 }
                 PollEvent::Main(MainEvent::Pause | MainEvent::Stop) => {
                     state.pause_for_background();
-                    media_focus.abandon(&android_app);
+                    media_focus.abandon_for_background(&android_app);
                     screen_on.set_foreground(&android_app, &state, false);
                 }
                 PollEvent::Main(MainEvent::SaveState { .. }) => {
                     state.flush_persistence_for_background();
                 }
                 PollEvent::Main(MainEvent::Resume { .. }) => {
+                    media_focus.maybe_resume_after_recent_permanent_loss(
+                        &android_app,
+                        &mut state,
+                        Instant::now(),
+                    );
                     screen_on.set_foreground(&android_app, &state, true);
                     repaint.request(Duration::ZERO);
                 }
