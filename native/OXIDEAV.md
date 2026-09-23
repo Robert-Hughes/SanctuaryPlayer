@@ -235,20 +235,23 @@ whereas the sampled Twitch segments had roughly five marked IDRs per ten
 seconds. These counts came from the actual TS bytes and refer only to the
 sampled segments, not a claim about every segment in either VOD.
 
-`oxideav-mpegts::seek_to_access_point` prefers the strong TS random-access
-marker. Without one, it uses a data-aligned PES start, which the demuxer itself
+Before the fix, `oxideav-mpegts::seek_to_access_point` preferred the strong TS random-access
+marker. Without one, it used a data-aligned PES start, which the demuxer itself
 documents as a *parse* point that need not contain an intra picture. The YouTube
 fallback can therefore land after the segment's only SPS/PPS/IDR. The pipeline
 resets decoder state at the seek barrier, so following slices fail until another
 SPS/PPS arrives. This is a seek-point/configuration issue, not a consequence of
 external audio or a different video container.
 
-The general fix belongs at the **demuxer/access-point selection boundary**:
-for H.264 carried in MPEG-TS without reliable random-access markers, identify
-an actual IDR and its preceding usable SPS/PPS, then resume packet delivery at
-the configuration (or otherwise pass that configuration to a freshly reset
-decoder). Report the IDR's presentation time as the effective landing. PES
-`data_alignment_indicator` alone must not be treated as decode-safe. A bounded
+The fix is at the **demuxer/access-point selection boundary**. For H.264
+carried in MPEG-TS without random-access markers, the demuxer now scans the
+reassembled Annex-B payload for SPS, PPS, and IDR NAL units. It selects the
+latest IDR at or before the requested time, resumes packet delivery at the
+earliest preceding parameter-set PES, and reports that PES's presentation time
+as the landing. The full-stream index is cached for subsequent seeks. This
+also handles streams with no container access-point flags. Other codecs retain
+their container-level fallback. PES `data_alignment_indicator` alone no longer
+counts as a safe AVC seek point. A bounded
 HLS-specific fallback to the start of an independently decodable segment could
 help this YouTube layout, but should not replace a general MPEG-TS seek fix.
 Retaining prior decoder parameter sets across a seek could reduce warm-up for an
