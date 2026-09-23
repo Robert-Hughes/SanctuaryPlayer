@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError};
 use std::sync::{Arc, Once};
@@ -2929,7 +2929,7 @@ fn quality_set_from_variants(
         .ok_or_else(|| "HLS preferred variant index is out of range".to_owned())?;
     let preferred_height = variants[preferred_variant].height;
 
-    let video_variants: Vec<HlsVariant> = variants
+    let mut video_variants: Vec<HlsVariant> = variants
         .into_iter()
         .filter(|variant| {
             variant.width.is_some_and(|width| width > 0)
@@ -2937,6 +2937,21 @@ fn quality_set_from_variants(
                 && variant_uses_supported_video_codec(variant)
         })
         .collect();
+    video_variants.sort_by(|left, right| {
+        right
+            .height
+            .unwrap_or(0)
+            .cmp(&left.height.unwrap_or(0))
+            .then_with(|| {
+                right
+                    .frame_rate
+                    .unwrap_or(0.0)
+                    .total_cmp(&left.frame_rate.unwrap_or(0.0))
+            })
+            .then_with(|| right.bandwidth.cmp(&left.bandwidth))
+    });
+    let mut seen_urls = HashSet::new();
+    video_variants.retain(|variant| seen_urls.insert(variant.url.clone()));
     if video_variants.is_empty() {
         return Err("HLS master contains no video variants with a supported codec".into());
     }
@@ -4151,6 +4166,75 @@ mod tests {
             set.inputs[1].video_url.as_str(),
             "https://example.test/720.m3u8"
         );
+    }
+
+    #[test]
+    fn hls_quality_list_sorts_by_height_then_frame_rate_and_deduplicates_urls() {
+        let set = quality_set_from_variants(
+            vec![
+                hls_variant(
+                    "https://example.test/240.m3u8",
+                    Some("240p30"),
+                    None,
+                    Some(426),
+                    Some(240),
+                    Some(30.0),
+                    300_000,
+                ),
+                hls_variant(
+                    "https://example.test/720-30.m3u8",
+                    Some("720p30"),
+                    None,
+                    Some(1280),
+                    Some(720),
+                    Some(30.0),
+                    2_000_000,
+                ),
+                hls_variant(
+                    "https://example.test/240.m3u8",
+                    Some("240p30"),
+                    None,
+                    Some(426),
+                    Some(240),
+                    Some(30.0),
+                    400_000,
+                ),
+                hls_variant(
+                    "https://example.test/720-60.m3u8",
+                    Some("720p60"),
+                    None,
+                    Some(1280),
+                    Some(720),
+                    Some(60.0),
+                    3_000_000,
+                ),
+                hls_variant(
+                    "https://example.test/1080.m3u8",
+                    Some("1080p30"),
+                    None,
+                    Some(1920),
+                    Some(1080),
+                    Some(30.0),
+                    5_000_000,
+                ),
+            ],
+            0,
+            &[],
+        )
+        .unwrap();
+
+        let labels: Vec<_> = set
+            .qualities
+            .iter()
+            .map(|quality| quality.label.as_str())
+            .collect();
+        assert_eq!(labels, ["1080p30", "720p60", "720p30", "240p30"]);
+        assert_eq!(set.inputs.len(), 4);
+        assert_eq!(
+            set.inputs[3].video_url.as_str(),
+            "https://example.test/240.m3u8"
+        );
+        assert_eq!(set.preferred_index, 3);
     }
 
     fn audio_rendition(

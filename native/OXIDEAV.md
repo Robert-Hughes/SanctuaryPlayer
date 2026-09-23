@@ -259,6 +259,22 @@ existing rendition; it cannot solve a fresh quality replacement with a new
 decoder. Independently, Sanctuary should hold audio until video has a usable
 post-seek frame so video recovery cannot consume the audio preroll as silence.
 
+Validation on 2026-09-23 after the H.264 access-point fix exercised the same
+YouTube VOD with repeated and aggressive seeks. The freshest desktop run
+contained 53 completed seek landings with no WARN/ERROR records and no
+"slice NAL received before any SPS/PPS activation" diagnostics. This is the
+expected post-fix behaviour: the video transport lands on the latest safe
+H.264 access point at or before the requested position, while the independent
+packed-AAC rendition can usually land much closer to the requested time. In
+that run, video landings ranged from about 0.14 s to 5.76 s before the request;
+the largest gaps occurred at the end of the VOD, where the last decodable video
+access point preceded the requested EOF position by one segment. These are
+decoder preroll/back-seek distances, not the previous failure mode where
+playback appeared to resume after the requested position because dependent
+slices were fed to a reset decoder. Repeated EOF seeking can still produce
+audio underruns because there is no future media left to buffer; ordinary
+playback away from EOF returns to the normal roughly 500 ms audio queue.
+
 The selected HLS media playlist is opened once and feeds one active MPEG-TS
 demuxer. TS packets are read sequentially, while audio and video PIDs have
 independent PES reassembly state. A completed audio PES and a completed video PES
