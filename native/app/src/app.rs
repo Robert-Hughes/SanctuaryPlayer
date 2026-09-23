@@ -1246,9 +1246,10 @@ impl<P: PlaybackBackend + 'static> AppState<P> {
         self.playback.play();
     }
 
-    pub fn pause_for_background(&mut self) {
-        self.pause_for_platform_interruption();
+    pub fn pause_for_background(&mut self) -> bool {
+        let was_active = self.pause_for_platform_interruption();
         self.flush_persistence_for_background();
+        was_active
     }
 
     pub fn persistence_wake_deadline(&self, now: Instant) -> Option<Instant> {
@@ -2722,7 +2723,7 @@ mod tests {
         state.apply(AppCommand::Play);
         assert_eq!(state.playback_state(), &PlaybackState::Playing);
 
-        state.pause_for_background();
+        assert!(state.pause_for_background());
         assert_eq!(state.playback_state(), &PlaybackState::Paused);
 
         state.update(Duration::from_secs(5));
@@ -2749,7 +2750,7 @@ mod tests {
         state.apply(AppCommand::SeekAbsolute(Duration::from_secs(30)));
         assert_eq!(state.playback_state(), &PlaybackState::Seeking);
 
-        state.pause_for_background();
+        assert!(state.pause_for_background());
         state.update(Duration::from_secs(1));
         assert_eq!(state.playback_state(), &PlaybackState::Paused);
     }
