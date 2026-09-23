@@ -36,18 +36,6 @@ const VIDEO_QUEUE_CAP: usize = 2;
 // slack only. 256 packets covers the observed ~3.8 s skew while remaining
 // strictly bounded per track.
 const PLAYBACK_PACKET_CHANNEL_CAP: usize = 256;
-// YouTube's video-only fMP4 rendition does not need the cross-track demux
-// slack above. Keep its pre-seek decode backlog small so an in-flight seek
-// barrier is not delayed behind hundreds of old video packets.
-const YOUTUBE_PACKET_CHANNEL_CAP: usize = 8;
-
-fn playback_packet_channel_cap(platform: VideoPlatform) -> usize {
-    if platform == VideoPlatform::YouTube {
-        YOUTUBE_PACKET_CHANNEL_CAP
-    } else {
-        PLAYBACK_PACKET_CHANNEL_CAP
-    }
-}
 const OPEN_TIMEOUT: Duration = Duration::from_secs(30);
 const DIAGNOSTIC_INTERVAL: Duration = Duration::from_secs(1);
 const BUFFERING_GRACE: Duration = Duration::from_millis(250);
@@ -623,7 +611,6 @@ fn open_variant_session(
     variant_url: &Url,
     decode_mode: DecodeMode,
     include_audio: bool,
-    packet_channel_cap: usize,
     wake: PlaybackWake,
     cancellation: CancellationToken,
 ) -> Result<PlaybackSession, String> {
@@ -670,13 +657,13 @@ fn open_variant_session(
     ));
     log::info!(
         "SanctuaryPlayer: OxideAV compressed packet queue cap={} per track",
-        packet_channel_cap
+        PLAYBACK_PACKET_CHANNEL_CAP
     );
     let executor = Executor::new(&job, &registries)
         .with_sink_override("@display", sink)
         .with_codec_preferences(codec_preferences)
         .with_channel_caps(ChannelCaps {
-            packets: packet_channel_cap,
+            packets: PLAYBACK_PACKET_CHANNEL_CAP,
             ..ChannelCaps::default()
         })
         .with_eof_mode(EofMode::WaitForSeek)
@@ -832,7 +819,6 @@ impl OxidePlayback {
             // YouTube's selected video playlist has separate audio in the
             // master. Until HLS can merge that rendition, request video only.
             source.platform != VideoPlatform::YouTube,
-            playback_packet_channel_cap(source.platform),
             wake.clone(),
             cancellation.clone(),
         )?;
@@ -2323,10 +2309,7 @@ impl PlaybackBackend for OxidePlayback {
                     ),
                     (
                         "compressed packet cap".into(),
-                        format!(
-                            "{} / track",
-                            playback_packet_channel_cap(self.source.platform)
-                        ),
+                        format!("{PLAYBACK_PACKET_CHANNEL_CAP} / track"),
                     ),
                     (
                         "starvation grace".into(),
@@ -3192,7 +3175,7 @@ mod tests {
             }
             assert!(
                 Instant::now() < deadline,
-                "no frame after post-play seek: state={:?} pending={:?} position={:?} queue={} sink_finished={} received_video={} dropped_video={} session_depth={:?} progress={:?} executor_finished={}",
+                "no frame after post-play seek: state={:?} pending={:?} position={:?} queue={} sink_finished={} received_video={} dropped_video={} session_depth={:?} packet_depths={:?} progress={:?} executor_finished={}",
                 playback.state,
                 playback.seek_pending,
                 playback.position,
@@ -3201,6 +3184,10 @@ mod tests {
                 playback.diagnostics.received_video_frames,
                 playback.diagnostics.dropped_video_frames,
                 playback.channel_depths.current(MediaType::Video),
+                playback
+                    .executor
+                    .as_ref()
+                    .map(ExecutorHandle::pipeline_packet_queue_depths),
                 playback
                     .executor
                     .as_ref()
