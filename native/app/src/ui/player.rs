@@ -677,44 +677,47 @@ fn paint_bottom_controls(ui: &mut egui::Ui, state: &mut AppState, commands: &mut
     }
 
     let rates = state.available_rates().to_vec();
-    let mut selected_rate = state.playback_rate();
-    let speed_width = 14.0 * vmin;
-    let speed_height = 5.0 * vmin;
-    let speed_y = bottom_control_top(bottom, time_size.y) - gap - speed_height;
-    egui::Area::new(egui::Id::new("bottom-speed"))
-        .fixed_pos(egui::pos2(middle_centre_x - speed_width * 0.5, speed_y))
-        .order(egui::Order::Foreground)
-        .show(&ctx, |ui| {
-            ui.allocate_ui_with_layout(
-                egui::vec2(speed_width, speed_height),
-                egui::Layout::top_down(egui::Align::Min),
-                |ui| {
-                    ui.style_mut().override_font_id = Some(egui::FontId::proportional(3.5 * vmin));
-                    ui.visuals_mut().widgets.inactive.weak_bg_fill = theme::WHITE;
-                    ui.visuals_mut().widgets.hovered.weak_bg_fill = theme::LIGHT_PURPLE;
-                    ui.visuals_mut().widgets.active.weak_bg_fill = theme::LIGHT_PURPLE;
-                    ui.add_enabled_ui(enabled, |ui| {
-                        egui::ComboBox::from_id_salt("speed-select")
-                            .width(speed_width)
-                            .selected_text(format!("{selected_rate}x"))
-                            .show_ui(ui, |ui| {
-                                for rate in rates {
-                                    if ui
-                                        .selectable_value(
-                                            &mut selected_rate,
-                                            rate,
-                                            format!("{rate}x"),
-                                        )
-                                        .changed()
-                                    {
-                                        commands.push(AppCommand::SetPlaybackRate(rate));
+    if rates.len() > 1 {
+        let mut selected_rate = state.playback_rate();
+        let speed_width = 14.0 * vmin;
+        let speed_height = 5.0 * vmin;
+        let speed_y = bottom_control_top(bottom, time_size.y) - gap - speed_height;
+        egui::Area::new(egui::Id::new("bottom-speed"))
+            .fixed_pos(egui::pos2(middle_centre_x - speed_width * 0.5, speed_y))
+            .order(egui::Order::Foreground)
+            .show(&ctx, |ui| {
+                ui.allocate_ui_with_layout(
+                    egui::vec2(speed_width, speed_height),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                        ui.style_mut().override_font_id =
+                            Some(egui::FontId::proportional(3.5 * vmin));
+                        ui.visuals_mut().widgets.inactive.weak_bg_fill = theme::WHITE;
+                        ui.visuals_mut().widgets.hovered.weak_bg_fill = theme::LIGHT_PURPLE;
+                        ui.visuals_mut().widgets.active.weak_bg_fill = theme::LIGHT_PURPLE;
+                        ui.add_enabled_ui(enabled, |ui| {
+                            egui::ComboBox::from_id_salt("speed-select")
+                                .width(speed_width)
+                                .selected_text(format!("{selected_rate}x"))
+                                .show_ui(ui, |ui| {
+                                    for rate in rates {
+                                        if ui
+                                            .selectable_value(
+                                                &mut selected_rate,
+                                                rate,
+                                                format!("{rate}x"),
+                                            )
+                                            .changed()
+                                        {
+                                            commands.push(AppCommand::SetPlaybackRate(rate));
+                                        }
                                     }
-                                }
-                            });
-                    });
-                },
-            );
-        });
+                                });
+                        });
+                    },
+                );
+            });
+    }
     x = right_x;
 
     for ((label, offset), size) in right.into_iter().zip(right_sizes) {
