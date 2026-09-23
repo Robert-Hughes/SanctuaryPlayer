@@ -12,7 +12,7 @@ use ::oxideav::pipeline::{
     BarrierKind, ChannelCaps, CodecPreferences, EofMode, Executor, ExecutorHandle, Job, JobSink,
     PipelineStageInfo, TrackSink, TrackSinkInfo,
 };
-use oxideav_hls::{HlsPlaylistInfo, HlsVariant};
+use oxideav_hls::{HlsAudioRendition, HlsPlaylistInfo, HlsVariant};
 use serde_json::json;
 use url::Url;
 
@@ -21,7 +21,7 @@ use crate::audio_timeline::QueueResult;
 use crate::model::{
     DebugEdge, DebugGraph, DebugGraphLane, DebugInfoSection, DebugNode, PlaybackState, Quality,
 };
-use crate::video::{VideoPlatform, VideoSource};
+use crate::video::VideoSource;
 
 use super::{DecodeMode, PlaybackBackend, PlaybackWake, PlaybackWakeKind};
 
@@ -93,7 +93,7 @@ pub struct OxidePlayback {
     rate: f32,
     rates: Vec<f32>,
     qualities: Vec<Quality>,
-    quality_urls: Vec<Url>,
+    quality_inputs: Vec<HlsPlaybackInput>,
     quality_index: usize,
     master_url: Url,
     decode_mode: DecodeMode,
@@ -116,6 +116,7 @@ pub struct OxidePlayback {
     first_video_seconds: Option<f64>,
     first_audio_seconds: Option<f64>,
     audio_anchor_seconds: Option<f64>,
+    audio_clock_aligned: bool,
     first_frame_presented: bool,
     starvation_started_at: Option<Instant>,
     sink_finished: bool,
@@ -195,6 +196,8 @@ struct PendingSeek {
     prior_position: Duration,
     resume_playing: bool,
     barriers_remaining: usize,
+    audio_answered: bool,
+    video_answered: bool,
     landing: Option<(i64, TimeBase)>,
     rejected: bool,
 }
@@ -607,30 +610,28 @@ fn selected_decoder_info(
             hardware_accelerated: caps.hardware_accelerated,
         })
 }
+fn playback_job(input: &HlsPlaybackInput) -> Result<Job, String> {
+    let video = hls_uri(&input.video_url);
+    let mut display = json!({ "video": [{ "from": video }] });
+    if let Some(url) = input.audio_url() {
+        display["audio"] = json!([{ "from": hls_uri(url) }]);
+    }
+    // The executor shares one source for identical URIs (embedded audio), and
+    // opens independent source pumps for external audio and video renditions.
+    let job = Job::from_json(&json!({ "@display": display }).to_string())
+        .map_err(|error| format!("build OxideAV playback job: {error}"))?;
+    job.validate().map_err(|error| error.to_string())?;
+    Ok(job)
+}
+
 fn open_variant_session(
-    variant_url: &Url,
+    input: &HlsPlaybackInput,
     decode_mode: DecodeMode,
-    include_audio: bool,
     wake: PlaybackWake,
     cancellation: CancellationToken,
 ) -> Result<PlaybackSession, String> {
     decode_mode.validate_current_platform()?;
-    let input = hls_uri(variant_url);
-    let display = if include_audio {
-        json!({
-            "audio": [{ "from": "@in" }],
-            "video": [{ "from": "@in" }]
-        })
-    } else {
-        json!({ "video": [{ "from": "@in" }] })
-    };
-    let job_json = serde_json::to_string(&json!({
-        "@in": { "all": [{ "from": input }] },
-        "@display": display,
-    }))
-    .map_err(|error| format!("build OxideAV playback job: {error}"))?;
-    let job = Job::from_json(&job_json).map_err(|error| error.to_string())?;
-    job.validate().map_err(|error| error.to_string())?;
+    let job = playback_job(input)?;
 
     let mut registries = ::oxideav::Registries::new();
     oxideav_meta::register_all(&mut registries);
@@ -807,18 +808,24 @@ impl OxidePlayback {
             quality_set.preferred_index,
             initial_qualities,
         );
-        let selected_url = quality_set.urls[initial_quality_index].clone();
+        let selected_input = &quality_set.inputs[initial_quality_index];
         log::info!(
             "SanctuaryPlayer: HLS initial quality={} variant={}",
             quality_set.qualities[initial_quality_index].label,
-            selected_url
+            selected_input.video_url
         );
+        if let HlsAudioInput::Rendition(rendition) = &selected_input.audio {
+            log::info!(
+                "SanctuaryPlayer: HLS audio group={} name={} language={} external={}",
+                rendition.group_id,
+                rendition.name,
+                rendition.language.as_deref().unwrap_or("unknown"),
+                rendition.url.is_some()
+            );
+        }
         let session = open_variant_session(
-            &selected_url,
+            selected_input,
             decode_mode,
-            // YouTube's selected video playlist has separate audio in the
-            // master. Until HLS can merge that rendition, request video only.
-            source.platform != VideoPlatform::YouTube,
             wake.clone(),
             cancellation.clone(),
         )?;
@@ -831,7 +838,7 @@ impl OxidePlayback {
             rate: 1.0,
             rates: session.rates,
             qualities: quality_set.qualities,
-            quality_urls: quality_set.urls,
+            quality_inputs: quality_set.inputs,
             quality_index: initial_quality_index,
             master_url: m3u8_url,
             decode_mode,
@@ -854,6 +861,7 @@ impl OxidePlayback {
             first_video_seconds: session.first_video_seconds,
             first_audio_seconds: session.first_audio_seconds,
             audio_anchor_seconds: session.first_audio_seconds,
+            audio_clock_aligned: false,
             first_frame_presented: false,
             starvation_started_at: None,
             sink_finished: false,
@@ -916,8 +924,11 @@ impl OxidePlayback {
         if matches!(self.state, PlaybackState::Error(_)) {
             return false;
         }
-        if self.seek_pending.is_some() {
-            return true;
+        if let Some(pending) = &self.seek_pending {
+            // Once a track answers, leave its new-epoch frames queued until
+            // the sibling answers too. Otherwise fast audio can race ahead
+            // while a video source is still opening/seeking its segment.
+            return !pending.audio_answered;
         }
         if self.pending_audio_frame.is_some() {
             return false;
@@ -941,8 +952,12 @@ impl OxidePlayback {
     }
 
     fn video_pump_limit(&self) -> usize {
-        if self.seek_pending.is_some() {
-            usize::MAX
+        if let Some(pending) = &self.seek_pending {
+            if pending.video_answered {
+                0
+            } else {
+                usize::MAX
+            }
         } else if matches!(self.state, PlaybackState::Paused) {
             usize::from(self.video_queue.is_empty())
         } else {
@@ -1008,6 +1023,12 @@ impl OxidePlayback {
             }
         }
 
+        if self.audio_eof
+            && let Some(audio) = &mut self.audio_output
+            && let Err(error) = audio.finish_input()
+        {
+            self.fail(error);
+        }
         self.collect_executor_result();
         self.update_end_state();
     }
@@ -1084,9 +1105,8 @@ impl OxidePlayback {
                 Ok(())
             }
             SessionMsg::Finished => {
-                if let Some(audio) = self.audio_output.as_mut() {
-                    audio.finish_input()?;
-                }
+                // The control channel can overtake the final audio frames.
+                // Flush only at the ordered audio EndOfStream message.
                 self.sink_finished = true;
                 Ok(())
             }
@@ -1225,6 +1245,18 @@ impl OxidePlayback {
             return Ok(());
         }
 
+        let answered = match kind {
+            Some(MediaType::Audio) => Some(&mut pending.audio_answered),
+            Some(MediaType::Video) => Some(&mut pending.video_answered),
+            _ => None,
+        };
+        if let Some(answered) = answered {
+            if *answered {
+                return Ok(());
+            }
+            *answered = true;
+        }
+
         match barrier {
             BarrierKind::SeekFlush {
                 landed_pts,
@@ -1240,7 +1272,14 @@ impl OxidePlayback {
                     }
                     Some(_) => {}
                 }
-                pending.landing.get_or_insert((landed_pts, time_base));
+                // Independent sources can land at different timestamps and
+                // answer in either order. The video access point defines the
+                // playback epoch; an earlier audio response is only provisional.
+                if kind == Some(MediaType::Video) {
+                    pending.landing = Some((landed_pts, time_base));
+                } else {
+                    pending.landing.get_or_insert((landed_pts, time_base));
+                }
             }
             BarrierKind::SeekRejected { .. } => pending.rejected = true,
         }
@@ -1305,6 +1344,7 @@ impl OxidePlayback {
         // landing establishes the new audio epoch. Valid MPEG-TS can place older
         // audio later in physical byte order.
         self.audio_anchor_seconds = None;
+        self.audio_clock_aligned = false;
         self.post_seek_epoch = Some(PostSeekEpoch {
             floor: landed,
             audio_aligned: self.audio_stream.is_none(),
@@ -1313,15 +1353,16 @@ impl OxidePlayback {
             dropped_video_frames: 0,
         });
         if let Some(stream) = self.audio_stream.as_ref() {
-            if audio_stream_is_authoritative(stream) {
+            if self.audio_output.is_some() && audio_stream_is_authoritative(stream) {
                 let audio = AudioOutput::open(&stream.params, stream.time_base, self.muted)
                     .map_err(|error| format!("reopen audio output after seek: {error}"))?;
                 audio.set_volume(if self.muted { 0.0 } else { self.volume });
                 self.audio_output = Some(audio);
             } else {
-                // A freshly opened rendition can complete its seek before AAC
-                // has decoded enough data to publish rate/channels. The first
-                // ordered post-seek StreamUpdate will open AudioOutput.
+                // Container metadata can look complete before decoding (e.g.
+                // HE-AAC's ADTS rate is the core rate, not the SBR output rate).
+                // Only reuse a format already confirmed by the decoder. The
+                // first ordered StreamUpdate opens a newly sought rendition.
                 self.audio_output = None;
                 log::info!(
                     "SanctuaryPlayer: seek completed before authoritative audio metadata; waiting for decoder stream update"
@@ -1482,6 +1523,7 @@ impl OxidePlayback {
         ) else {
             return Ok(());
         };
+
         let relative = (audio_anchor - origin).max(0.0);
         audio.set_media_origin(Duration::from_secs_f64(relative))
     }
@@ -1638,6 +1680,27 @@ impl OxidePlayback {
         self.pump_session();
         self.resume_from_buffering_if_ready(now);
         self.note_or_enter_buffering(now);
+
+        // Separate sources can finish preroll at different times and start at
+        // different PTS. Establish video against the running audio epoch once,
+        // instead of assigning each track's first frame the same wall time.
+        if matches!(self.state, PlaybackState::Playing)
+            && self.audio_stream.is_some()
+            && !self.audio_clock_aligned
+        {
+            let audio = self.audio_output.as_ref()?;
+            if !audio.is_playing() {
+                return None;
+            }
+            let position = audio.media_position()?;
+            let pts = stream_pts_for_media_position(
+                &self.video_stream,
+                position,
+                self.timeline_origin_seconds?,
+            )?;
+            self.video_clock.establish(pts, now, true);
+            self.audio_clock_aligned = true;
+        }
 
         if self
             .video_clock
@@ -1813,6 +1876,8 @@ impl OxidePlayback {
             prior_position,
             resume_playing,
             barriers_remaining: usize::from(self.audio_stream.is_some()) + 1,
+            audio_answered: false,
+            video_answered: false,
             landing: None,
             rejected: false,
         });
@@ -2076,9 +2141,9 @@ impl PlaybackBackend for OxidePlayback {
             _ => "active",
         };
         let hls_host = self
-            .quality_urls
+            .quality_inputs
             .get(self.quality_index)
-            .and_then(Url::host_str)
+            .and_then(|input| input.video_url.host_str())
             .unwrap_or("unknown")
             .to_owned();
 
@@ -2778,9 +2843,35 @@ impl Drop for OxidePlayback {
     }
 }
 
+#[derive(Clone, Debug, PartialEq)]
+enum HlsAudioInput {
+    /// No CODECS information (or an audio codec advertised in the variant).
+    Embedded,
+    /// A selected EXT-X-MEDIA entry. A missing URI means embedded audio.
+    Rendition(Box<HlsAudioRendition>),
+    /// A variant explicitly advertises only video codecs.
+    None,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct HlsPlaybackInput {
+    video_url: Url,
+    audio: HlsAudioInput,
+}
+
+impl HlsPlaybackInput {
+    fn audio_url(&self) -> Option<&Url> {
+        match &self.audio {
+            HlsAudioInput::Embedded => Some(&self.video_url),
+            HlsAudioInput::Rendition(r) => Some(r.url.as_ref().unwrap_or(&self.video_url)),
+            HlsAudioInput::None => None,
+        }
+    }
+}
+
 struct HlsQualitySet {
     qualities: Vec<Quality>,
-    urls: Vec<Url>,
+    inputs: Vec<HlsPlaybackInput>,
     preferred_index: usize,
 }
 
@@ -2813,20 +2904,24 @@ fn inspect_hls_qualities(
     match inspected {
         HlsPlaylistInfo::Media { url } => Ok(HlsQualitySet {
             qualities: vec![Quality::new("hls-media", "HLS")],
-            urls: vec![url],
+            inputs: vec![HlsPlaybackInput {
+                video_url: url,
+                audio: HlsAudioInput::Embedded,
+            }],
             preferred_index: 0,
         }),
         HlsPlaylistInfo::Master {
             variants,
             preferred_variant,
-            ..
-        } => quality_set_from_variants(variants, preferred_variant),
+            audio_renditions,
+        } => quality_set_from_variants(variants, preferred_variant, &audio_renditions),
     }
 }
 
 fn quality_set_from_variants(
     variants: Vec<HlsVariant>,
     preferred_variant: usize,
+    audio_renditions: &[HlsAudioRendition],
 ) -> Result<HlsQualitySet, String> {
     let preferred_url = variants
         .get(preferred_variant)
@@ -2868,7 +2963,7 @@ fn quality_set_from_variants(
         })
         .unwrap_or(0);
     let mut qualities = Vec::with_capacity(video_variants.len());
-    let mut urls = Vec::with_capacity(video_variants.len());
+    let mut inputs = Vec::with_capacity(video_variants.len());
     for variant in video_variants {
         let base_label = variant_quality_name(&variant);
         let label = if variant.video_group.as_deref() == Some("chunked") {
@@ -2894,13 +2989,50 @@ fn quality_set_from_variants(
             variant.url
         );
         qualities.push(Quality::new(id, label));
-        urls.push(variant.url);
+        inputs.push(HlsPlaybackInput {
+            audio: select_hls_audio(&variant, audio_renditions)?,
+            video_url: variant.url,
+        });
     }
 
     Ok(HlsQualitySet {
         qualities,
-        urls,
+        inputs,
         preferred_index,
+    })
+}
+
+fn select_hls_audio(
+    variant: &HlsVariant,
+    renditions: &[HlsAudioRendition],
+) -> Result<HlsAudioInput, String> {
+    if let Some(group) = &variant.audio_group {
+        // No language preference is exposed yet. Honour DEFAULT, then
+        // AUTOSELECT, then playlist order; ties consistently keep the first.
+        let selected = variant
+            .audio_renditions(renditions)
+            .enumerate()
+            .max_by_key(|(index, r)| (r.default, r.autoselect, std::cmp::Reverse(*index)))
+            .map(|(_, r)| r.clone())
+            .ok_or_else(|| format!("HLS variant references missing audio group {group:?}"))?;
+        return Ok(HlsAudioInput::Rendition(Box::new(selected)));
+    }
+    // Known video-only variants should work on every platform. An absent
+    // CODECS list retains the existing embedded-audio behaviour for Twitch
+    // and direct media-playlist URLs.
+    let video_only = variant.codecs.as_deref().is_some_and(|codecs| {
+        !codecs.trim().is_empty()
+            && codecs.split(',').all(|codec| {
+                matches!(
+                    codec.trim().split('.').next(),
+                    Some("avc1" | "avc3" | "hvc1" | "hev1" | "vp09" | "av01")
+                )
+            })
+    });
+    Ok(if video_only {
+        HlsAudioInput::None
+    } else {
+        HlsAudioInput::Embedded
     })
 }
 
@@ -3085,6 +3217,106 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "requires live YouTube requests and a muted system audio device"]
+    fn probe_live_youtube_external_audio_playback() {
+        fn advance(playback: &mut OxidePlayback, minimum: Duration) {
+            let deadline = Instant::now() + Duration::from_secs(40);
+            let initial_frames = playback.diagnostics.presented_video_frames;
+            loop {
+                playback.update(Duration::from_millis(10));
+                let _ = playback.take_video_frame_lease();
+                if let PlaybackState::Error(error) = playback.state() {
+                    panic!("external audio playback failed: {error}");
+                }
+                let audio_ready = playback.audio_output.as_ref().is_some_and(|audio| {
+                    audio.is_playing()
+                        && audio.submitted_samples() > 4_800
+                        && audio
+                            .media_position()
+                            .is_some_and(|position| position >= minimum)
+                });
+                if playback.seek_pending.is_none()
+                    && audio_ready
+                    && playback.position() >= minimum
+                    && playback.diagnostics.presented_video_frames > initial_frames + 10
+                {
+                    println!(
+                        "A/V advanced: position={:?}, audio={:?}, video_frames={}",
+                        playback.position(),
+                        playback.audio_output.as_ref().unwrap().media_position(),
+                        playback.diagnostics.presented_video_frames
+                    );
+                    let audio_position = playback
+                        .audio_output
+                        .as_ref()
+                        .unwrap()
+                        .media_position()
+                        .unwrap();
+                    assert!(
+                        playback.position().abs_diff(audio_position) < Duration::from_millis(150),
+                        "A/V clocks diverged: video={:?} audio={audio_position:?}",
+                        playback.position()
+                    );
+                    return;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "A/V stalled: state={:?} pending={:?} position={:?} audio={:?} video_frames={}",
+                    playback.state,
+                    playback.seek_pending,
+                    playback.position(),
+                    playback.audio_output.as_ref().map(|audio| (
+                        audio.media_position(),
+                        audio.submitted_samples(),
+                        audio.is_playing()
+                    )),
+                    playback.diagnostics.presented_video_frames
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+        let source = VideoSource::parse("https://www.youtube.com/watch?v=TNHNaHOBYG8").unwrap();
+        let manifest = crate::youtube::resolve_vod_m3u8(&source.id).expect("manifest");
+        let mut playback = OxidePlayback::open(
+            source.clone(),
+            manifest.clone(),
+            "360p30",
+            DecodeMode::Cpu,
+            true,
+            PlaybackWake::noop(),
+            CancellationToken::new(),
+        )
+        .expect("open");
+        assert!(playback.audio_stream.is_some());
+        assert_eq!(playback.quality().unwrap().id, "360p30");
+        let input = &playback.quality_inputs[playback.quality_index];
+        assert_ne!(input.audio_url(), Some(&input.video_url));
+        playback.play();
+        advance(&mut playback, Duration::from_secs(6));
+        playback.seek(Duration::from_secs(389));
+        advance(&mut playback, Duration::from_secs(391));
+        playback.pause();
+        let position = playback.position();
+        drop(playback);
+        // The application changes quality by reopening the master at the saved position.
+        let mut playback = OxidePlayback::open(
+            source,
+            manifest,
+            "240p30",
+            DecodeMode::Cpu,
+            true,
+            PlaybackWake::noop(),
+            CancellationToken::new(),
+        )
+        .expect("quality reopen");
+        assert!(playback.audio_stream.is_some());
+        assert_eq!(playback.quality().unwrap().id, "240p30");
+        playback.seek(position);
+        playback.play();
+        advance(&mut playback, position + Duration::from_secs(2));
+    }
+
+    #[test]
     #[ignore = "requires live YouTube requests"]
     fn probe_live_youtube_playback_open_with_map() {
         let source = VideoSource::parse("https://www.youtube.com/watch?v=TNHNaHOBYG8&t=389s")
@@ -3246,7 +3478,7 @@ mod tests {
         let manifest = crate::youtube::resolve_vod_m3u8(&source.id).expect("manifest");
         let quality_set =
             inspect_hls_qualities(&manifest, &CancellationToken::new()).expect("qualities");
-        let variant = &quality_set.urls[quality_set.preferred_index];
+        let variant = &quality_set.inputs[quality_set.preferred_index].video_url;
         let playlist = ureq::get(variant.as_str())
             .call()
             .expect("playlist")
@@ -3299,7 +3531,7 @@ mod tests {
                 rate: 1.0,
                 rates: vec![1.0],
                 qualities: Vec::new(),
-                quality_urls: Vec::new(),
+                quality_inputs: Vec::new(),
                 quality_index: 0,
                 master_url: Url::parse("https://example.test/master.m3u8").unwrap(),
                 decode_mode: DecodeMode::Cpu,
@@ -3325,6 +3557,7 @@ mod tests {
                 first_video_seconds: Some(0.0),
                 first_audio_seconds: None,
                 audio_anchor_seconds: None,
+                audio_clock_aligned: false,
                 first_frame_presented: true,
                 starvation_started_at: None,
                 sink_finished: false,
@@ -3384,6 +3617,58 @@ mod tests {
             pts,
             planes: Vec::new(),
         }))
+    }
+
+    #[test]
+    fn video_start_waits_for_audio_and_aligns_to_its_epoch() {
+        let (mut playback, _tx) = clock_test_playback();
+        playback.first_frame_presented = false;
+        playback.video_clock.reset();
+        let mut params = CodecParameters::audio(CodecId::new("aac"));
+        params.sample_rate = Some(48_000);
+        params.channels = Some(2);
+        params.sample_format = Some(SampleFormat::F32);
+        playback.audio_stream = Some(StreamInfo {
+            index: 1,
+            time_base: TimeBase::MPEG_TS,
+            duration: None,
+            start_time: Some(2_520_000),
+            params: params.clone(),
+        });
+        playback
+            .video_queue
+            .push_back(video_frame_lease(Some(2_700_000)));
+        assert!(
+            playback.take_due_frame().is_none(),
+            "video waits for audio preroll"
+        );
+        assert!(!playback.audio_clock_aligned);
+
+        let driver = oxideav_sysaudio::driver_by_name("mock").unwrap();
+        let mut audio =
+            AudioOutput::open_with_driver(driver, &params, TimeBase::MPEG_TS, true).unwrap();
+        audio.set_media_origin(Duration::from_secs(28)).unwrap();
+        let frame = audio_frame_lease(24_000, 2_520_000);
+        let Some(Frame::Audio(frame)) = frame.as_frame() else {
+            unreachable!()
+        };
+        audio.queue(frame).unwrap();
+        audio.set_paused(false).unwrap();
+        playback.audio_output = Some(audio);
+        assert!(
+            playback.take_due_frame().is_none(),
+            "video PTS 30s must wait for the audio clock at 28s"
+        );
+        assert!(playback.audio_clock_aligned);
+        let now = Instant::now();
+        let audio = playback
+            .audio_output
+            .as_ref()
+            .unwrap()
+            .media_position()
+            .unwrap();
+        let video = playback.video_position_at(now).unwrap();
+        assert!(video.abs_diff(audio) < Duration::from_millis(100));
     }
 
     #[test]
@@ -3853,6 +4138,7 @@ mod tests {
                 ),
             ],
             1,
+            &[],
         )
         .unwrap();
 
@@ -3861,7 +4147,169 @@ mod tests {
         assert_eq!(set.qualities[0].label, "1080p60 (Source)");
         assert_eq!(set.qualities[1].id, "720p60");
         assert_eq!(set.preferred_index, 1);
-        assert_eq!(set.urls[1].as_str(), "https://example.test/720.m3u8");
+        assert_eq!(
+            set.inputs[1].video_url.as_str(),
+            "https://example.test/720.m3u8"
+        );
+    }
+
+    fn audio_rendition(
+        group: &str,
+        name: &str,
+        url: Option<&str>,
+        default: bool,
+        autoselect: bool,
+    ) -> HlsAudioRendition {
+        HlsAudioRendition {
+            group_id: group.into(),
+            name: name.into(),
+            url: url.map(|url| Url::parse(url).unwrap()),
+            language: Some("en".into()),
+            assoc_language: None,
+            default,
+            autoselect,
+            channels: Some("2".into()),
+            characteristics: None,
+        }
+    }
+
+    #[test]
+    fn hls_audio_selection_honours_group_default_autoselect_and_stable_order() {
+        let mut variant = hls_variant(
+            "https://example.test/video.m3u8",
+            None,
+            None,
+            Some(640),
+            Some(360),
+            None,
+            100,
+        );
+        variant.audio_group = Some("a".into());
+        let candidates = [
+            audio_rendition(
+                "other",
+                "Main",
+                Some("https://example.test/wrong.m3u8"),
+                true,
+                true,
+            ),
+            audio_rendition(
+                "a",
+                "Manual",
+                Some("https://example.test/manual.m3u8"),
+                false,
+                false,
+            ),
+            audio_rendition(
+                "a",
+                "Auto",
+                Some("https://example.test/auto.m3u8"),
+                false,
+                true,
+            ),
+            audio_rendition(
+                "a",
+                "Default",
+                Some("https://example.test/default.m3u8"),
+                true,
+                true,
+            ),
+            audio_rendition("a", "Second default", None, true, true),
+        ];
+        for (count, selected) in [(5, 3), (4, 3), (3, 2), (2, 1)] {
+            assert_eq!(
+                select_hls_audio(&variant, &candidates[..count]).unwrap(),
+                HlsAudioInput::Rendition(Box::new(candidates[selected].clone()))
+            );
+        }
+        assert!(select_hls_audio(&variant, &candidates[..1]).is_err());
+    }
+
+    #[test]
+    fn hls_quality_inputs_keep_audio_pairings_and_route_embedded_or_absent_audio() {
+        let mut low = hls_variant(
+            "https://example.test/low.m3u8",
+            Some("low"),
+            None,
+            Some(640),
+            Some(360),
+            None,
+            100,
+        );
+        low.audio_group = Some("stereo".into());
+        let mut high = hls_variant(
+            "https://example.test/high.m3u8",
+            Some("high"),
+            None,
+            Some(1280),
+            Some(720),
+            None,
+            200,
+        );
+        high.audio_group = Some("surround".into());
+        let audio = vec![
+            audio_rendition(
+                "surround",
+                "Main",
+                Some("https://example.test/surround.m3u8"),
+                true,
+                true,
+            ),
+            audio_rendition(
+                "stereo",
+                "Main",
+                Some("https://example.test/stereo.m3u8"),
+                true,
+                true,
+            ),
+        ];
+        let set = quality_set_from_variants(vec![low.clone(), high], 1, &audio).unwrap();
+        for (label, url) in [
+            ("low", "https://example.test/stereo.m3u8"),
+            ("high", "https://example.test/surround.m3u8"),
+        ] {
+            let index = select_initial_quality_index(&set.qualities, set.preferred_index, label);
+            let input = &set.inputs[index];
+            let job = playback_job(input).unwrap();
+            let out = &job.outputs["@display"];
+            assert_eq!(
+                out.audio[0].input.as_source().unwrap().from,
+                format!("hls+{url}")
+            );
+            assert_eq!(
+                out.video[0].input.as_source().unwrap().from,
+                hls_uri(&input.video_url)
+            );
+        }
+        let embedded = audio_rendition("stereo", "Main", None, true, true);
+        let input = HlsPlaybackInput {
+            video_url: low.url.clone(),
+            audio: select_hls_audio(&low, &[embedded]).unwrap(),
+        };
+        let out = &playback_job(&input).unwrap().outputs["@display"];
+        assert_eq!(
+            out.audio[0].input.as_source().unwrap().from,
+            out.video[0].input.as_source().unwrap().from
+        );
+        low.audio_group = None;
+        for codecs in [None, Some("avc1.4D401E,mp4a.40.2")] {
+            low.codecs = codecs.map(str::to_owned);
+            assert_eq!(
+                select_hls_audio(&low, &[]).unwrap(),
+                HlsAudioInput::Embedded
+            );
+        }
+        low.codecs = Some("avc1.4D401E".into());
+        let input = HlsPlaybackInput {
+            video_url: low.url.clone(),
+            audio: select_hls_audio(&low, &[]).unwrap(),
+        };
+        assert_eq!(input.audio, HlsAudioInput::None);
+        assert!(
+            playback_job(&input).unwrap().outputs["@display"]
+                .audio
+                .is_empty()
+        );
     }
 
     #[test]
@@ -3886,10 +4334,13 @@ mod tests {
             3_000_000,
         );
         vp9.codecs = Some("vp09.00.40.08,mp4a.40.2".into());
-        let set = quality_set_from_variants(vec![h264, vp9], 1).unwrap();
-        assert_eq!(set.urls.len(), 1);
+        let set = quality_set_from_variants(vec![h264, vp9], 1, &[]).unwrap();
+        assert_eq!(set.inputs.len(), 1);
         assert_eq!(set.preferred_index, 0);
-        assert_eq!(set.urls[0].as_str(), "https://example.test/h264-720.m3u8");
+        assert_eq!(
+            set.inputs[0].video_url.as_str(),
+            "https://example.test/h264-720.m3u8"
+        );
     }
 
     #[test]
@@ -3935,6 +4386,8 @@ mod tests {
             prior_position: Duration::from_secs(5),
             resume_playing: true,
             barriers_remaining: 1,
+            audio_answered: false,
+            video_answered: false,
             landing: None,
             rejected: false,
         });
@@ -3961,6 +4414,8 @@ mod tests {
             prior_position: Duration::from_secs(5),
             resume_playing: false,
             barriers_remaining: 1,
+            audio_answered: false,
+            video_answered: false,
             landing: None,
             rejected: false,
         });
@@ -4549,6 +5004,8 @@ mod tests {
             prior_position: Duration::from_secs(25),
             resume_playing: true,
             barriers_remaining: 2,
+            audio_answered: false,
+            video_answered: false,
             landing: None,
             rejected: false,
         });
@@ -4611,6 +5068,8 @@ mod tests {
             prior_position: Duration::from_secs(2),
             resume_playing: true,
             barriers_remaining: 2,
+            audio_answered: false,
+            video_answered: false,
             landing: None,
             rejected: false,
         });
@@ -4675,6 +5134,60 @@ mod tests {
     }
 
     #[test]
+    fn separate_sources_use_video_landing_and_hold_new_frames_until_both_answer() {
+        for first in [MediaType::Audio, MediaType::Video] {
+            let (mut playback, _senders) = clock_test_playback();
+            playback.seek_pending = Some(PendingSeek {
+                generation: 19,
+                requested: Duration::from_secs(30),
+                prior_position: Duration::from_secs(1),
+                resume_playing: false,
+                barriers_remaining: 2,
+                audio_answered: false,
+                video_answered: false,
+                landing: None,
+                rejected: false,
+            });
+            let second = if first == MediaType::Audio {
+                MediaType::Video
+            } else {
+                MediaType::Audio
+            };
+            for kind in [first, second] {
+                let (landed_pts, time_base) = if kind == MediaType::Video {
+                    (28 * 90_000, TimeBase::new(1, 90_000))
+                } else {
+                    (30 * 48_000, TimeBase::new(1, 48_000))
+                };
+                playback
+                    .handle_seek_barrier(
+                        Some(kind),
+                        BarrierKind::SeekFlush {
+                            generation: 19,
+                            landed_pts,
+                            time_base,
+                        },
+                    )
+                    .unwrap();
+                if kind == first {
+                    assert!(playback.seek_pending.is_some());
+                    assert_eq!(
+                        playback.should_pump_audio_channel(),
+                        first != MediaType::Audio
+                    );
+                    assert_eq!(playback.video_pump_limit() == 0, first == MediaType::Video);
+                }
+            }
+            assert!(playback.seek_pending.is_none());
+            assert_eq!(playback.position, Duration::from_secs(28));
+            assert_eq!(
+                playback.post_seek_epoch.unwrap().floor,
+                Duration::from_secs(28)
+            );
+        }
+    }
+
+    #[test]
     fn post_seek_epoch_applies_same_floor_to_video() {
         let (mut playback, _tx) = clock_test_playback();
         playback.post_seek_epoch = Some(PostSeekEpoch {
@@ -4711,6 +5224,12 @@ mod tests {
             params: CodecParameters::audio(CodecId::new("aac")),
         });
         playback.audio_output = None;
+        // ADTS can populate every field with the HE-AAC core format before
+        // decoding reveals SBR. Completeness alone must not open the device.
+        let provisional = &mut playback.audio_stream.as_mut().unwrap().params;
+        provisional.sample_rate = Some(22_050);
+        provisional.channels = Some(2);
+        provisional.sample_format = Some(SampleFormat::S16);
         playback.audio_anchor_seconds = Some(70.024);
         playback.seek_pending = Some(PendingSeek {
             generation: 11,
@@ -4718,6 +5237,8 @@ mod tests {
             prior_position: Duration::ZERO,
             resume_playing: false,
             barriers_remaining: 2,
+            audio_answered: false,
+            video_answered: false,
             landing: None,
             rejected: false,
         });
@@ -4792,6 +5313,8 @@ mod tests {
             prior_position: Duration::from_secs(5),
             resume_playing: true,
             barriers_remaining: 2,
+            audio_answered: false,
+            video_answered: false,
             landing: None,
             rejected: false,
         });
@@ -4820,6 +5343,8 @@ mod tests {
             prior_position: Duration::from_secs(3),
             resume_playing: false,
             barriers_remaining: 1,
+            audio_answered: false,
+            video_answered: false,
             landing: None,
             rejected: false,
         });

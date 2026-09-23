@@ -149,8 +149,9 @@ application dependencies.
 
 ## Current end-to-end playback architecture
 
-The native player uses **one shared source/demux graph with independent per-track
-decode, back-pressure and presentation paths**. Audio and video share one media PTS
+The native player uses **independent per-track decode, back-pressure and presentation
+paths**, with a shared source for embedded audio or separate sources for external
+HLS audio renditions. Audio and video share one media PTS
 timeline, but Sanctuary deliberately does not depend on the order in which the two
 tracks happen to produce decoded output.
 
@@ -190,6 +191,29 @@ For the current Twitch/HLS path the graph is:
 ```
 
 ### Demuxing and bounded upstream coupling
+
+For external audio, the selected variant's `AUDIO` group chooses an `EXT-X-MEDIA`
+rendition by DEFAULT, then AUTOSELECT, then playlist order. Its URI feeds the audio
+track in the same executor job; video uses the variant URI. Missing rendition URIs
+mean embedded audio, so identical URIs still share one source. Quality entries retain
+their audio pairing, and the existing replacement path reopens both at the saved
+position. Selection is independent of the video platform.
+
+The local HLS implementation handles MPEG-TS, mapped MP4 and packed ADTS AAC; the
+latter reuses OxideAV's AAC header parser and maps ID3 transport timestamps to the
+same 90 kHz clock used by TS video. Multi-source seeks rescale the target into each
+source's clock even when both sources use stream index zero. Sanctuary waits for
+both barriers, holds each answered track's new frames, and uses the video landing
+as the new playback epoch. A fresh seek waits for decoder-confirmed audio metadata,
+including HE-AAC's actual output rate, before opening sysaudio.
+
+Regression tests cover rendition selection, quality pairing, independent seek clocks,
+barrier ordering, initial A/V alignment, and resampler timestamps/backpressure/EOF.
+The ignored `probe_live_youtube_external_audio_playback` test opens the previously
+tested video with muted sysaudio, plays across segment boundaries, seeks, changes
+quality and checks that both tracks advance with aligned clocks. These changes use
+the local dependency overrides until the corresponding OxideAV commits are published
+and the public lockfile is advanced.
 
 The selected HLS media playlist is opened once and feeds one active MPEG-TS
 demuxer. TS packets are read sequentially, while audio and video PIDs have
@@ -508,9 +532,12 @@ track emits an ordered `TrackSink::stream_update()` after the decoder has consum
 packet and learned its actual PCM shape; Sanctuary opens the device only once rate,
 channels and sample format are authoritative, before the corresponding decoded frame can
 arrive. `AudioOutput` then keeps the device paused initially and uses a 50 ms PCM
-preroll before it may start. A negotiated sample-rate or channel-count change is
-currently a hard error: resampling/remixing is deliberately deferred until its timestamp
-semantics are designed explicitly. The ring is sized for roughly four seconds.
+preroll before it may start. A negotiated sample-rate difference uses
+`oxideav_audio_filter::Resample`; channel-count differences remain an error.
+Conversion preserves streaming state, anchors PTS once per continuous run and advances
+by actual output sample counts. Discontinuities reset the filter, deferred queue writes
+retain converted PCM, and ordered audio EOF flushes the filter tail once. The ring is
+sized for roughly four seconds.
 
 The sysaudio callback owns a `next_output_pts` cursor. For each requested destination
 block it first discards queued PCM older than that cursor, emits silence when the ring is
@@ -522,8 +549,9 @@ samples are subsequently discarded or trimmed.
 Audio timing and video timing are now deliberately separate. The audio callback advances
 `next_output_pts` on the integer sample clock, while `VideoClock` maps video PTS to
 high-resolution wall-clock deadlines. The public playback position is derived from the
-video clock outside an in-flight seek. Both clocks are mapped to the same media-relative
-PTS origin, but Sanctuary does not yet run an active drift-correction controller between
+video clock outside an in-flight seek. At startup and after seeks, video waits for
+audio preroll and anchors once to the running audio position. Both clocks are mapped
+to the same media-relative PTS origin, but Sanctuary does not yet run an active drift-correction controller between
 them. Output-device latency is likewise not yet applied to the audio presentation clock.
 
 `2fe9a28` in `oxideav-pipeline` is required for that fallback to be trustworthy. The
@@ -688,9 +716,8 @@ plus the stream `TimeBase`. The initial sink description may contain unknown fie
 `stream_update()` supplies the post-decode PCM shape before Sanctuary accepts the first
 audio frame. Incoming audio PTS values are then rescaled onto integer output-sample-clock
 ticks and the PCM ring carries that timeline explicitly. The sysaudio stream's negotiated
-format is checked before playback; sample-rate and channel-count mismatches are both hard
-errors for now so no resampler can obscure the timestamp model while this work is being
-established.
+format is checked before playback; sample-rate mismatches use OxideAV's streaming
+resampler and channel-count mismatches remain explicit errors.
 
 `next_output_pts` describes the PTS immediately after the block most recently supplied
 to sysaudio, including any silence supplied for missing/late decoded audio. It is a

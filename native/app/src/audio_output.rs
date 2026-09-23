@@ -1,9 +1,12 @@
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use ::oxideav::core::{AudioFrame, CodecParameters, TimeBase};
-use oxideav_audio_filter::{AudioStreamParams, sample_convert::decode_to_f32};
+use oxideav_audio_filter::{
+    AudioFilter, AudioStreamParams, resample::Resample, sample_convert::decode_to_f32,
+};
 use oxideav_sysaudio::{
     self as sysaudio, ContentType, Driver, StreamFormat, StreamRequest, StreamUsage,
 };
@@ -26,12 +29,24 @@ pub(crate) struct AudioOutput {
     callback_active: Arc<AtomicBool>,
     source_params: AudioStreamParams,
     source_time_base: TimeBase,
+    resampler: Option<Resample>,
+    conversion_origin: Option<i64>,
+    converted_input_samples: i64,
+    converted_output_samples: i64,
+    pending_pcm: VecDeque<PcmBlock>,
+    input_finished: bool,
     device_rate: u32,
     media_origin: Option<Duration>,
     preroll_target_samples: u64,
     preroll_done: bool,
     user_paused: bool,
     backend_name: &'static str,
+}
+
+struct PcmBlock {
+    pts: Option<i64>,
+    samples: u64,
+    interleaved: Vec<f32>,
 }
 
 impl AudioOutput {
@@ -71,7 +86,14 @@ impl AudioOutput {
             sample_rate: source_rate,
         };
 
-        let capacity_frames = (source_rate as usize)
+        let requested_rate = driver
+            .preferred_format(None)
+            .ok()
+            .flatten()
+            .map(|format| format.sample_rate)
+            .filter(|rate| *rate > 0)
+            .unwrap_or(source_rate);
+        let capacity_frames = (requested_rate as usize)
             .saturating_mul(RING_SECONDS)
             .max(4096);
         let (producer, mut consumer) = pcm_timeline_ring(capacity_frames, source_channels);
@@ -84,7 +106,7 @@ impl AudioOutput {
         let callback_active = Arc::new(AtomicBool::new(false));
         let callback_active_cb = Arc::clone(&callback_active);
 
-        let request = StreamRequest::new(source_rate, source_channels)
+        let request = StreamRequest::new(requested_rate, source_channels)
             .with_usage(StreamUsage::Media)
             .with_content_type(ContentType::Movie);
         let mut stream = sysaudio::open(driver, request, move |out, _info| {
@@ -112,7 +134,11 @@ impl AudioOutput {
         }
 
         let device = stream.format();
-        validate_device_format(source_rate, source_channels, device, driver.name())?;
+        validate_device_format(source_channels, device, driver.name())?;
+        let resampler = (source_rate != device.sample_rate)
+            .then(|| Resample::new(source_rate, device.sample_rate))
+            .transpose()
+            .map_err(|error| format!("create audio resampler: {error}"))?;
         let preroll_target_samples = ((device.sample_rate as u64) * PREROLL_MILLIS / 1000).max(1);
 
         log::info!(
@@ -136,6 +162,12 @@ impl AudioOutput {
             callback_active,
             source_params,
             source_time_base: time_base,
+            resampler,
+            conversion_origin: None,
+            converted_input_samples: 0,
+            converted_output_samples: 0,
+            pending_pcm: VecDeque::new(),
+            input_finished: false,
             device_rate: device.sample_rate,
             media_origin: None,
             preroll_target_samples,
@@ -157,33 +189,114 @@ impl AudioOutput {
     }
 
     pub(crate) fn queue(&mut self, frame: &AudioFrame) -> Result<QueueResult, String> {
-        let channels = decode_to_f32(
-            frame,
-            self.source_params.format,
-            self.source_params.channels,
-        )
-        .map_err(|error| format!("convert decoded audio to f32: {error}"))?;
-        let interleaved = interleave(&channels, frame.samples as usize)?;
-        let sample_time_base = TimeBase::from_rate(self.device_rate);
-        let frame_pts = match frame.pts {
-            Some(pts) => Some(
-                self.source_time_base
-                    .rescale_checked(pts, sample_time_base)
-                    .ok_or_else(|| {
-                        "cannot rescale decoded audio PTS to device sample time".to_owned()
-                    })?,
-            ),
-            None => None,
-        };
-
-        let result =
-            self.producer
-                .queue_interleaved(frame_pts, u64::from(frame.samples), &interleaved)?;
+        // Deferred calls retry the same frame. Preserve converted PCM so the
+        // streaming resampler advances exactly once, even under backpressure.
+        if self.pending_pcm.is_empty() {
+            if self.resampler.is_some() {
+                let source_clock = TimeBase::from_rate(self.source_params.sample_rate);
+                let input_pts = frame
+                    .pts
+                    .map(|pts| {
+                        self.source_time_base
+                            .rescale_checked(pts, source_clock)
+                            .ok_or_else(|| "cannot rescale audio PTS".to_owned())
+                    })
+                    .transpose()?;
+                let tolerance = self
+                    .source_time_base
+                    .rescale_checked(1, source_clock)
+                    .unwrap_or(1)
+                    .abs()
+                    .max(1);
+                if let Some(pts) = input_pts {
+                    let discontinuity = self.conversion_origin.is_none_or(|origin| {
+                        pts.abs_diff(origin.saturating_add(self.converted_input_samples))
+                            > tolerance as u64
+                    });
+                    if discontinuity {
+                        self.resampler = Some(
+                            Resample::new(self.source_params.sample_rate, self.device_rate)
+                                .map_err(|error| format!("reset audio resampler: {error}"))?,
+                        );
+                        self.conversion_origin = Some(pts);
+                        self.converted_input_samples = 0;
+                        self.converted_output_samples = 0;
+                    }
+                }
+                let frames = self
+                    .resampler
+                    .as_mut()
+                    .unwrap()
+                    .process(frame, self.source_params)
+                    .map_err(|error| format!("resample decoded audio: {error}"))?;
+                self.converted_input_samples += i64::from(frame.samples);
+                self.append_converted(frames)?;
+            } else {
+                let pts = frame
+                    .pts
+                    .map(|pts| {
+                        self.source_time_base
+                            .rescale_checked(pts, TimeBase::from_rate(self.device_rate))
+                            .ok_or_else(|| "cannot rescale audio PTS".to_owned())
+                    })
+                    .transpose()?;
+                self.pending_pcm
+                    .push_back(pcm_block(frame, self.source_params, pts)?);
+            }
+        }
+        let result = self.drain_pending()?;
         self.maybe_finish_preroll()?;
         Ok(result)
     }
 
+    fn append_converted(&mut self, frames: Vec<AudioFrame>) -> Result<(), String> {
+        for frame in frames {
+            // Anchor once, then advance by the actual output count. Rescaling
+            // each AAC frame independently would introduce rounding gaps.
+            let pts = self
+                .conversion_origin
+                .map(|origin| {
+                    TimeBase::from_rate(self.source_params.sample_rate)
+                        .rescale_checked(origin, TimeBase::from_rate(self.device_rate))
+                        .and_then(|origin| origin.checked_add(self.converted_output_samples))
+                        .ok_or_else(|| "converted audio PTS overflow".to_owned())
+                })
+                .transpose()?;
+            self.converted_output_samples += i64::from(frame.samples);
+            self.pending_pcm
+                .push_back(pcm_block(&frame, self.source_params, pts)?);
+        }
+        Ok(())
+    }
+
+    fn drain_pending(&mut self) -> Result<QueueResult, String> {
+        let mut result = QueueResult::Dropped;
+        while let Some(block) = self.pending_pcm.front() {
+            let queued =
+                self.producer
+                    .queue_interleaved(block.pts, block.samples, &block.interleaved)?;
+            if queued == QueueResult::Deferred {
+                return Ok(queued);
+            }
+            if queued == QueueResult::Queued {
+                result = queued;
+            }
+            self.pending_pcm.pop_front();
+        }
+        Ok(result)
+    }
+
     pub(crate) fn finish_input(&mut self) -> Result<(), String> {
+        if !self.input_finished {
+            if let Some(resampler) = &mut self.resampler {
+                let frames = resampler
+                    .flush(self.source_params)
+                    .map_err(|error| format!("flush audio resampler: {error}"))?;
+                self.append_converted(frames)?;
+            }
+            self.input_finished = true;
+        }
+        self.drain_pending()?;
         // EOF is also a preroll boundary: a clip shorter than the normal
         // target must still be allowed to start and drain.
         self.preroll_done = true;
@@ -250,6 +363,11 @@ impl AudioOutput {
 
     pub(crate) fn queued_samples(&self) -> u64 {
         self.producer.queued_frames() as u64
+            + self
+                .pending_pcm
+                .iter()
+                .map(|block| block.samples)
+                .sum::<u64>()
     }
 
     pub(crate) fn headroom_samples(&self) -> u64 {
@@ -304,7 +422,6 @@ impl AudioOutput {
         self.media_origin
     }
 
-    #[cfg(test)]
     pub(crate) fn media_position(&self) -> Option<Duration> {
         let media_origin = self.media_origin?;
         let timeline_origin = self.producer.origin_pts()?;
@@ -315,7 +432,6 @@ impl AudioOutput {
 }
 
 fn validate_device_format(
-    source_rate: u32,
     source_channels: u16,
     device: StreamFormat,
     backend_name: &str,
@@ -326,13 +442,26 @@ fn validate_device_format(
             device.channels
         ));
     }
-    if device.sample_rate != source_rate {
+    if device.sample_rate == 0 {
         return Err(format!(
-            "oxideav-sysaudio {backend_name} negotiated {} Hz for a {source_rate} Hz source; audio resampling is intentionally unsupported in Sanctuary for now",
-            device.sample_rate
+            "oxideav-sysaudio {backend_name} negotiated an invalid sample rate"
         ));
     }
     Ok(())
+}
+
+fn pcm_block(
+    frame: &AudioFrame,
+    params: AudioStreamParams,
+    pts: Option<i64>,
+) -> Result<PcmBlock, String> {
+    let channels = decode_to_f32(frame, params.format, params.channels)
+        .map_err(|error| format!("convert decoded audio to f32: {error}"))?;
+    Ok(PcmBlock {
+        pts,
+        samples: u64::from(frame.samples),
+        interleaved: interleave(&channels, frame.samples as usize)?,
+    })
 }
 
 fn interleave(channels: &[Vec<f32>], samples: usize) -> Result<Vec<f32>, String> {
@@ -446,14 +575,13 @@ mod tests {
     }
 
     #[test]
-    fn device_rate_mismatch_is_rejected_instead_of_resampled() {
+    fn device_rate_mismatch_is_accepted_for_resampling() {
         let device = StreamFormat {
             sample_rate: 44_100,
             channels: 2,
             format: sysaudio::SampleFormat::F32,
         };
-        let error = validate_device_format(48_000, 2, device, "mock").unwrap_err();
-        assert!(error.contains("resampling is intentionally unsupported"));
+        validate_device_format(2, device, "mock").unwrap();
     }
 
     #[test]
@@ -463,8 +591,69 @@ mod tests {
             channels: 1,
             format: sysaudio::SampleFormat::F32,
         };
-        let error = validate_device_format(48_000, 2, device, "mock").unwrap_err();
+        let error = validate_device_format(2, device, "mock").unwrap_err();
         assert!(error.contains("channel remixing is not implemented"));
+    }
+
+    fn resampled_mock_output() -> AudioOutput {
+        let driver = sysaudio::driver_by_name("mock").unwrap();
+        let mut output =
+            AudioOutput::open_with_driver(driver, &mock_audio_params(), TimeBase::MPEG_TS, true)
+                .unwrap();
+        // The mock accepts requested rates exactly. Supply 44.1 kHz PCM to its
+        // 48 kHz device to exercise the same conversion as a negotiating backend.
+        output.source_params.sample_rate = 44_100;
+        output.resampler = Some(Resample::new(44_100, 48_000).unwrap());
+        output
+    }
+
+    #[test]
+    fn resampled_audio_preserves_duration_across_rounded_frame_timestamps() {
+        let mut output = resampled_mock_output();
+        for index in 0..100 {
+            let pts = 90_000 + index * 1024 * 90_000 / 44_100;
+            assert_eq!(
+                output.queue(&f32_stereo_frame(1024, Some(pts))).unwrap(),
+                QueueResult::Queued
+            );
+        }
+        assert_eq!(output.producer.origin_pts(), Some(48_000));
+        let expected = (100_i64 * 1024 * 48_000 + 44_099) / 44_100;
+        assert_eq!(output.converted_input_samples, 102_400);
+        assert_eq!(output.converted_output_samples, expected);
+        assert_eq!(output.producer.ring_end_pts(), Some(48_000 + expected));
+        output.finish_input().unwrap();
+        let end = output.producer.ring_end_pts();
+        assert!(end.unwrap() > 48_000 + expected);
+        output.finish_input().unwrap();
+        assert_eq!(
+            output.producer.ring_end_pts(),
+            end,
+            "EOF flush is idempotent"
+        );
+    }
+
+    #[test]
+    fn resampling_retries_cached_pcm_and_resets_at_timestamp_discontinuities() {
+        let mut output = resampled_mock_output();
+        let (producer, mut consumer) = pcm_timeline_ring(1500, 2);
+        output.producer = producer;
+        let first = f32_stereo_frame(1024, Some(90_000));
+        output.queue(&first).unwrap();
+        let second = f32_stereo_frame(1024, Some(90_000 + 1024 * 90_000 / 44_100));
+        assert_eq!(output.queue(&second).unwrap(), QueueResult::Deferred);
+        let samples = output.converted_output_samples;
+        assert_eq!(output.queue(&second).unwrap(), QueueResult::Deferred);
+        assert_eq!(output.converted_output_samples, samples);
+        consumer.fill(&mut vec![0.0; 1115 * 2]);
+        assert_eq!(output.queue(&second).unwrap(), QueueResult::Queued);
+        assert_eq!(output.converted_input_samples, 2048);
+        consumer.fill(&mut vec![0.0; 1115 * 2]);
+        let jumped = f32_stereo_frame(1024, Some(180_000));
+        assert_eq!(output.queue(&jumped).unwrap(), QueueResult::Deferred);
+        assert_eq!(output.conversion_origin, Some(88_200));
+        assert_eq!(output.converted_input_samples, 1024);
+        assert_eq!(output.pending_pcm.front().unwrap().pts, Some(96_000));
     }
 
     #[test]

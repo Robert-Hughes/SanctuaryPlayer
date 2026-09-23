@@ -1,8 +1,8 @@
 //! Resolve a YouTube video ID to the HLS manifest advertised by its player API.
 //!
 //! This is intentionally limited to discovery. Playback still goes through the
-//! same OxideAV HLS path as Twitch, which may not support the selected YouTube
-//! rendition (notably its separate audio playlist).
+//! same OxideAV HLS path as Twitch, including external audio renditions selected
+//! from the master playlist by the native playback layer.
 
 use std::fmt;
 use std::time::Duration;
