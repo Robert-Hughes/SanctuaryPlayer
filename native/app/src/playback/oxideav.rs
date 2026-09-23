@@ -2819,6 +2819,7 @@ fn inspect_hls_qualities(
         HlsPlaylistInfo::Master {
             variants,
             preferred_variant,
+            ..
         } => quality_set_from_variants(variants, preferred_variant),
     }
 }
