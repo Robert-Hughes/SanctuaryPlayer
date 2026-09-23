@@ -215,6 +215,47 @@ quality and checks that both tracks advance with aligned clocks. These changes u
 the local dependency overrides until the corresponding OxideAV commits are published
 and the public lockfile is advanced.
 
+### MPEG-TS video seek points and H.264 configuration
+
+Direct inspection on 2026-09-23 compared the recently played Twitch VOD
+`2871910317` (720p60) with YouTube video `TNHNaHOBYG8` (240p30 and 720p60).
+The three sampled Twitch segments, 1453–1455, contained five video
+`random_access_indicator` markers apiece. At **all 15** markers, the next H.264
+NAL units were SPS, PPS, then an IDR picture (35–100 bytes from the marker).
+The Twitch desktop logs show no "slice NAL received before any SPS/PPS activation"
+warnings for that session and show the first video frame at the seek landing.
+
+The sampled YouTube video segments each contained only one SPS, one PPS, and
+one IDR. At 240p30, segments 818 and 927 had **no video
+`random_access_indicator`**. Segment 818 instead had 148 video PES starts with
+`data_alignment_indicator`; only the first carried the observed SPS/PPS/IDR
+sequence. The 720p60 samples (818, 927, 1015) likewise each contained one
+SPS/PPS/IDR sequence. The YouTube playlist averages 5.56 seconds per segment,
+whereas the sampled Twitch segments had roughly five marked IDRs per ten
+seconds. These counts came from the actual TS bytes and refer only to the
+sampled segments, not a claim about every segment in either VOD.
+
+`oxideav-mpegts::seek_to_access_point` prefers the strong TS random-access
+marker. Without one, it uses a data-aligned PES start, which the demuxer itself
+documents as a *parse* point that need not contain an intra picture. The YouTube
+fallback can therefore land after the segment's only SPS/PPS/IDR. The pipeline
+resets decoder state at the seek barrier, so following slices fail until another
+SPS/PPS arrives. This is a seek-point/configuration issue, not a consequence of
+external audio or a different video container.
+
+The general fix belongs at the **demuxer/access-point selection boundary**:
+for H.264 carried in MPEG-TS without reliable random-access markers, identify
+an actual IDR and its preceding usable SPS/PPS, then resume packet delivery at
+the configuration (or otherwise pass that configuration to a freshly reset
+decoder). Report the IDR's presentation time as the effective landing. PES
+`data_alignment_indicator` alone must not be treated as decode-safe. A bounded
+HLS-specific fallback to the start of an independently decodable segment could
+help this YouTube layout, but should not replace a general MPEG-TS seek fix.
+Retaining prior decoder parameter sets across a seek could reduce warm-up for an
+existing rendition; it cannot solve a fresh quality replacement with a new
+decoder. Independently, Sanctuary should hold audio until video has a usable
+post-seek frame so video recovery cannot consume the audio preroll as silence.
+
 The selected HLS media playlist is opened once and feeds one active MPEG-TS
 demuxer. TS packets are read sequentially, while audio and video PIDs have
 independent PES reassembly state. A completed audio PES and a completed video PES
@@ -604,7 +645,7 @@ and the final seek landed at 2398.911 s. The OSS stream remained paused througho
 The HLS source no longer models a VOD as one giant concatenated byte stream. It retains
 resolved segment URLs and cumulative `#EXTINF` timing, owns one active MPEG-TS demuxer
 plus one HLS-local prepared successor, and on seek jumps directly to the target segment
-before asking the inner MPEG-TS demuxer for the nearest video access point at or before
+before asking the inner MPEG-TS demuxer for the nearest video access-point candidate at or before
 the raw target PTS. A successful landing invalidates the previous successor slot and
 starts preparation after the actual landed segment; readahead failures are retained until
 the successor is needed. This avoids both probing every preceding segment length and the
