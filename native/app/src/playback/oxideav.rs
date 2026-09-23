@@ -36,6 +36,18 @@ const VIDEO_QUEUE_CAP: usize = 2;
 // slack only. 256 packets covers the observed ~3.8 s skew while remaining
 // strictly bounded per track.
 const PLAYBACK_PACKET_CHANNEL_CAP: usize = 256;
+// YouTube's video-only fMP4 rendition does not need the cross-track demux
+// slack above. Keep its pre-seek decode backlog small so an in-flight seek
+// barrier is not delayed behind hundreds of old video packets.
+const YOUTUBE_PACKET_CHANNEL_CAP: usize = 8;
+
+fn playback_packet_channel_cap(platform: VideoPlatform) -> usize {
+    if platform == VideoPlatform::YouTube {
+        YOUTUBE_PACKET_CHANNEL_CAP
+    } else {
+        PLAYBACK_PACKET_CHANNEL_CAP
+    }
+}
 const OPEN_TIMEOUT: Duration = Duration::from_secs(30);
 const DIAGNOSTIC_INTERVAL: Duration = Duration::from_secs(1);
 const BUFFERING_GRACE: Duration = Duration::from_millis(250);
@@ -611,6 +623,7 @@ fn open_variant_session(
     variant_url: &Url,
     decode_mode: DecodeMode,
     include_audio: bool,
+    packet_channel_cap: usize,
     wake: PlaybackWake,
     cancellation: CancellationToken,
 ) -> Result<PlaybackSession, String> {
@@ -657,13 +670,13 @@ fn open_variant_session(
     ));
     log::info!(
         "SanctuaryPlayer: OxideAV compressed packet queue cap={} per track",
-        PLAYBACK_PACKET_CHANNEL_CAP
+        packet_channel_cap
     );
     let executor = Executor::new(&job, &registries)
         .with_sink_override("@display", sink)
         .with_codec_preferences(codec_preferences)
         .with_channel_caps(ChannelCaps {
-            packets: PLAYBACK_PACKET_CHANNEL_CAP,
+            packets: packet_channel_cap,
             ..ChannelCaps::default()
         })
         .with_eof_mode(EofMode::WaitForSeek)
@@ -819,6 +832,7 @@ impl OxidePlayback {
             // YouTube's selected video playlist has separate audio in the
             // master. Until HLS can merge that rendition, request video only.
             source.platform != VideoPlatform::YouTube,
+            playback_packet_channel_cap(source.platform),
             wake.clone(),
             cancellation.clone(),
         )?;
@@ -2309,7 +2323,10 @@ impl PlaybackBackend for OxidePlayback {
                     ),
                     (
                         "compressed packet cap".into(),
-                        format!("{PLAYBACK_PACKET_CHANNEL_CAP} / track"),
+                        format!(
+                            "{} / track",
+                            playback_packet_channel_cap(self.source.platform)
+                        ),
                     ),
                     (
                         "starvation grace".into(),
@@ -3136,6 +3153,66 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         println!("YouTube seek position={:?}", playback.position());
+    }
+
+    #[test]
+    #[ignore = "requires live YouTube requests"]
+    fn probe_live_youtube_post_play_seek() {
+        let source =
+            VideoSource::parse("https://www.youtube.com/watch?v=TNHNaHOBYG8").expect("source");
+        let manifest = crate::youtube::resolve_vod_m3u8(&source.id).expect("manifest");
+        let mut playback = OxidePlayback::open(
+            source,
+            manifest,
+            "auto",
+            DecodeMode::Cpu,
+            true,
+            PlaybackWake::noop(),
+            CancellationToken::new(),
+        )
+        .expect("playback open");
+        playback.play();
+        let first_deadline = Instant::now() + Duration::from_secs(20);
+        while playback.take_video_frame_lease().is_none() {
+            playback.update(Duration::from_millis(10));
+            assert!(Instant::now() < first_deadline, "no initial video frame");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        playback.seek(Duration::from_secs(389));
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            playback.update(Duration::from_millis(10));
+            if !matches!(playback.state(), PlaybackState::Seeking)
+                && playback.take_video_frame_lease().is_some()
+            {
+                break;
+            }
+            if let PlaybackState::Error(error) = playback.state() {
+                panic!("YouTube post-play seek failed: {error}");
+            }
+            assert!(
+                Instant::now() < deadline,
+                "no frame after post-play seek: state={:?} pending={:?} position={:?} queue={} sink_finished={} received_video={} dropped_video={} session_depth={:?} progress={:?} executor_finished={}",
+                playback.state,
+                playback.seek_pending,
+                playback.position,
+                playback.video_queue.len(),
+                playback.sink_finished,
+                playback.diagnostics.received_video_frames,
+                playback.diagnostics.dropped_video_frames,
+                playback.channel_depths.current(MediaType::Video),
+                playback
+                    .executor
+                    .as_ref()
+                    .and_then(ExecutorHandle::try_progress),
+                playback
+                    .executor
+                    .as_ref()
+                    .is_none_or(ExecutorHandle::has_finished)
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        println!("YouTube post-play seek position={:?}", playback.position());
     }
 
     #[test]
