@@ -1317,14 +1317,17 @@ impl VideoRenderer {
         Ok(())
     }
 
-    pub(crate) fn after_submit(&mut self, queue: &wgpu::Queue) {
+    pub(crate) fn after_submit(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
         #[cfg(target_os = "macos")]
         if !self.videotoolbox_retired.is_empty() {
             let retired = std::mem::take(&mut self.videotoolbox_retired);
             queue.on_submitted_work_done(move || drop(retired));
+            if let Err(error) = device.poll(wgpu::PollType::Poll) {
+                log::warn!("SanctuaryPlayer: wgpu poll after VideoToolbox submit failed: {error}");
+            }
         }
         #[cfg(not(target_os = "macos"))]
-        let _ = queue;
+        let _ = (device, queue);
     }
 
     #[cfg(target_os = "windows")]

@@ -2181,7 +2181,7 @@ dependencies = [
 [[package]]
 name = "oxideav-h264"
 version = "0.1.8"
-source = "git+https://github.com/Robert-Hughes/oxideav-h264.git?branch=dev#f303fc2316818039fa2e4369b41bdc3584e63566"
+source = "git+https://github.com/Robert-Hughes/oxideav-h264.git?branch=dev#b89a0db7974db5fafcca742c9d41631d0ba3fb94"
 dependencies = [
  "log",
  "oxideav-core",
@@ -2321,10 +2321,11 @@ dependencies = [
 [[package]]
 name = "oxideav-videotoolbox"
 version = "0.0.3"
-source = "git+https://github.com/Robert-Hughes/oxideav-videotoolbox.git?branch=dev#667ccf34e611c15f0b964dea4f72cf6c4979e958"
+source = "git+https://github.com/Robert-Hughes/oxideav-videotoolbox.git?branch=dev#bc8ca0dfaa83a813ccd3547cd50fc5689bb060bf"
 dependencies = [
  "libloading 0.8.9",
  "oxideav-core",
+ "oxideav-h264",
 ]
 
 [[package]]

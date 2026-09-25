@@ -447,7 +447,7 @@ impl Graphics {
             self.egui_renderer.free_texture(texture_id);
         }
         self.queue.submit([encoder.finish()]);
-        self.video_renderer.after_submit(&self.queue);
+        self.video_renderer.after_submit(&self.device, &self.queue);
         output.present();
 
         Ok(RenderFrame {
