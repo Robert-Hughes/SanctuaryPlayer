@@ -3098,7 +3098,7 @@ fn codec_preferences(decode_mode: DecodeMode) -> CodecPreferences {
             no_hardware: true,
             ..Default::default()
         },
-        DecodeMode::VideoToolboxReadback => CodecPreferences {
+        DecodeMode::VideoToolboxDirect | DecodeMode::VideoToolboxReadback => CodecPreferences {
             prefer: vec!["h264_videotoolbox".into()],
             exclude: vec!["h264_sw".into()],
             boost: 100,
@@ -4967,11 +4967,16 @@ mod tests {
     }
 
     #[test]
-    fn videotoolbox_readback_selection_forces_videotoolbox_without_requiring_hardware_audio() {
-        let prefs = codec_preferences(DecodeMode::VideoToolboxReadback);
-        assert_eq!(prefs.prefer, vec!["h264_videotoolbox"]);
-        assert!(prefs.exclude.iter().any(|name| name == "h264_sw"));
-        assert!(!prefs.require_hardware);
+    fn videotoolbox_modes_force_videotoolbox_without_requiring_hardware_audio() {
+        for mode in [
+            DecodeMode::VideoToolboxDirect,
+            DecodeMode::VideoToolboxReadback,
+        ] {
+            let prefs = codec_preferences(mode);
+            assert_eq!(prefs.prefer, vec!["h264_videotoolbox"]);
+            assert!(prefs.exclude.iter().any(|name| name == "h264_sw"));
+            assert!(!prefs.require_hardware);
+        }
     }
 
     #[cfg(target_os = "macos")]

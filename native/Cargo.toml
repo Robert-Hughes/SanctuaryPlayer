@@ -46,6 +46,9 @@ oxideav-vdpau = "0.0.2"
 oxideav-mediacodec = "0.0.1"
 oxideav-vulkan-video = "0.0.2"
 oxideav-videotoolbox = "0.0.3"
+objc2-core-foundation = "0.3.2"
+objc2-core-video = "0.3.2"
+objc2-metal = "0.3.2"
 
 # Sanctuary's public dependency contract is the `dev` branch of the
 # project-maintained OxideAV forks. Cargo.lock pins the exact Git revisions
@@ -65,3 +68,4 @@ oxideav-mpegts = { git = "https://github.com/Robert-Hughes/oxideav-mpegts.git", 
 oxideav-mediacodec = { git = "https://github.com/Robert-Hughes/oxideav-mediacodec.git", branch = "dev" }
 oxideav-vdpau = { git = "https://github.com/Robert-Hughes/oxideav-vdpau.git", branch = "dev" }
 oxideav-vulkan-video = { git = "https://github.com/Robert-Hughes/oxideav-vulkan-video.git", branch = "dev" }
+oxideav-videotoolbox = { git = "https://github.com/Robert-Hughes/oxideav-videotoolbox.git", branch = "dev" }

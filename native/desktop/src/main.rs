@@ -6,7 +6,7 @@ use sanctuary_player_app::{AppEvent, SanctuaryPlayerApp};
 
 const USAGE: &str = "Usage: sanctuary-player [OPTIONS] [VIDEO]\n\n\
 VIDEO may be a YouTube/Twitch video ID or URL, or a sanctuaryplayer:// deep link.\n\n\
-Options:\n  -v, --video <VIDEO>       Auto-load a video on startup\n      --play, --autoplay    Start playback after the video opens\n      --mute                Mute audio while keeping the audio playback clock active\n      --decode-mode <MODE>  auto | cpu | videotoolbox-readback (macOS) | vulkan-readback | vulkan-direct (Windows) | vdpau-readback | vdpau-direct (FreeBSD)\n      --register-uri-handler Register sanctuaryplayer:// for this executable\n  -h, --help                Show this help";
+Options:\n  -v, --video <VIDEO>       Auto-load a video on startup\n      --play, --autoplay    Start playback after the video opens\n      --mute                Mute audio while keeping the audio playback clock active\n      --decode-mode <MODE>  auto | cpu | videotoolbox-direct | videotoolbox-readback (macOS) | vulkan-readback | vulkan-direct (Windows) | vdpau-readback | vdpau-direct (FreeBSD)\n      --register-uri-handler Register sanctuaryplayer:// for this executable\n  -h, --help                Show this help";
 
 enum CliAction {
     Run {
@@ -423,18 +423,21 @@ mod tests {
         }
 
         #[cfg(target_os = "macos")]
-        {
+        for (name, expected) in [
+            ("videotoolbox-direct", DecodeMode::VideoToolboxDirect),
+            ("videotoolbox-readback", DecodeMode::VideoToolboxReadback),
+        ] {
             let CliAction::Run { decode_mode, .. } =
-                parse(&["--decode-mode", "videotoolbox-readback", "2395077199"]).unwrap()
+                parse(&["--decode-mode", name, "2395077199"]).unwrap()
             else {
                 panic!("expected run action");
             };
-            assert_eq!(decode_mode, DecodeMode::VideoToolboxReadback);
+            assert_eq!(decode_mode, expected);
         }
 
         #[cfg(not(target_os = "macos"))]
-        {
-            let error = parse(&["--decode-mode", "videotoolbox-readback", "2395077199"])
+        for name in ["videotoolbox-direct", "videotoolbox-readback"] {
+            let error = parse(&["--decode-mode", name, "2395077199"])
                 .err()
                 .expect("unsupported mode should fail");
             assert!(error.contains("not supported"));

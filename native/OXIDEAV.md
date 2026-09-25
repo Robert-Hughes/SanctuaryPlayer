@@ -450,9 +450,10 @@ its direct bridge and can use its readback presentation path if direct interop i
 unavailable. On Windows, `h264_vulkan` is registered above `h264_sw`, so automatic
 selection uses Vulkan Video H.264 decode when the selected Vulkan device advertises
 the required capability and otherwise retains the software fallback. On macOS,
-`h264_videotoolbox` is registered above `h264_sw`; its current OxideAV output is CPU
-I420 copied from the decoded `CVPixelBuffer`, which Sanctuary uploads through the
-existing wgpu YUV renderer.
+`h264_videotoolbox` is registered above `h264_sw` and now returns a retained
+`CVPixelBuffer` hardware lease. Sanctuary first attempts direct NV12 presentation through
+CoreVideo's Metal texture cache and falls back to explicit CPU materialisation if direct
+interop is unavailable.
 
 Explicit modes are deliberately strict. If a caller supplies a particular
 `--decode-mode`, Sanctuary excludes alternative H.264 implementations rather than
@@ -461,12 +462,17 @@ silently changing the requested contract:
 - `cpu` sets `CodecPreferences::no_hardware`, so software H.264 is selected even when a
   hardware implementation is compiled into the same runtime. Output must remain
   `FrameLease::ArenaVideo`; the renderer refuses a silent materialisation fallback.
-- `videotoolbox-readback` (macOS) selects only `h264_videotoolbox`. VideoToolbox
-  performs H.264 reconstruction in Apple's media engine, then the current OxideAV bridge
-  locks the decoded `CVPixelBuffer`, copies/de-interleaves its NV12 planes to CPU I420,
-  and emits an owned `VideoFrame`. Sanctuary uploads those existing planes through the
-  normal wgpu YUV path. This is intentionally Phase 2: hardware decode with CPU readback;
-  direct CVPixelBuffer/IOSurface -> Metal presentation remains a later optimisation.
+- `videotoolbox-direct` (macOS) selects only `h264_videotoolbox`. OxideAV retains the
+  decoded NV12 `CVPixelBuffer` as a hardware-frame lease. Sanctuary maps its IOSurface-
+  backed Y and UV planes through `CVMetalTextureCache` as `R8Unorm` / `RG8Unorm` Metal
+  textures, wraps those textures in wgpu and samples them with `nv12_to_rgb.wgsl`. No
+  decoded pixel data is copied to CPU and there is no intermediate GPU image copy. The
+  frame lease and CoreVideo texture wrappers remain retained until wgpu reports the
+  dependent submitted work complete.
+- `videotoolbox-readback` (macOS) selects that same `h264_videotoolbox` decoder but calls
+  the hardware lease's `materialize()` compatibility path. It locks the retained
+  `CVPixelBuffer`, copies/de-interleaves NV12 to CPU I420 and uploads the planes through
+  the normal wgpu YUV path.
 - `vulkan-readback` (Windows) selects only `h264_vulkan`. OxideAV performs H.264
   reconstruction on the Vulkan Video queue, copies the decoded NV12 image into
   host-visible staging memory, and de-interleaves that staging image to packed CPU I420.

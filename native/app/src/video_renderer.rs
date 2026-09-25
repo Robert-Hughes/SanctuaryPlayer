@@ -10,6 +10,8 @@ use crate::model::{DebugEdge, DebugGraph, DebugGraphLane, DebugNode};
 use crate::playback::DecodeMode;
 #[cfg(target_os = "freebsd")]
 use crate::vdpau_vulkan_bridge::VdpauVulkanBridge;
+#[cfg(target_os = "macos")]
+use crate::videotoolbox_metal_bridge::{VideoToolboxMetalBridge, VideoToolboxMetalFrame};
 #[cfg(target_os = "windows")]
 use crate::vulkan_video_vulkan_bridge::VulkanVideoVulkanBridge;
 #[cfg(any(target_os = "freebsd", target_os = "android", target_os = "windows"))]
@@ -78,6 +80,8 @@ enum Presentation {
     MediaCodecDirect(usize),
     #[cfg(target_os = "freebsd")]
     VdpauDirect(usize),
+    #[cfg(target_os = "macos")]
+    VideoToolboxDirect,
     #[cfg(target_os = "windows")]
     VulkanDirect(usize),
 }
@@ -89,9 +93,9 @@ pub struct VideoRenderer {
     rgba_pipeline: wgpu::RenderPipeline,
     #[cfg(any(target_os = "freebsd", target_os = "android"))]
     rgba_bind_group_layout: wgpu::BindGroupLayout,
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
     vulkan_direct_pipeline: wgpu::RenderPipeline,
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
     vulkan_direct_bind_group_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     uniform_buffer: wgpu::Buffer,
@@ -109,6 +113,12 @@ pub struct VideoRenderer {
     vdpau_bind_groups: Vec<wgpu::BindGroup>,
     #[cfg(target_os = "freebsd")]
     vdpau_busy_drops: u64,
+    #[cfg(target_os = "macos")]
+    videotoolbox_bridge: Option<VideoToolboxMetalBridge>,
+    #[cfg(target_os = "macos")]
+    videotoolbox_frame: Option<VideoToolboxMetalFrame>,
+    #[cfg(target_os = "macos")]
+    videotoolbox_retired: Vec<VideoToolboxMetalFrame>,
     #[cfg(target_os = "windows")]
     vulkan_direct_bridges: Vec<VulkanVideoVulkanBridge>,
     #[cfg(target_os = "windows")]
@@ -286,12 +296,12 @@ impl VideoRenderer {
             cache: None,
         });
 
-        #[cfg(target_os = "windows")]
+        #[cfg(any(target_os = "windows", target_os = "macos"))]
         let vulkan_direct_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("sanctuary-nv12-to-rgb"),
             source: wgpu::ShaderSource::Wgsl(include_str!("nv12_to_rgb.wgsl").into()),
         });
-        #[cfg(target_os = "windows")]
+        #[cfg(any(target_os = "windows", target_os = "macos"))]
         let vulkan_direct_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("sanctuary-vulkan-direct-bgl"),
@@ -316,14 +326,14 @@ impl VideoRenderer {
                     },
                 ],
             });
-        #[cfg(target_os = "windows")]
+        #[cfg(any(target_os = "windows", target_os = "macos"))]
         let vulkan_direct_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("sanctuary-vulkan-direct-pl"),
                 bind_group_layouts: &[Some(&vulkan_direct_bind_group_layout)],
                 immediate_size: 0,
             });
-        #[cfg(target_os = "windows")]
+        #[cfg(any(target_os = "windows", target_os = "macos"))]
         let vulkan_direct_pipeline =
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("sanctuary-vulkan-direct-pipeline"),
@@ -451,9 +461,9 @@ impl VideoRenderer {
             rgba_pipeline,
             #[cfg(any(target_os = "freebsd", target_os = "android"))]
             rgba_bind_group_layout,
-            #[cfg(target_os = "windows")]
+            #[cfg(any(target_os = "windows", target_os = "macos"))]
             vulkan_direct_pipeline,
-            #[cfg(target_os = "windows")]
+            #[cfg(any(target_os = "windows", target_os = "macos"))]
             vulkan_direct_bind_group_layout,
             sampler,
             uniform_buffer,
@@ -471,6 +481,12 @@ impl VideoRenderer {
             vdpau_bind_groups: Vec::new(),
             #[cfg(target_os = "freebsd")]
             vdpau_busy_drops: 0,
+            #[cfg(target_os = "macos")]
+            videotoolbox_bridge: None,
+            #[cfg(target_os = "macos")]
+            videotoolbox_frame: None,
+            #[cfg(target_os = "macos")]
+            videotoolbox_retired: Vec::new(),
             #[cfg(target_os = "windows")]
             vulkan_direct_bridges: Vec::new(),
             #[cfg(target_os = "windows")]
@@ -485,6 +501,10 @@ impl VideoRenderer {
     }
 
     pub fn reset(&mut self) {
+        #[cfg(target_os = "macos")]
+        if let Some(frame) = self.videotoolbox_frame.take() {
+            self.videotoolbox_retired.push(frame);
+        }
         self.presentation = Presentation::None;
     }
 
@@ -643,6 +663,43 @@ impl VideoRenderer {
                     "sample Y/U/V",
                 ));
             }
+            #[cfg(target_os = "macos")]
+            Presentation::VideoToolboxDirect => {
+                graph.nodes.push(DebugNode::new(
+                    "video-presentation",
+                    "VideoToolbox CVPixelBuffer / Metal direct",
+                    "GPU-resident NV12 planes",
+                    DebugGraphLane::Video,
+                    5,
+                    vec![
+                        ("content size".into(), content_size.clone()),
+                        (
+                            "storage".into(),
+                            "retained CVPixelBuffer / IOSurface".into(),
+                        ),
+                        ("interop".into(), "CVMetalTextureCache -> wgpu Metal".into()),
+                        ("CPU pixel readback".into(), "none".into()),
+                    ],
+                ));
+                graph.nodes.push(DebugNode::new(
+                    "video-shader",
+                    "NV12 → RGB shader",
+                    "nv12_to_rgb.wgsl",
+                    DebugGraphLane::Video,
+                    6,
+                    vec![("colour conversion".into(), "VideoColorInfo uniforms".into())],
+                ));
+                graph.edges.push(DebugEdge::flow(
+                    "video-lookahead",
+                    "video-presentation",
+                    "VideoToolbox hardware lease",
+                ));
+                graph.edges.push(DebugEdge::flow(
+                    "video-presentation",
+                    "video-shader",
+                    "Metal Y/UV textures",
+                ));
+            }
             #[cfg(target_os = "windows")]
             Presentation::VulkanDirect(slot) => {
                 graph.nodes.push(DebugNode::new(
@@ -798,6 +855,17 @@ impl VideoRenderer {
         match decode_mode {
             DecodeMode::Auto => self.upload_auto(device, queue, lease, color),
             DecodeMode::Cpu => self.upload_cpu_lease(device, queue, lease, color),
+            DecodeMode::VideoToolboxDirect => {
+                #[cfg(target_os = "macos")]
+                {
+                    self.upload_videotoolbox_direct(device, queue, lease, color)
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    let _ = (device, queue, lease, color);
+                    Err("videotoolbox-direct presentation is only available on macOS".into())
+                }
+            }
             DecodeMode::VideoToolboxReadback => {
                 self.upload_videotoolbox_readback(device, queue, lease, color)
             }
@@ -900,6 +968,24 @@ impl VideoRenderer {
                     Err("MediaCodec frame reached a non-Android renderer".into())
                 }
             }
+            "videotoolbox" => {
+                #[cfg(target_os = "macos")]
+                {
+                    match self.upload_videotoolbox_direct(device, queue, lease, color) {
+                        Ok(()) => Ok(()),
+                        Err(error) => {
+                            log::warn!(
+                                "SanctuaryPlayer: VideoToolbox direct presentation unavailable in auto mode ({error}); using hardware decode with CPU readback"
+                            );
+                            self.upload_videotoolbox_readback(device, queue, lease, color)
+                        }
+                    }
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    Err("VideoToolbox frame reached a non-macOS renderer".into())
+                }
+            }
             "vdpau" => {
                 #[cfg(target_os = "freebsd")]
                 {
@@ -946,11 +1032,26 @@ impl VideoRenderer {
         lease: &FrameLease,
         color: Option<VideoColorInfo>,
     ) -> Result<(), String> {
-        let frame = lease.as_frame().ok_or_else(|| {
-            "videotoolbox-readback mode received a non-owned video lease".to_owned()
-        })?;
-        let Frame::Video(frame) = frame else {
-            return Err("videotoolbox-readback mode received a non-video frame".into());
+        let materialized;
+        let frame = if let Some(hardware) = lease.as_hardware_video() {
+            if hardware.backend() != "videotoolbox" {
+                return Err(format!(
+                    "videotoolbox-readback mode received hardware backend {:?}",
+                    hardware.backend()
+                ));
+            }
+            materialized = hardware
+                .materialize()
+                .map_err(|error| format!("VideoToolbox CPU readback failed: {error}"))?;
+            &materialized
+        } else {
+            let owned = lease.as_frame().ok_or_else(|| {
+                "videotoolbox-readback mode received an unsupported frame lease".to_owned()
+            })?;
+            let Frame::Video(frame) = owned else {
+                return Err("videotoolbox-readback mode received a non-video frame".into());
+            };
+            frame
         };
         let (width, height) = video_frame_yuv420p_dimensions(frame).ok_or_else(|| {
             "VideoToolbox readback produced invalid YUV420P plane dimensions".to_owned()
@@ -1137,6 +1238,93 @@ impl VideoRenderer {
         );
         self.presentation = Presentation::Yuv;
         Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    fn upload_videotoolbox_direct(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        lease: &FrameLease,
+        color: Option<VideoColorInfo>,
+    ) -> Result<(), String> {
+        let hardware = lease.as_hardware_video().ok_or_else(|| {
+            "videotoolbox-direct mode received a non-hardware video lease".to_owned()
+        })?;
+        if hardware.backend() != "videotoolbox" {
+            return Err(format!(
+                "videotoolbox-direct mode received hardware backend {:?}",
+                hardware.backend()
+            ));
+        }
+        if hardware.pixel_format() != PixelFormat::Nv12 {
+            return Err(format!(
+                "videotoolbox-direct mode received unsupported format {:?}",
+                hardware.pixel_format()
+            ));
+        }
+        let width = hardware.width();
+        let height = hardware.height();
+        if width == 0
+            || height == 0
+            || width > self.max_texture_dimension_2d
+            || height > self.max_texture_dimension_2d
+        {
+            return Err(format!(
+                "invalid VideoToolbox direct frame dimensions {width}x{height}"
+            ));
+        }
+
+        let conversion = YuvConversion::for_stream(color, width, height);
+        queue.write_buffer(
+            &self.uniform_buffer,
+            16,
+            bytemuck::cast_slice(&conversion.uniform_words()),
+        );
+
+        if self.videotoolbox_bridge.is_none() {
+            self.videotoolbox_bridge = Some(
+                VideoToolboxMetalBridge::new(device)
+                    .map_err(|error| format!("VideoToolbox Metal bridge unavailable: {error}"))?,
+            );
+        }
+        let imported = self
+            .videotoolbox_bridge
+            .as_ref()
+            .expect("initialised above")
+            .import(
+                device,
+                lease,
+                &self.vulkan_direct_bind_group_layout,
+                &self.sampler,
+                &self.uniform_buffer,
+            )
+            .map_err(|error| format!("VideoToolbox Metal import failed: {error}"))?;
+
+        let first = self.videotoolbox_frame.is_none();
+        if let Some(previous) = self.videotoolbox_frame.replace(imported) {
+            self.videotoolbox_retired.push(previous);
+        }
+        self.dims = Some((width, height));
+        self.presentation = Presentation::VideoToolboxDirect;
+        if first {
+            log::info!(
+                "SanctuaryPlayer: VideoToolbox direct presentation active ({}x{}, CVPixelBuffer NV12 -> CVMetalTexture -> wgpu Metal; no CPU pixel readback)",
+                width,
+                height
+            );
+        }
+        Ok(())
+    }
+
+    pub(crate) fn after_submit(&mut self, queue: &wgpu::Queue) {
+        #[cfg(target_os = "macos")]
+        if !self.videotoolbox_retired.is_empty() {
+            let retired = std::mem::take(&mut self.videotoolbox_retired);
+            queue.on_submitted_work_done(move || drop(retired));
+        }
+        #[cfg(not(target_os = "macos"))]
+        let _ = queue;
     }
 
     #[cfg(target_os = "windows")]
@@ -1569,6 +1757,15 @@ impl VideoRenderer {
                     };
                     pass.set_pipeline(&self.rgba_pipeline);
                     pass.set_bind_group(0, bind_group, &[]);
+                    pass.draw(0..3, 0..1);
+                }
+                #[cfg(target_os = "macos")]
+                Presentation::VideoToolboxDirect => {
+                    let Some(frame) = self.videotoolbox_frame.as_ref() else {
+                        return;
+                    };
+                    pass.set_pipeline(&self.vulkan_direct_pipeline);
+                    pass.set_bind_group(0, &frame.bind_group, &[]);
                     pass.draw(0..3, 0..1);
                 }
                 #[cfg(target_os = "windows")]

@@ -30,6 +30,8 @@ pub mod ui;
 mod vdpau_vulkan_bridge;
 pub mod video;
 pub mod video_renderer;
+#[cfg(target_os = "macos")]
+mod videotoolbox_metal_bridge;
 #[cfg(target_os = "windows")]
 mod vulkan_video_decoder;
 #[cfg(target_os = "windows")]
