@@ -2300,6 +2300,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "oxideav-videotoolbox"
+version = "0.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9e9cd7bc99307e94b6b9efbd333754eccbfaec2e85309c0cab76ac85e6993358"
+dependencies = [
+ "libloading 0.8.9",
+ "oxideav-core",
+]
+
+[[package]]
 name = "oxideav-vulkan-video"
 version = "0.0.2"
 source = "git+https://github.com/Robert-Hughes/oxideav-vulkan-video.git?branch=dev#d13ada86b116b5be31967ff9485b038cb81db397"
@@ -2580,7 +2590,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2973,6 +2983,7 @@ dependencies = [
  "oxideav-pixfmt",
  "oxideav-sysaudio",
  "oxideav-vdpau",
+ "oxideav-videotoolbox",
  "oxideav-vulkan-video",
  "pollster",
  "regex",

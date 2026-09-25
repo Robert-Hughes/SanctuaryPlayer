@@ -798,6 +798,9 @@ impl VideoRenderer {
         match decode_mode {
             DecodeMode::Auto => self.upload_auto(device, queue, lease, color),
             DecodeMode::Cpu => self.upload_cpu_lease(device, queue, lease, color),
+            DecodeMode::VideoToolboxReadback => {
+                self.upload_videotoolbox_readback(device, queue, lease, color)
+            }
             DecodeMode::VulkanReadback => self.upload_vulkan_readback(device, queue, lease, color),
             DecodeMode::VulkanDirect => {
                 #[cfg(target_os = "windows")]
@@ -854,9 +857,13 @@ impl VideoRenderer {
             {
                 return self.upload_vulkan_readback(device, queue, lease, color);
             }
-            #[cfg(not(target_os = "windows"))]
+            #[cfg(target_os = "macos")]
             {
-                return Err("auto decode received a legacy CPU video frame on a platform without the Vulkan readback path".into());
+                return self.upload_videotoolbox_readback(device, queue, lease, color);
+            }
+            #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+            {
+                return Err("auto decode received an owned CPU video frame on a platform without a readback presentation path".into());
             }
         }
         let hardware = lease
@@ -932,6 +939,35 @@ impl VideoRenderer {
         self.upload_yuv420p(device, queue, &view, color)
     }
 
+    fn upload_videotoolbox_readback(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        lease: &FrameLease,
+        color: Option<VideoColorInfo>,
+    ) -> Result<(), String> {
+        let frame = lease.as_frame().ok_or_else(|| {
+            "videotoolbox-readback mode received a non-owned video lease".to_owned()
+        })?;
+        let Frame::Video(frame) = frame else {
+            return Err("videotoolbox-readback mode received a non-video frame".into());
+        };
+        let (width, height) = video_frame_yuv420p_dimensions(frame).ok_or_else(|| {
+            "VideoToolbox readback produced invalid YUV420P plane dimensions".to_owned()
+        })?;
+        let view = video_frame_yuv420p_view(frame, width, height)
+            .ok_or_else(|| "VideoToolbox readback produced invalid YUV420P planes".to_owned())?;
+        self.upload_yuv420p(device, queue, &view, color)?;
+        if !self.readback_logged {
+            log::info!(
+                "SanctuaryPlayer: VideoToolbox readback presentation active ({}x{}, hardware decode -> CVPixelBuffer CPU I420 -> wgpu)",
+                width,
+                height
+            );
+            self.readback_logged = true;
+        }
+        Ok(())
+    }
     fn upload_vulkan_readback(
         &mut self,
         device: &wgpu::Device,

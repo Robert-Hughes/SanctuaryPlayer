@@ -6,7 +6,7 @@ use sanctuary_player_app::{AppEvent, SanctuaryPlayerApp};
 
 const USAGE: &str = "Usage: sanctuary-player [OPTIONS] [VIDEO]\n\n\
 VIDEO may be a YouTube/Twitch video ID or URL, or a sanctuaryplayer:// deep link.\n\n\
-Options:\n  -v, --video <VIDEO>       Auto-load a video on startup\n      --play, --autoplay    Start playback after the video opens\n      --mute                Mute audio while keeping the audio playback clock active\n      --decode-mode <MODE>  auto | cpu | vulkan-readback | vulkan-direct (Windows) | vdpau-readback | vdpau-direct (FreeBSD)\n      --register-uri-handler Register sanctuaryplayer:// for this executable\n  -h, --help                Show this help";
+Options:\n  -v, --video <VIDEO>       Auto-load a video on startup\n      --play, --autoplay    Start playback after the video opens\n      --mute                Mute audio while keeping the audio playback clock active\n      --decode-mode <MODE>  auto | cpu | videotoolbox-readback (macOS) | vulkan-readback | vulkan-direct (Windows) | vdpau-readback | vdpau-direct (FreeBSD)\n      --register-uri-handler Register sanctuaryplayer:// for this executable\n  -h, --help                Show this help";
 
 enum CliAction {
     Run {
@@ -422,6 +422,23 @@ mod tests {
             assert!(error.contains("not supported"));
         }
 
+        #[cfg(target_os = "macos")]
+        {
+            let CliAction::Run { decode_mode, .. } =
+                parse(&["--decode-mode", "videotoolbox-readback", "2395077199"]).unwrap()
+            else {
+                panic!("expected run action");
+            };
+            assert_eq!(decode_mode, DecodeMode::VideoToolboxReadback);
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            let error = parse(&["--decode-mode", "videotoolbox-readback", "2395077199"])
+                .err()
+                .expect("unsupported mode should fail");
+            assert!(error.contains("not supported"));
+        }
         assert!(parse(&["--decode-mode", "banana", "2395077199"]).is_err());
     }
 
