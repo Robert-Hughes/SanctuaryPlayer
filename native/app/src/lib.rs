@@ -52,6 +52,8 @@ use graphics::{Graphics, RenderStatus};
 #[cfg(not(target_os = "android"))]
 use input::command_for_key;
 #[cfg(not(target_os = "android"))]
+use model::PlaybackState;
+#[cfg(not(target_os = "android"))]
 use playback::{DecodeMode, PlaybackWake, PlaybackWakeKind};
 #[cfg(not(target_os = "android"))]
 use winit::application::ApplicationHandler;
@@ -76,6 +78,25 @@ const ANIMATION_FRAME_INTERVAL: Duration = Duration::from_millis(16);
 const RENDER_DIAGNOSTIC_INTERVAL: Duration = Duration::from_secs(1);
 #[cfg(not(target_os = "android"))]
 const SHUTDOWN_POSITION_FLUSH_BUDGET: Duration = Duration::from_secs(2);
+
+#[cfg(not(target_os = "android"))]
+fn playback_wake_requests_redraw(
+    pending: playback::PendingPlaybackWakes,
+    state: &PlaybackState,
+    playback_deadline: Option<Instant>,
+    now: Instant,
+) -> bool {
+    if pending.contains(PlaybackWakeKind::Control) {
+        return true;
+    }
+    if !pending.contains(PlaybackWakeKind::Video) {
+        return false;
+    }
+    if matches!(state, PlaybackState::Paused) {
+        return true;
+    }
+    playback_deadline.is_some_and(|deadline| deadline <= now)
+}
 
 #[cfg(not(target_os = "android"))]
 struct RenderDiagnostics {
@@ -367,13 +388,13 @@ impl ApplicationHandler<AppEvent> for SanctuaryPlayerApp {
                 let now = Instant::now();
                 self.update_state_at(now);
                 self.sync_window_title(window.as_ref());
-                let control = pending.contains(PlaybackWakeKind::Control);
-                let video_due = pending.contains(PlaybackWakeKind::Video)
-                    && self
-                        .state
-                        .playback_wake_deadline(now)
-                        .is_some_and(|deadline| deadline <= now);
-                if control || video_due {
+                let playback_deadline = self.state.playback_wake_deadline(now);
+                if playback_wake_requests_redraw(
+                    pending,
+                    self.state.playback_state(),
+                    playback_deadline,
+                    now,
+                ) {
                     window.request_redraw();
                 }
             }
@@ -566,6 +587,42 @@ mod startup_tests {
         assert_eq!(app.take_startup_video(), None);
 
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn paused_video_wake_requests_one_shot_redraw_without_deadline() {
+        let wake = PlaybackWake::new(|| {});
+        wake.wake(PlaybackWakeKind::Video);
+        let pending = wake.take_pending();
+        let now = Instant::now();
+
+        assert!(playback_wake_requests_redraw(
+            pending,
+            &PlaybackState::Paused,
+            None,
+            now,
+        ));
+    }
+
+    #[test]
+    fn playing_video_wake_still_waits_until_frame_deadline() {
+        let wake = PlaybackWake::new(|| {});
+        wake.wake(PlaybackWakeKind::Video);
+        let pending = wake.take_pending();
+        let now = Instant::now();
+
+        assert!(!playback_wake_requests_redraw(
+            pending,
+            &PlaybackState::Playing,
+            Some(now + Duration::from_millis(10)),
+            now,
+        ));
+        assert!(playback_wake_requests_redraw(
+            pending,
+            &PlaybackState::Playing,
+            Some(now),
+            now,
+        ));
     }
 
     #[test]
