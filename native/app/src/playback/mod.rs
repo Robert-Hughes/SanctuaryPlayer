@@ -38,12 +38,14 @@ impl DecodeMode {
         Self::Auto
     }
 
+    #[cfg(target_os = "windows")]
     pub(crate) const fn prefers_windows_shared_vulkan_device(self) -> bool {
-        cfg!(target_os = "windows") && matches!(self, Self::Auto | Self::VulkanDirect)
+        matches!(self, Self::Auto | Self::VulkanDirect)
     }
 
+    #[cfg(target_os = "windows")]
     pub(crate) const fn requires_windows_shared_vulkan_device(self) -> bool {
-        cfg!(target_os = "windows") && matches!(self, Self::VulkanDirect)
+        matches!(self, Self::VulkanDirect)
     }
 
     const fn is_supported_with_backends(

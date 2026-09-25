@@ -213,7 +213,7 @@ impl Graphics {
     fn debug_graph(&self) -> DebugGraph {
         let adapter = self._adapter.get_info();
         let mut graph = self.video_renderer.debug_graph();
-        let mut device_rows = vec![
+        let device_rows = vec![
             ("adapter".into(), adapter.name),
             ("backend".into(), format!("{:?}", adapter.backend)),
             ("device type".into(), format!("{:?}", adapter.device_type)),
@@ -222,6 +222,9 @@ impl Graphics {
                 self.max_texture_dimension_2d.to_string(),
             ),
         ];
+
+        #[cfg(target_os = "windows")]
+        let mut device_rows = device_rows;
 
         #[cfg(target_os = "windows")]
         if let Some(info) = crate::vulkan_video_decoder::direct_device_debug_info() {
