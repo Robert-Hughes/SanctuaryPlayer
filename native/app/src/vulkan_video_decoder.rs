@@ -1,4 +1,7 @@
-use std::sync::{OnceLock, RwLock};
+use std::sync::{
+    OnceLock, RwLock,
+    atomic::{AtomicBool, Ordering},
+};
 
 use ::oxideav::core::{
     CancellationToken, CodecCapabilities, CodecId, CodecInfo, CodecParameters, CodecTag, Decoder,
@@ -12,6 +15,7 @@ const VIDEO_QUEUE_PRIORITY: [f32; 1] = [1.0];
 const SHARED_QUEUE_PRIORITIES: [f32; 2] = [1.0, 1.0];
 
 static DIRECT_DEVICE: OnceLock<RwLock<Option<ExternalDevice>>> = OnceLock::new();
+static DIRECT_DEVICE_LOST: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct DirectDeviceDebugInfo {
@@ -38,9 +42,18 @@ fn direct_device_slot() -> &'static RwLock<Option<ExternalDevice>> {
 }
 
 pub(crate) fn install_direct_device(device: ExternalDevice) {
+    DIRECT_DEVICE_LOST.store(false, Ordering::Release);
     if let Ok(mut slot) = direct_device_slot().write() {
         *slot = Some(device);
     }
+}
+
+pub(crate) fn mark_direct_device_lost() {
+    DIRECT_DEVICE_LOST.store(true, Ordering::Release);
+}
+
+pub(crate) fn direct_device_lost() -> bool {
+    DIRECT_DEVICE_LOST.load(Ordering::Acquire)
 }
 
 pub(crate) fn clear_direct_device() {
@@ -53,6 +66,11 @@ pub(crate) fn clear_direct_device() {
 }
 
 fn direct_device() -> Result<ExternalDevice> {
+    if direct_device_lost() {
+        return Err(Error::device_lost(
+            "vulkan-video: shared wgpu Vulkan device has been lost",
+        ));
+    }
     direct_device_slot()
         .read()
         .map_err(|_| Error::other("vulkan-video: shared-device registry is poisoned"))?

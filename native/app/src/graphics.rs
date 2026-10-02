@@ -1,4 +1,7 @@
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use std::time::Duration;
 
 use winit::event::{ElementState, WindowEvent};
@@ -21,6 +24,7 @@ pub(crate) struct Graphics {
     surface: wgpu::Surface<'static>,
     surface_config: wgpu::SurfaceConfiguration,
     max_texture_dimension_2d: u32,
+    device_lost: Arc<AtomicBool>,
     egui_context: egui::Context,
     egui_winit: egui_winit::State,
     egui_renderer: egui_wgpu::Renderer,
@@ -105,7 +109,12 @@ impl Graphics {
         device.on_uncaptured_error(Arc::new(|error| {
             log::error!("SanctuaryPlayer: uncaptured wgpu error: {error}");
         }));
-        device.set_device_lost_callback(|reason, message| {
+        let device_lost = Arc::new(AtomicBool::new(false));
+        let device_lost_callback = device_lost.clone();
+        device.set_device_lost_callback(move |reason, message| {
+            device_lost_callback.store(true, Ordering::Release);
+            #[cfg(target_os = "windows")]
+            crate::vulkan_video_decoder::mark_direct_device_lost();
             log::error!("SanctuaryPlayer: wgpu device lost reason={reason:?} message={message}");
         });
 
@@ -168,6 +177,7 @@ impl Graphics {
             surface,
             surface_config,
             max_texture_dimension_2d,
+            device_lost,
             egui_context,
             egui_winit,
             egui_renderer,
@@ -176,6 +186,14 @@ impl Graphics {
             pending_egui_events: Vec::new(),
             surface_validation_failures: 0,
         })
+    }
+
+    fn ensure_device_alive(&self) -> Result<(), String> {
+        if self.device_lost.load(Ordering::Acquire) {
+            Err("wgpu device lost; refusing further GPU work".into())
+        } else {
+            Ok(())
+        }
     }
 
     pub(crate) fn on_window_event(&mut self, window: &Window, event: &WindowEvent) -> bool {
@@ -320,6 +338,7 @@ impl Graphics {
         window: &Window,
         state: &mut AppState,
     ) -> Result<RenderFrame, String> {
+        self.ensure_device_alive()?;
         let (output, reconfigure_after_present) = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(output) => {
                 self.surface_validation_failures = 0;
@@ -352,6 +371,7 @@ impl Graphics {
                 }
             }
         };
+        self.ensure_device_alive()?;
         let target = output
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
@@ -374,6 +394,7 @@ impl Graphics {
                 decode_mode,
                 color,
             )?;
+            self.ensure_device_alive()?;
         }
         self.video_renderer.draw(
             &self.queue,
@@ -403,6 +424,7 @@ impl Graphics {
         self.egui_winit
             .handle_platform_output(window, full_output.platform_output);
 
+        self.ensure_device_alive()?;
         for (texture_id, image_delta) in &full_output.textures_delta.set {
             self.egui_renderer
                 .update_texture(&self.device, &self.queue, *texture_id, image_delta);
@@ -446,8 +468,11 @@ impl Graphics {
         for texture_id in &full_output.textures_delta.free {
             self.egui_renderer.free_texture(texture_id);
         }
+        self.ensure_device_alive()?;
         self.queue.submit([encoder.finish()]);
+        self.ensure_device_alive()?;
         self.video_renderer.after_submit(&self.device, &self.queue);
+        self.ensure_device_alive()?;
         output.present();
 
         Ok(RenderFrame {

@@ -367,9 +367,15 @@ impl VulkanVideoVulkanBridge {
 
 impl Drop for VulkanVideoVulkanBridge {
     fn drop(&mut self) {
+        self.inflight = None;
+        if crate::vulkan_video_decoder::direct_device_lost() {
+            log::warn!(
+                "SanctuaryPlayer: skipping Vulkan direct bridge teardown calls after device loss"
+            );
+            return;
+        }
         unsafe {
             let _ = self.vk_device.device_wait_idle();
-            self.inflight = None;
             self.vk_device.destroy_fence(self.copy_fence, None);
             self.vk_device.destroy_command_pool(self.command_pool, None);
         }
