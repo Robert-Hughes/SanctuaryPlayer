@@ -2171,7 +2171,7 @@ checksum = "776a36e8f0011eaacfb833e8e5b978609babb1f94e204f9c7d996bff3fe4f06c"
 [[package]]
 name = "oxideav-core"
 version = "0.1.37"
-source = "git+https://github.com/Robert-Hughes/oxideav-core.git?branch=dev#7962807ff379a259e058378b8fb7e15fafc05f28"
+source = "git+https://github.com/Robert-Hughes/oxideav-core.git?branch=dev#5ac8cae677d571579129c47fb41424cdf14109b2"
 dependencies = [
  "bytemuck",
  "serde_json",
@@ -2268,7 +2268,7 @@ dependencies = [
 [[package]]
 name = "oxideav-pipeline"
 version = "0.1.12"
-source = "git+https://github.com/Robert-Hughes/oxideav-pipeline.git?branch=dev#8824384c6ad4814b7663f9a7a8df249c4634e056"
+source = "git+https://github.com/Robert-Hughes/oxideav-pipeline.git?branch=dev#88807d9968f2616f658bfeae74055daeb51820a2"
 dependencies = [
  "indexmap",
  "log",
@@ -2331,7 +2331,7 @@ dependencies = [
 [[package]]
 name = "oxideav-vulkan-video"
 version = "0.0.2"
-source = "git+https://github.com/Robert-Hughes/oxideav-vulkan-video.git?branch=dev#d13ada86b116b5be31967ff9485b038cb81db397"
+source = "git+https://github.com/Robert-Hughes/oxideav-vulkan-video.git?branch=dev#6617f0f41aa56526f0931ff9abd4be81ca0f5524"
 dependencies = [
  "libloading 0.8.9",
  "linkme",
