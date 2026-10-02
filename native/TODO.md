@@ -1,5 +1,7 @@
 # Native TODO
 
+- Show video ID somewhere (no longer available in the URL!)
+- Some video titles are not showing in the Saved Positions list
 - Re-enable non-1.0x playback rates for real A/V playback with pitch-preserving audio time-stretch and correct A/V clocking.
 - Multiple qualities - e.g. after seek show the low quality first then upgrade
 - Compensate the media clock for reported audio output latency so presentation timing reflects when sound actually reaches the device.
