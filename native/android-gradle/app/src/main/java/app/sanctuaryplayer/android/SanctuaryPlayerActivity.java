@@ -10,6 +10,10 @@ import android.media.AudioManager;
 import android.os.Build;
 import android.os.Bundle;
 
+import androidx.core.view.WindowCompat;
+import androidx.core.view.WindowInsetsCompat;
+import androidx.core.view.WindowInsetsControllerCompat;
+
 import com.google.androidgamesdk.GameActivity;
 
 /**
@@ -39,6 +43,15 @@ public final class SanctuaryPlayerActivity extends GameActivity {
             pendingDeepLink = intent.getDataString();
         }
         super.onCreate(savedInstanceState);
+        // Follow Android's edge-to-edge guidance on all supported releases, not only
+        // Android 15+ where it is enforced by targetSdk. The renderer keeps interactive
+        // content inside WindowInsets while drawing the app background behind the bars.
+        WindowCompat.enableEdgeToEdge(getWindow());
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            // Our UI does not scroll under the three-button navigation bar, so let the
+            // app background show through instead of Android adding a contrast scrim.
+            getWindow().setNavigationBarContrastEnforced(false);
+        }
     }
 
     @Override
@@ -56,6 +69,23 @@ public final class SanctuaryPlayerActivity extends GameActivity {
         String deepLink = pendingDeepLink;
         pendingDeepLink = null;
         return deepLink;
+    }
+
+    /** Apply normal or immersive system-bar visibility without painting bar backgrounds. */
+    public void setSystemBars(boolean fullscreen) {
+        WindowInsetsControllerCompat controller =
+                WindowCompat.getInsetsController(getWindow(), getWindow().getDecorView());
+        // The renderer's edge-to-edge background beneath both bars is dark.
+        controller.setAppearanceLightStatusBars(false);
+        controller.setAppearanceLightNavigationBars(false);
+        if (fullscreen) {
+            controller.setSystemBarsBehavior(
+                    WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+            controller.hide(WindowInsetsCompat.Type.systemBars());
+        } else {
+            controller.setSystemBarsBehavior(WindowInsetsControllerCompat.BEHAVIOR_DEFAULT);
+            controller.show(WindowInsetsCompat.Type.systemBars());
+        }
     }
 
     /** Initialise audio-focus and output-routing listeners. Safe to call repeatedly. */

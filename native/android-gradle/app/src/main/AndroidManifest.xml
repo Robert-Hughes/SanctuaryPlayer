@@ -13,6 +13,7 @@
             android:name=".SanctuaryPlayerActivity"
             android:configChanges="assetsPaths|colorMode|density|fontScale|fontWeightAdjustment|grammaticalGender|keyboard|keyboardHidden|layoutDirection|locale|mcc|mnc|navigation|orientation|screenLayout|screenSize|smallestScreenSize|touchscreen|uiMode"
             android:exported="true"
+            android:windowSoftInputMode="adjustResize"
             android:launchMode="singleTask">
             <meta-data
                 android:name="android.app.lib_name"

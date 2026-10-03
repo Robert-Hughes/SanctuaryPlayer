@@ -937,45 +937,7 @@ mod android {
 
             let mut commands = Vec::new();
             let full_output = ctx.run_ui(raw_input, |root_ui| {
-                let viewport = ctx.viewport_rect();
                 let content = ctx.content_rect();
-                let fill = if state.has_video() {
-                    egui::Color32::BLACK
-                } else {
-                    root_ui.visuals().panel_fill
-                };
-                let painter = egui::Painter::new(
-                    ctx.clone(),
-                    egui::LayerId::new(
-                        egui::Order::Foreground,
-                        egui::Id::new("android-system-chrome-background"),
-                    ),
-                    viewport,
-                );
-                let system_chrome_rects = [
-                    egui::Rect::from_min_max(
-                        viewport.min,
-                        egui::pos2(viewport.max.x, content.min.y),
-                    ),
-                    egui::Rect::from_min_max(
-                        egui::pos2(viewport.min.x, content.max.y),
-                        viewport.max,
-                    ),
-                    egui::Rect::from_min_max(
-                        egui::pos2(viewport.min.x, content.min.y),
-                        egui::pos2(content.min.x, content.max.y),
-                    ),
-                    egui::Rect::from_min_max(
-                        egui::pos2(content.max.x, content.min.y),
-                        egui::pos2(viewport.max.x, content.max.y),
-                    ),
-                ];
-                for rect in system_chrome_rects {
-                    if rect.width() > 0.0 && rect.height() > 0.0 {
-                        painter.rect_filled(rect, 0.0, fill);
-                    }
-                }
-
                 root_ui.scope_builder(egui::UiBuilder::new().max_rect(content), |ui| {
                     commands = sanctuary_player_app::ui::render(ui, state);
                 });
@@ -1475,11 +1437,7 @@ mod android {
     }
 
     #[allow(unsafe_code)]
-    fn set_android_system_bars(
-        app: &AndroidApp,
-        fullscreen: bool,
-        dark_background: bool,
-    ) -> Result<(), String> {
+    fn set_android_system_bars(app: &AndroidApp, fullscreen: bool) -> Result<(), String> {
         use jni::{
             JavaVM, jni_sig, jni_str,
             objects::{JObject, JValue},
@@ -1489,118 +1447,12 @@ mod android {
         let activity_raw = app.activity_as_ptr() as jni::sys::jobject;
         vm.attach_current_thread(|env| -> jni::errors::Result<()> {
             let activity = unsafe { env.as_cast_raw::<JObject>(&activity_raw)? };
-            let window = env
-                .call_method(
-                    &activity,
-                    jni_str!("getWindow"),
-                    jni_sig!("()Landroid/view/Window;"),
-                    &[],
-                )?
-                .l()?;
-            let sdk_int = env
-                .get_static_field(
-                    jni_str!("android/os/Build$VERSION"),
-                    jni_str!("SDK_INT"),
-                    jni_sig!("I"),
-                )?
-                .i()?;
-
-            if sdk_int >= 30 {
-                let controller = env
-                    .call_method(
-                        &window,
-                        jni_str!("getInsetsController"),
-                        jni_sig!("()Landroid/view/WindowInsetsController;"),
-                        &[],
-                    )?
-                    .l()?;
-                if !controller.is_null() {
-                    const SYSTEM_BARS: i32 = 1 | 2;
-                    const LIGHT_BARS: i32 = 8 | 16;
-                    if fullscreen {
-                        // WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE.
-                        env.call_method(
-                            &controller,
-                            jni_str!("setSystemBarsBehavior"),
-                            jni_sig!("(I)V"),
-                            &[JValue::Int(2)],
-                        )?;
-                        // Transient bars shown over fullscreen video should use light
-                        // foreground icons rather than inheriting normal mode's dark ones.
-                        env.call_method(
-                            &controller,
-                            jni_str!("setSystemBarsAppearance"),
-                            jni_sig!("(II)V"),
-                            &[JValue::Int(0), JValue::Int(LIGHT_BARS)],
-                        )?;
-                        env.call_method(
-                            &controller,
-                            jni_str!("hide"),
-                            jni_sig!("(I)V"),
-                            &[JValue::Int(SYSTEM_BARS)],
-                        )?;
-                    } else {
-                        // Match the foreground to the content drawn beneath the bars:
-                        // light icons/text over video black, dark icons/text over the
-                        // light welcome-page background. Applying this before show()
-                        // also avoids Samsung retaining fullscreen's previous appearance.
-                        let appearance = if dark_background { 0 } else { LIGHT_BARS };
-                        env.call_method(
-                            &controller,
-                            jni_str!("setSystemBarsAppearance"),
-                            jni_sig!("(II)V"),
-                            &[JValue::Int(appearance), JValue::Int(LIGHT_BARS)],
-                        )?;
-                        // Fullscreen enables transient bars. Restore normal bar
-                        // behaviour as part of the same transition back to windowed UI.
-                        env.call_method(
-                            &controller,
-                            jni_str!("setSystemBarsBehavior"),
-                            jni_sig!("(I)V"),
-                            &[JValue::Int(1)],
-                        )?;
-                        env.call_method(
-                            &controller,
-                            jni_str!("show"),
-                            jni_sig!("(I)V"),
-                            &[JValue::Int(SYSTEM_BARS)],
-                        )?;
-                    }
-                }
-            } else {
-                let decor = env
-                    .call_method(
-                        &window,
-                        jni_str!("getDecorView"),
-                        jni_sig!("()Landroid/view/View;"),
-                        &[],
-                    )?
-                    .l()?;
-                let flags = if fullscreen {
-                    // IMMERSIVE_STICKY | FULLSCREEN | HIDE_NAVIGATION plus layout
-                    // flags so the app can use the whole display while bars are hidden.
-                    0x0000_1000
-                        | 0x0000_0004
-                        | 0x0000_0002
-                        | 0x0000_0100
-                        | 0x0000_0200
-                        | 0x0000_0400
-                } else if dark_background {
-                    0
-                } else {
-                    let mut flags = 0x0000_2000; // LIGHT_STATUS_BAR
-                    if sdk_int >= 26 {
-                        flags |= 0x0000_0010; // LIGHT_NAVIGATION_BAR
-                    }
-                    flags
-                };
-                env.call_method(
-                    &decor,
-                    jni_str!("setSystemUiVisibility"),
-                    jni_sig!("(I)V"),
-                    &[JValue::Int(flags)],
-                )?;
-            }
+            env.call_method(
+                &activity,
+                jni_str!("setSystemBars"),
+                jni_sig!("(Z)V"),
+                &[JValue::Bool(fullscreen)],
+            )?;
             Ok(())
         })
         .map_err(|error| error.to_string())
@@ -1656,7 +1508,7 @@ mod android {
 
             if matches!(state.apply(command), Some(AppEffect::ToggleFullscreen)) {
                 *fullscreen = !*fullscreen;
-                match set_android_system_bars(app, *fullscreen, state.has_video()) {
+                match set_android_system_bars(app, *fullscreen) {
                     Ok(()) => log::info!("SanctuaryPlayer: Android fullscreen={}", *fullscreen),
                     Err(error) => log::error!(
                         "SanctuaryPlayer: could not set Android fullscreen={}: {error}",
@@ -1736,7 +1588,6 @@ mod android {
         let mut focused = false;
         let mut input_available = false;
         let mut fullscreen = false;
-        let mut system_bars_video_loaded = None;
         let mut running = true;
 
         while running {
@@ -1773,22 +1624,17 @@ mod android {
                     } else if let Some(source) = startup_source.take() {
                         let _ = state.apply(AppCommand::OpenVideo(source));
                     }
-                    let video_loaded = state.has_video();
-                    if let Err(error) =
-                        set_android_system_bars(&android_app, fullscreen, video_loaded)
-                    {
+                    if let Err(error) = set_android_system_bars(&android_app, fullscreen) {
                         log::error!(
                             "SanctuaryPlayer: could not apply Android system-bar mode fullscreen={fullscreen}: {error}"
                         );
                     }
-                    system_bars_video_loaded = Some(video_loaded);
                     repaint.request(Duration::ZERO);
                 }
                 PollEvent::Main(MainEvent::TerminateWindow { .. }) => {
                     if let Some(gpu) = gpu.as_mut() {
                         gpu.detach_window();
                     }
-                    system_bars_video_loaded = None;
                 }
                 PollEvent::Main(MainEvent::WindowResized { .. }) => {
                     if let Some(gpu) = gpu.as_mut()
@@ -1803,15 +1649,11 @@ mod android {
                 }
                 PollEvent::Main(MainEvent::GainedFocus) => {
                     focused = true;
-                    let video_loaded = state.has_video();
-                    if let Err(error) =
-                        set_android_system_bars(&android_app, fullscreen, video_loaded)
-                    {
+                    if let Err(error) = set_android_system_bars(&android_app, fullscreen) {
                         log::error!(
                             "SanctuaryPlayer: could not restore Android system-bar mode fullscreen={fullscreen}: {error}"
                         );
                     }
-                    system_bars_video_loaded = Some(video_loaded);
                     repaint.request(Duration::ZERO);
                 }
                 PollEvent::Main(MainEvent::LostFocus) => {
@@ -1899,17 +1741,6 @@ mod android {
                 && let Some(size) = gpu.dimensions()
             {
                 state.update(now.saturating_duration_since(last_update));
-                let video_loaded = state.has_video();
-                if system_bars_video_loaded != Some(video_loaded) {
-                    if let Err(error) =
-                        set_android_system_bars(&android_app, fullscreen, video_loaded)
-                    {
-                        log::error!(
-                            "SanctuaryPlayer: could not update Android system-bar appearance: {error}"
-                        );
-                    }
-                    system_bars_video_loaded = Some(video_loaded);
-                }
                 media_focus.sync_playback_state(&android_app, &mut state);
                 screen_on.sync(&android_app, &state);
                 last_update = now;
