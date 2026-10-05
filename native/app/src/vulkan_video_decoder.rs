@@ -5,7 +5,7 @@ use std::sync::{
 
 use ::oxideav::core::{
     CancellationToken, CodecCapabilities, CodecId, CodecInfo, CodecParameters, CodecTag, Decoder,
-    Error, ExecutionContext, Frame, Packet, Result,
+    Error, ExecutionContext, Frame, FrameLease, Packet, Result,
 };
 use ash::vk::{self, Handle};
 use oxideav_vulkan_video::ExternalDevice;
@@ -373,6 +373,14 @@ impl Decoder for LoggedVulkanDecoder {
 
     fn receive_frame(&mut self) -> Result<Frame> {
         self.inner_mut().receive_frame()
+    }
+
+    fn receive_frame_lease(&mut self) -> Result<FrameLease> {
+        self.inner_mut().receive_frame_lease()
+    }
+
+    fn receive_arena_frame(&mut self) -> Result<::oxideav::core::arena::sync::Frame> {
+        self.inner_mut().receive_arena_frame()
     }
 
     fn flush(&mut self) -> Result<()> {
