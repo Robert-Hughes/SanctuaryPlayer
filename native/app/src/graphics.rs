@@ -17,10 +17,6 @@ use crate::video_renderer::VideoRenderer;
 const MAX_SURFACE_VALIDATION_RECOVERY_ATTEMPTS: u8 = 3;
 
 pub(crate) struct Graphics {
-    _instance: wgpu::Instance,
-    _adapter: wgpu::Adapter,
-    device: wgpu::Device,
-    queue: wgpu::Queue,
     surface: wgpu::Surface<'static>,
     surface_config: wgpu::SurfaceConfiguration,
     max_texture_dimension_2d: u32,
@@ -32,6 +28,10 @@ pub(crate) struct Graphics {
     modifiers: ModifiersState,
     pending_egui_events: Vec<egui::Event>,
     surface_validation_failures: u8,
+    queue: wgpu::Queue,
+    device: wgpu::Device,
+    _adapter: wgpu::Adapter,
+    _instance: wgpu::Instance,
 }
 
 impl Graphics {

@@ -2898,15 +2898,20 @@ impl Drop for OxidePlayback {
             let _ = audio.set_paused(true);
         }
         if let Some(executor) = self.executor.take() {
-            log::info!("SanctuaryPlayer: OxidePlayback aborting executor before drop");
+            log::info!("SanctuaryPlayer: OxidePlayback aborting and joining executor before drop");
             executor.request_abort();
             log::logger().flush();
             let started = Instant::now();
-            drop(executor);
-            log::info!(
-                "SanctuaryPlayer: OxidePlayback executor drop complete elapsed={:.3}s",
-                started.elapsed().as_secs_f64()
-            );
+            match executor.stop() {
+                Ok(_) => log::info!(
+                    "SanctuaryPlayer: OxidePlayback executor join complete elapsed={:.3}s",
+                    started.elapsed().as_secs_f64()
+                ),
+                Err(error) => log::warn!(
+                    "SanctuaryPlayer: OxidePlayback executor join failed elapsed={:.3}s error={error}",
+                    started.elapsed().as_secs_f64()
+                ),
+            }
         }
         log::info!("SanctuaryPlayer: OxidePlayback drop complete");
     }
