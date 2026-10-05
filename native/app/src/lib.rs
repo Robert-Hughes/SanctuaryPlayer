@@ -189,8 +189,8 @@ impl RenderDiagnostics {
 #[cfg(not(target_os = "android"))]
 pub struct SanctuaryPlayerApp {
     window: Option<Arc<Window>>,
-    graphics: Option<Graphics>,
     state: AppState,
+    graphics: Option<Graphics>,
     initial_video: Option<video::VideoSource>,
     initial_autoplay: bool,
     last_update: Instant,
@@ -311,6 +311,7 @@ impl SanctuaryPlayerApp {
     fn shutdown(&mut self, event_loop: &ActiveEventLoop) {
         self.flush_persistence_for_shutdown();
         self.next_egui_repaint = None;
+        self.state.shutdown_playback_for_graphics_teardown();
         if let Some(graphics) = self.graphics.take() {
             drop(graphics);
         }
@@ -371,6 +372,7 @@ impl ApplicationHandler<AppEvent> for SanctuaryPlayerApp {
 
     fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
         self.state.flush_persistence_for_background();
+        self.state.shutdown_playback_for_graphics_teardown();
         self.graphics = None;
         self.window = None;
     }

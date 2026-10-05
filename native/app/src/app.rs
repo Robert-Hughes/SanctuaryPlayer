@@ -565,6 +565,19 @@ impl<P: PlaybackBackend + 'static> AppState<P> {
             log::info!("SanctuaryPlayer: cancelled superseded video open");
         }
     }
+
+    pub(crate) fn shutdown_playback_for_graphics_teardown(&mut self) {
+        self.cancel_pending_video_open();
+        if let Some(playback) = self.playback.take() {
+            log::info!(
+                "SanctuaryPlayer: dropping playback before graphics teardown state={:?}",
+                playback.state()
+            );
+            log::logger().flush();
+            drop(playback);
+            log::info!("SanctuaryPlayer: playback drop before graphics teardown complete");
+        }
+    }
     fn poll_video_open(&mut self) {
         let Some(pending) = self.pending_video_open.as_ref() else {
             return;
