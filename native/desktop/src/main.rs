@@ -54,6 +54,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .ok_or("platform state directory is unavailable")?
         .join("sanctuary-player");
     sanctuary_player_app::logging::init(state_dir.join("logs"))?;
+    log::info!(
+        "SanctuaryPlayer: process start pid={} exe={} decode_mode={:?} autoplay={} muted={} initial_video={:?}",
+        std::process::id(),
+        std::env::current_exe()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|error| format!("<unavailable: {error}>")),
+        decode_mode,
+        autoplay,
+        muted,
+        initial_video
+    );
 
     let event_loop = match winit::event_loop::EventLoop::<AppEvent>::with_user_event().build() {
         Ok(event_loop) => event_loop,

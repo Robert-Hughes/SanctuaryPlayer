@@ -40,6 +40,8 @@ const OPEN_TIMEOUT: Duration = Duration::from_secs(30);
 const DIAGNOSTIC_INTERVAL: Duration = Duration::from_secs(1);
 const BUFFERING_GRACE: Duration = Duration::from_millis(250);
 const TRACK_SINK_BACKPRESSURE_WAIT: Duration = Duration::from_millis(20);
+const TRACK_SINK_BACKPRESSURE_LOG_AFTER: Duration = Duration::from_secs(5);
+const TRACK_SINK_BACKPRESSURE_LOG_INTERVAL: Duration = Duration::from_secs(30);
 static HTTP_RANGE_PROBE_CONFIG: Once = Once::new();
 
 fn enable_http_range_probe() {
@@ -356,6 +358,7 @@ struct SessionTrackSink {
     wake: PlaybackWake,
     cancellation: CancellationToken,
     blocked_sends: u64,
+    backpressure_started: Option<Instant>,
     last_backpressure_log: Option<Instant>,
 }
 
@@ -374,6 +377,7 @@ impl SessionTrackSink {
             wake,
             cancellation,
             blocked_sends: 0,
+            backpressure_started: None,
             last_backpressure_log: None,
         }
     }
@@ -399,6 +403,19 @@ impl SessionTrackSink {
             self.depth.fetch_add(1, Ordering::SeqCst);
             match self.tx.try_send(message) {
                 Ok(()) => {
+                    if let Some(started) = self.backpressure_started.take() {
+                        let blocked_for = started.elapsed();
+                        if blocked_for >= TRACK_SINK_BACKPRESSURE_LOG_AFTER {
+                            log::info!(
+                                "SanctuaryPlayer: TrackSink backpressure recovered kind={:?} waiting_for={} blocked_for={:.3}s blocked_sends_total={}",
+                                self.kind,
+                                label,
+                                blocked_for.as_secs_f64(),
+                                self.blocked_sends
+                            );
+                        }
+                        self.last_backpressure_log = None;
+                    }
                     self.wake.wake(wake_kind);
                     return Ok(());
                 }
@@ -407,14 +424,18 @@ impl SessionTrackSink {
                     message = returned;
                     self.blocked_sends = self.blocked_sends.saturating_add(1);
                     let now = Instant::now();
-                    if self
-                        .last_backpressure_log
-                        .is_none_or(|last| now.duration_since(last) >= DIAGNOSTIC_INTERVAL)
+                    let started = *self.backpressure_started.get_or_insert(now);
+                    let blocked_for = now.duration_since(started);
+                    if blocked_for >= TRACK_SINK_BACKPRESSURE_LOG_AFTER
+                        && self.last_backpressure_log.is_none_or(|last| {
+                            now.duration_since(last) >= TRACK_SINK_BACKPRESSURE_LOG_INTERVAL
+                        })
                     {
                         log::info!(
-                            "SanctuaryPlayer: TrackSink backpressure kind={:?} waiting_for={} blocked_sends={}",
+                            "SanctuaryPlayer: TrackSink sustained backpressure kind={:?} waiting_for={} blocked_for={:.3}s blocked_sends_total={}",
                             self.kind,
                             label,
+                            blocked_for.as_secs_f64(),
                             self.blocked_sends
                         );
                         self.last_backpressure_log = Some(now);
@@ -1550,8 +1571,27 @@ impl OxidePlayback {
         let Some(executor) = self.executor.take() else {
             return;
         };
-        if let Err(error) = executor.stop() {
-            self.fail(format!("OxideAV playback failed: {error}"));
+        log::info!(
+            "SanctuaryPlayer: executor finished; stop begin state={:?} sink_finished={} video_eof={} audio_eof={}",
+            self.state,
+            self.sink_finished,
+            self.video_eof,
+            self.audio_eof
+        );
+        log::logger().flush();
+        let started = Instant::now();
+        match executor.stop() {
+            Ok(_) => log::info!(
+                "SanctuaryPlayer: executor stop complete elapsed={:.3}s",
+                started.elapsed().as_secs_f64()
+            ),
+            Err(error) => {
+                log::error!(
+                    "SanctuaryPlayer: executor stop failed elapsed={:.3}s error={error}",
+                    started.elapsed().as_secs_f64()
+                );
+                self.fail(format!("OxideAV playback failed: {error}"));
+            }
         }
     }
 
@@ -1649,6 +1689,17 @@ impl OxidePlayback {
                 "SanctuaryPlayer: playback ended without presenting a video frame; treating as normal end-of-media"
             );
         }
+        let executor_finished = self
+            .executor
+            .as_ref()
+            .is_none_or(ExecutorHandle::has_finished);
+        log::info!(
+            "SanctuaryPlayer: playback -> Ended sink_finished={} executor_finished={} video_eof={} audio_eof={}",
+            self.sink_finished,
+            executor_finished,
+            self.video_eof,
+            self.audio_eof
+        );
         self.state = PlaybackState::Ended;
     }
 
@@ -2835,13 +2886,29 @@ impl PlaybackBackend for OxidePlayback {
 
 impl Drop for OxidePlayback {
     fn drop(&mut self) {
+        log::info!(
+            "SanctuaryPlayer: OxidePlayback drop begin state={:?} executor_present={} sink_finished={} video_eof={} audio_eof={}",
+            self.state,
+            self.executor.is_some(),
+            self.sink_finished,
+            self.video_eof,
+            self.audio_eof
+        );
         if let Some(audio) = self.audio_output.as_mut() {
             let _ = audio.set_paused(true);
         }
         if let Some(executor) = self.executor.take() {
+            log::info!("SanctuaryPlayer: OxidePlayback aborting executor before drop");
             executor.request_abort();
+            log::logger().flush();
+            let started = Instant::now();
             drop(executor);
+            log::info!(
+                "SanctuaryPlayer: OxidePlayback executor drop complete elapsed={:.3}s",
+                started.elapsed().as_secs_f64()
+            );
         }
+        log::info!("SanctuaryPlayer: OxidePlayback drop complete");
     }
 }
 

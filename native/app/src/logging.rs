@@ -45,6 +45,7 @@ impl From<io::Error> for LoggingError {
 
 struct FileLogger {
     writer: Mutex<RotatingWriter>,
+    pid: u32,
 }
 
 impl Log for FileLogger {
@@ -62,8 +63,9 @@ impl Log for FileLogger {
         let thread = std::thread::current();
         let thread_name = thread.name().unwrap_or("unnamed");
         let line = format!(
-            "[{now}] {:<5} [{thread_name}] {}: {}\n",
+            "[{now}] {:<5} [p{}:{thread_name}] {}: {}\n",
             record.level(),
+            self.pid,
             record.target(),
             record.args()
         );
@@ -190,6 +192,7 @@ pub fn init(directory: impl AsRef<Path>) -> Result<PathBuf, LoggingError> {
 
     let logger = Box::leak(Box::new(FileLogger {
         writer: Mutex::new(writer),
+        pid: std::process::id(),
     }));
     log::set_logger(logger).map_err(|_| LoggingError::GlobalLoggerAlreadySet)?;
     log::set_max_level(LevelFilter::Info);

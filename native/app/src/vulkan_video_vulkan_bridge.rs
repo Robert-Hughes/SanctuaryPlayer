@@ -367,6 +367,14 @@ impl VulkanVideoVulkanBridge {
 
 impl Drop for VulkanVideoVulkanBridge {
     fn drop(&mut self) {
+        log::info!(
+            "SanctuaryPlayer: Vulkan direct bridge drop begin size={}x{} inflight={} fence=0x{:x} command_pool=0x{:x}",
+            self.width,
+            self.height,
+            self.inflight.is_some(),
+            self.copy_fence.as_raw(),
+            self.command_pool.as_raw()
+        );
         self.inflight = None;
         if crate::vulkan_video_decoder::direct_device_lost() {
             log::warn!(
@@ -374,11 +382,26 @@ impl Drop for VulkanVideoVulkanBridge {
             );
             return;
         }
+        log::logger().flush();
+        let started = std::time::Instant::now();
         unsafe {
-            let _ = self.vk_device.device_wait_idle();
+            match self.vk_device.device_wait_idle() {
+                Ok(()) => log::info!(
+                    "SanctuaryPlayer: Vulkan direct bridge device_wait_idle complete elapsed={:.3}s",
+                    started.elapsed().as_secs_f64()
+                ),
+                Err(error) => log::error!(
+                    "SanctuaryPlayer: Vulkan direct bridge device_wait_idle failed elapsed={:.3}s error={error}",
+                    started.elapsed().as_secs_f64()
+                ),
+            }
             self.vk_device.destroy_fence(self.copy_fence, None);
             self.vk_device.destroy_command_pool(self.command_pool, None);
         }
+        log::info!(
+            "SanctuaryPlayer: Vulkan direct bridge drop complete elapsed={:.3}s",
+            started.elapsed().as_secs_f64()
+        );
     }
 }
 
