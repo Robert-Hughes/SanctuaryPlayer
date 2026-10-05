@@ -330,8 +330,85 @@ fn make_direct_decoder(params: &CodecParameters) -> Result<Box<dyn Decoder>> {
     );
     // SAFETY: Graphics installs handles from its live wgpu-owned Vulkan device
     // and keeps that device alive for the application's playback lifetime.
-    unsafe {
+    let inner = unsafe {
         oxideav_vulkan_video::decoder::H264VkDecoder::make_direct_with_device(params, external)
+    }?;
+    Ok(Box::new(LoggedVulkanDecoder {
+        inner: Some(inner),
+        label: "h264_vulkan_direct",
+    }))
+}
+
+struct LoggedVulkanDecoder {
+    inner: Option<Box<dyn Decoder>>,
+    label: &'static str,
+}
+
+impl LoggedVulkanDecoder {
+    fn inner(&self) -> &dyn Decoder {
+        self.inner
+            .as_deref()
+            .expect("logged Vulkan decoder dropped")
+    }
+
+    fn inner_mut(&mut self) -> &mut dyn Decoder {
+        self.inner
+            .as_deref_mut()
+            .expect("logged Vulkan decoder dropped")
+    }
+}
+
+impl Decoder for LoggedVulkanDecoder {
+    fn codec_id(&self) -> &CodecId {
+        self.inner().codec_id()
+    }
+
+    fn output_params(&self) -> Option<&CodecParameters> {
+        self.inner().output_params()
+    }
+
+    fn send_packet(&mut self, packet: &Packet) -> Result<()> {
+        self.inner_mut().send_packet(packet)
+    }
+
+    fn receive_frame(&mut self) -> Result<Frame> {
+        self.inner_mut().receive_frame()
+    }
+
+    fn flush(&mut self) -> Result<()> {
+        self.inner_mut().flush()
+    }
+
+    fn reset(&mut self) -> Result<()> {
+        self.inner_mut().reset()
+    }
+
+    fn set_execution_context(&mut self, ctx: &ExecutionContext) {
+        self.inner_mut().set_execution_context(ctx);
+    }
+
+    fn set_cancellation_token(&mut self, token: CancellationToken) {
+        self.inner_mut().set_cancellation_token(token);
+    }
+}
+
+impl Drop for LoggedVulkanDecoder {
+    fn drop(&mut self) {
+        let Some(inner) = self.inner.take() else {
+            return;
+        };
+        log::info!(
+            "SanctuaryPlayer: Vulkan decoder drop begin implementation={}",
+            self.label
+        );
+        log::logger().flush();
+        let started = std::time::Instant::now();
+        drop(inner);
+        log::info!(
+            "SanctuaryPlayer: Vulkan decoder drop complete implementation={} elapsed={:.3}s",
+            self.label,
+            started.elapsed().as_secs_f64()
+        );
     }
 }
 
