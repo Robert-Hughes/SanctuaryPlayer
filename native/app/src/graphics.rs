@@ -43,7 +43,7 @@ impl Graphics {
         let size = window.inner_size();
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::PRIMARY,
-            flags: wgpu::InstanceFlags::default(),
+            flags: wgpu::InstanceFlags::from_env_or_default(),
             memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
             backend_options: wgpu::BackendOptions::default(),
             display: None,
