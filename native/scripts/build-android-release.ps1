@@ -1,7 +1,5 @@
 param(
-    [switch]$DeployAndroid,
-    [switch]$SkipAndroid,
-    [switch]$SkipDesktop
+    [switch]$DeployAndroid
 )
 
 $ErrorActionPreference = "Stop"
@@ -9,12 +7,6 @@ Set-StrictMode -Version Latest
 
 if ($env:OS -ne "Windows_NT") {
     throw "This release build script must run on Windows."
-}
-if ($SkipAndroid -and $SkipDesktop) {
-    throw "Nothing to build: both -SkipAndroid and -SkipDesktop were specified."
-}
-if ($DeployAndroid -and $SkipAndroid) {
-    throw "-DeployAndroid cannot be combined with -SkipAndroid."
 }
 
 $nativeDir = Split-Path -Parent $PSScriptRoot
@@ -48,7 +40,6 @@ function Run([string]$Executable, [string[]]$Arguments, [string]$WorkingDirector
     }
 }
 
-if (-not $SkipAndroid) {
     $sdk = if ($env:ANDROID_HOME) { $env:ANDROID_HOME } else { Join-Path $env:LOCALAPPDATA "Android\Sdk" }
     $ndk = if ($env:ANDROID_NDK_ROOT) { $env:ANDROID_NDK_ROOT } else { Join-Path $sdk "ndk\$ndkVersion" }
     $buildTools = Join-Path $sdk "build-tools\$buildToolsVersion"
@@ -150,12 +141,4 @@ if (-not $SkipAndroid) {
         Run $adb @("install", "-r", $finalApk) $repoRoot
         Write-Host "Installed $androidPackage versionCode=$androidVersionCode on the connected phone."
     }
-}
 
-if (-not $SkipDesktop) {
-    Write-Host "Building Windows desktop release..."
-    Run "cargo" @("build", "-p", "sanctuary-player-desktop", "--release")
-    $desktopExe = Join-Path $nativeDir "target\release\sanctuary-player.exe"
-    Require-File $desktopExe "Windows release executable"
-    Write-Host "Windows release executable: $desktopExe"
-}

@@ -103,34 +103,44 @@ arrive.
 See `native/OXIDEAV.md` for the full source/demux/decode/back-pressure, timing, seeking,
 quality-switch and hardware-presentation design.
 
-Native Windows/Android release builds
-=====================================
+Native release builds
+=====================
 
-On Windows, `native/scripts/build-release-windows.ps1` builds the two native release
-artifacts used for development and testing:
+The Windows desktop release is a normal Cargo build from the native workspace:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File native\scripts\build-release-windows.ps1
+cd native
+cargo build -p sanctuary-player-desktop --release
 ```
 
-This builds an optimized ARM64 Android native library, packages it through the checked-in
-Gradle `GameActivity` project, signs/verifies the APK with the normal per-user Android
-development keystore, and builds the optimized Windows desktop executable. Outputs are:
+Output:
 
 ```text
-native\target\release\apk\sanctuary_player_android.apk
 native\target\release\sanctuary-player.exe
 ```
 
-To build both and immediately install the APK on the paired Samsung development phone:
+Android needs extra packaging/signing steps, so Windows has a small helper script:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File native\scripts\build-release-windows.ps1 -DeployAndroid
+powershell -ExecutionPolicy Bypass -File native\scripts\build-android-release.ps1
+```
+
+This builds the optimized ARM64 Android native library, packages it through the checked-in
+Gradle `GameActivity` project, and signs/verifies the APK with the normal per-user Android
+development keystore. Output:
+
+```text
+native\target\release\apk\sanctuary_player_android.apk
+```
+
+To build and immediately install the APK on the paired Samsung development phone:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File native\scripts\build-android-release.ps1 -DeployAndroid
 ```
 
 The deployment path runs `%LOCALAPPDATA%\bin\adb-connect-phone.cmd` before ADB, so it
 uses the phone's paired Wireless Debugging connection rather than a remembered TCP port.
-`-SkipAndroid` and `-SkipDesktop` can be used when only one artifact is needed.
 
 The Android development release deliberately keeps `android:debuggable="true"` for log
 retrieval and diagnostics. Its current `versionName`/`versionCode` are fixed in the build
