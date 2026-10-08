@@ -103,6 +103,41 @@ arrive.
 See `native/OXIDEAV.md` for the full source/demux/decode/back-pressure, timing, seeking,
 quality-switch and hardware-presentation design.
 
+Native Windows/Android release builds
+=====================================
+
+On Windows, `native/scripts/build-release-windows.ps1` builds the two native release
+artifacts used for development and testing:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File native\scripts\build-release-windows.ps1
+```
+
+This builds an optimized ARM64 Android native library, packages it through the checked-in
+Gradle `GameActivity` project, signs/verifies the APK with the normal per-user Android
+development keystore, and builds the optimized Windows desktop executable. Outputs are:
+
+```text
+native\target\release\apk\sanctuary_player_android.apk
+native\target\release\sanctuary-player.exe
+```
+
+To build both and immediately install the APK on the paired Samsung development phone:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File native\scripts\build-release-windows.ps1 -DeployAndroid
+```
+
+The deployment path runs `%LOCALAPPDATA%\bin\adb-connect-phone.cmd` before ADB, so it
+uses the phone's paired Wireless Debugging connection rather than a remembered TCP port.
+`-SkipAndroid` and `-SkipDesktop` can be used when only one artifact is needed.
+
+The Android development release deliberately keeps `android:debuggable="true"` for log
+retrieval and diagnostics. Its current `versionName`/`versionCode` are fixed in the build
+script (`0.1.0` / `16777474`); repeated builds reuse the same version code and can be
+installed in place with `adb install -r`. Only change those values when deliberately
+versioning a newer installable release.
+
 Known Issues
 ============
 
