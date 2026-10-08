@@ -96,6 +96,7 @@ struct PendingVideoOpen<P> {
     receiver: Receiver<Result<OpenedVideo<P>, String>>,
     cancellation: CancellationToken,
     platform: VideoPlatform,
+    refresh_seek_target: Option<Duration>,
 }
 
 struct PendingPositionsFetch {
@@ -509,23 +510,29 @@ impl<P: PlaybackBackend + 'static> AppState<P> {
 
     pub fn update(&mut self, elapsed: Duration) {
         self.poll_video_open();
-        let was_seeking = matches!(self.playback.state(), PlaybackState::Seeking);
-        let was_error = matches!(self.playback.state(), PlaybackState::Error(_));
-        self.playback.update(elapsed);
-        let seek_completed =
-            was_seeking && !matches!(self.playback.state(), PlaybackState::Seeking);
-        if seek_completed && !matches!(self.playback.state(), PlaybackState::Error(_)) {
-            self.unconfirmed_start_position = None;
+        let refresh_open_in_progress = self
+            .pending_video_open
+            .as_ref()
+            .is_some_and(|pending| pending.refresh_seek_target.is_some());
+        if !refresh_open_in_progress {
+            let was_seeking = matches!(self.playback.state(), PlaybackState::Seeking);
+            let was_error = matches!(self.playback.state(), PlaybackState::Error(_));
+            self.playback.update(elapsed);
+            let seek_completed =
+                was_seeking && !matches!(self.playback.state(), PlaybackState::Seeking);
+            if seek_completed && !matches!(self.playback.state(), PlaybackState::Error(_)) {
+                self.unconfirmed_start_position = None;
+            }
+            let playback_error = match self.playback.state() {
+                PlaybackState::Error(message) if !was_error => Some(message.clone()),
+                _ => None,
+            };
+            if let Some(message) = playback_error {
+                self.show_message("Playback error", message);
+            }
+            self.refresh_safe_session();
+            self.persist_session(seek_completed);
         }
-        let playback_error = match self.playback.state() {
-            PlaybackState::Error(message) if !was_error => Some(message.clone()),
-            _ => None,
-        };
-        if let Some(message) = playback_error {
-            self.show_message("Playback error", message);
-        }
-        self.refresh_safe_session();
-        self.persist_session(seek_completed);
         self.age_saved_positions(elapsed);
         if let Some(metadata) = self.metadata.as_mut() {
             metadata.release_age = metadata.release_age.saturating_add(elapsed);
@@ -595,6 +602,7 @@ impl<P: PlaybackBackend + 'static> AppState<P> {
         };
 
         let platform = pending.platform;
+        let refresh_seek_target = pending.refresh_seek_target;
         self.pending_video_open = None;
         match result {
             Ok(opened) => {
@@ -608,12 +616,19 @@ impl<P: PlaybackBackend + 'static> AppState<P> {
                 );
                 self.playback = Some(opened.playback);
                 self.metadata = opened.metadata;
-                let start_time = self
-                    .playback
-                    .source()
-                    .and_then(|source| source.start_time)
-                    .filter(|position| !position.is_zero());
+                let start_time = refresh_seek_target.or_else(|| {
+                    self.playback
+                        .source()
+                        .and_then(|source| source.start_time)
+                        .filter(|position| !position.is_zero())
+                });
                 if let Some(position) = start_time {
+                    if refresh_seek_target.is_some() {
+                        log::info!(
+                            "SanctuaryPlayer: refresh replacement adopting latest seek target={:.3}s",
+                            position.as_secs_f64()
+                        );
+                    }
                     if let Some(source) = self.playback.source() {
                         self.unconfirmed_start_position = Some((source.id.clone(), position));
                     }
@@ -642,14 +657,19 @@ impl<P: PlaybackBackend + 'static> AppState<P> {
 
     fn begin_video_resolution(&mut self, source: VideoSource) {
         self.preferences.manually_selected_quality = None;
-        self.start_video_resolution(source, true);
+        self.start_video_resolution(source, true, None);
     }
 
-    fn refresh_video_resolution(&mut self, source: VideoSource) {
-        self.start_video_resolution(source, false);
+    fn refresh_video_resolution(&mut self, source: VideoSource, position: Duration) {
+        self.start_video_resolution(source, false, Some(position));
     }
 
-    fn start_video_resolution(&mut self, source: VideoSource, clear_current: bool) {
+    fn start_video_resolution(
+        &mut self,
+        source: VideoSource,
+        clear_current: bool,
+        refresh_seek_target: Option<Duration>,
+    ) {
         self.cancel_pending_video_open();
         let twitch_resolver = self.twitch_resolver;
         let youtube_resolver = self.youtube_resolver;
@@ -715,6 +735,7 @@ impl<P: PlaybackBackend + 'static> AppState<P> {
             receiver,
             cancellation,
             platform,
+            refresh_seek_target,
         });
         self.ui.menu_open = false;
         self.note_interaction();
@@ -774,22 +795,25 @@ impl<P: PlaybackBackend + 'static> AppState<P> {
             receiver,
             cancellation,
             platform,
+            refresh_seek_target: None,
         });
     }
     fn refresh_playback(&mut self) {
-        let resume_playing = matches!(
-            self.playback.state(),
-            PlaybackState::Playing
-                | PlaybackState::Buffering
-                | PlaybackState::Loading
-                | PlaybackState::Seeking
-                | PlaybackState::Error(_)
-        );
+        let resume_playing = self.play_when_opened
+            || self.playback.intends_playing()
+            || matches!(
+                self.playback.state(),
+                PlaybackState::Loading | PlaybackState::Error(_)
+            );
         let Some(mut source) = self.playback.source().cloned() else {
             return;
         };
-        let backend_position = self.playback.position();
-        let position = if !backend_position.is_zero() {
+        let queued_refresh_position = self
+            .pending_video_open
+            .as_ref()
+            .and_then(|pending| pending.refresh_seek_target);
+        let backend_position = queued_refresh_position.unwrap_or_else(|| self.playback.position());
+        let position = if queued_refresh_position.is_some() || !backend_position.is_zero() {
             backend_position
         } else if let Some(requested) = source.start_time.filter(|position| !position.is_zero()) {
             requested
@@ -804,11 +828,14 @@ impl<P: PlaybackBackend + 'static> AppState<P> {
         };
         source.start_time = (!position.is_zero()).then_some(position);
 
-        // Freeze healthy active playback at the captured refresh position while
-        // the replacement graph is resolved and opened. Error is already
-        // frozen, while transitional states keep their own terminal/seek
-        // semantics until the replacement succeeds.
-        if matches!(
+        // A refresh supersedes the current playback graph. Cancel its logical
+        // seek immediately so a late barrier/completion from that graph cannot
+        // resume or reposition the application while the replacement opens.
+        // The old graph remains frozen only to retain its current visual/source
+        // context until the replacement graph is ready.
+        if matches!(self.playback.state(), PlaybackState::Seeking) {
+            self.playback.cancel_pending_seek();
+        } else if matches!(
             self.playback.state(),
             PlaybackState::Playing | PlaybackState::Buffering
         ) {
@@ -824,7 +851,7 @@ impl<P: PlaybackBackend + 'static> AppState<P> {
             position.as_secs_f64(),
             resume_playing
         );
-        self.refresh_video_resolution(source);
+        self.refresh_video_resolution(source, position);
     }
 
     fn show_message(&mut self, title: impl Into<String>, message: impl Into<String>) {
@@ -1349,6 +1376,24 @@ impl<P: PlaybackBackend + 'static> AppState<P> {
         toggles_lock
     }
 
+    fn seek_to(&mut self, position: Duration) {
+        let target = self
+            .playback
+            .duration()
+            .map_or(position, |duration| position.min(duration));
+        if let Some(pending) = self.pending_video_open.as_mut()
+            && let Some(refresh_seek_target) = pending.refresh_seek_target.as_mut()
+        {
+            *refresh_seek_target = target;
+            log::info!(
+                "SanctuaryPlayer: seek queued during refresh latest={:.3}s",
+                target.as_secs_f64()
+            );
+            return;
+        }
+        self.playback.seek(target);
+    }
+
     pub fn apply(&mut self, command: AppCommand) -> Option<AppEffect> {
         if self.ui.controls_locked
             && !matches!(
@@ -1402,15 +1447,15 @@ impl<P: PlaybackBackend + 'static> AppState<P> {
                 self.persist_session(true);
                 self.schedule_paused_position_save();
             }
-            AppCommand::SeekAbsolute(position) => self.playback.seek(position),
+            AppCommand::SeekAbsolute(position) => self.seek_to(position),
             AppCommand::SeekRelative(offset) => {
-                let current = self.playback.position();
+                let current = self.position();
                 let target = if offset >= 0 {
                     current.saturating_add(Duration::from_secs(offset as u64))
                 } else {
                     current.saturating_sub(Duration::from_secs(offset.unsigned_abs()))
                 };
-                self.playback.seek(target);
+                self.seek_to(target);
             }
             AppCommand::SetPlaybackRate(rate) => self.playback.set_playback_rate(rate),
             AppCommand::SetVolume(volume) => {
@@ -1586,6 +1631,13 @@ impl<P: PlaybackBackend + 'static> AppState<P> {
     }
 
     pub fn playback_intends_playing(&self) -> bool {
+        if self
+            .pending_video_open
+            .as_ref()
+            .is_some_and(|pending| pending.refresh_seek_target.is_some())
+        {
+            return self.play_when_opened;
+        }
         self.playback.intends_playing()
     }
 
@@ -1641,7 +1693,10 @@ impl<P: PlaybackBackend + 'static> AppState<P> {
     }
 
     pub fn position(&self) -> Duration {
-        self.playback.position()
+        self.pending_video_open
+            .as_ref()
+            .and_then(|pending| pending.refresh_seek_target)
+            .unwrap_or_else(|| self.playback.position())
     }
 
     pub fn duration(&self) -> Option<Duration> {
@@ -1915,6 +1970,9 @@ mod tests {
         fn pause(&mut self) {
             self.inner.pause();
         }
+        fn cancel_pending_seek(&mut self) {
+            self.inner.cancel_pending_seek();
+        }
         fn position(&self) -> Duration {
             self.inner.position()
         }
@@ -1997,6 +2055,13 @@ mod tests {
                 Self::Dummy(p) => p.pause(),
                 Self::Error(p) => p.pause(),
                 Self::Quality(p) => p.pause(),
+            }
+        }
+        fn cancel_pending_seek(&mut self) {
+            match self {
+                Self::Dummy(p) => p.cancel_pending_seek(),
+                Self::Error(p) => p.cancel_pending_seek(),
+                Self::Quality(p) => p.cancel_pending_seek(),
             }
         }
         fn position(&self) -> Duration {
@@ -2221,6 +2286,27 @@ mod tests {
         Ok(TestPlayback::Dummy(playback))
     }
 
+    fn slow_test_playback_factory(
+        source: VideoSource,
+        url: Url,
+        initial_qualities: String,
+        decode_mode: DecodeMode,
+        muted: bool,
+        wake: PlaybackWake,
+        cancellation: CancellationToken,
+    ) -> Result<TestPlayback, String> {
+        std::thread::sleep(Duration::from_millis(50));
+        test_playback_factory(
+            source,
+            url,
+            initial_qualities,
+            decode_mode,
+            muted,
+            wake,
+            cancellation,
+        )
+    }
+
     fn test_playback_factory_requires_initial_quality_and_app_start_seek(
         source: VideoSource,
         _url: Url,
@@ -2342,6 +2428,112 @@ mod tests {
         assert_eq!(state.playback_state(), &PlaybackState::Playing);
         assert_eq!(state.position(), Duration::from_secs(17));
         assert!(!state.play_when_opened);
+    }
+
+    #[test]
+    fn refresh_cancels_inflight_seek_before_old_graph_can_complete() {
+        let mut state = loaded_state();
+        state.twitch_resolver = test_twitch_resolver;
+        state.playback_factory = slow_test_playback_factory;
+        state.apply(AppCommand::Play);
+        state.update(Duration::from_secs(10));
+        state.apply(AppCommand::SeekAbsolute(Duration::from_secs(42)));
+        assert_eq!(state.playback_state(), &PlaybackState::Seeking);
+        assert!(state.playback_intends_playing());
+
+        state.apply(AppCommand::RefreshPlayback);
+
+        assert!(state.pending_video_open.is_some());
+        assert_eq!(state.playback_state(), &PlaybackState::Paused);
+        assert_eq!(state.position(), Duration::from_secs(42));
+        assert!(state.playback_intends_playing());
+
+        // A large update would complete DummyPlayback's old seek if Refresh had
+        // left it active. While the replacement is pending the old graph must
+        // remain frozen and its cancelled seek must not be able to resume it.
+        state.update(Duration::from_secs(1));
+        assert!(state.pending_video_open.is_some());
+        assert_eq!(state.playback_state(), &PlaybackState::Paused);
+        assert_eq!(state.position(), Duration::from_secs(42));
+
+        for _ in 0..200 {
+            state.update(Duration::from_millis(200));
+            if state.pending_video_open.is_none()
+                && matches!(state.playback_state(), PlaybackState::Playing)
+            {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+
+        assert!(state.pending_video_open.is_none());
+        assert_eq!(state.playback_state(), &PlaybackState::Playing);
+        assert_eq!(state.position(), Duration::from_secs(42));
+    }
+
+    #[test]
+    fn seek_during_refresh_replaces_captured_position_including_zero() {
+        let mut state = loaded_state();
+        state.twitch_resolver = test_twitch_resolver;
+        state.playback_factory = slow_test_playback_factory;
+        state.apply(AppCommand::Play);
+        state.update(Duration::from_secs(25));
+        assert_eq!(state.position(), Duration::from_secs(25));
+
+        state.apply(AppCommand::RefreshPlayback);
+        state.apply(AppCommand::SeekRelative(5));
+        assert_eq!(state.position(), Duration::from_secs(30));
+        state.apply(AppCommand::SeekAbsolute(Duration::ZERO));
+        assert_eq!(state.position(), Duration::ZERO);
+
+        for _ in 0..200 {
+            state.update(Duration::from_millis(200));
+            if state.pending_video_open.is_none()
+                && matches!(state.playback_state(), PlaybackState::Playing)
+                && state.position().is_zero()
+            {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+
+        assert!(state.pending_video_open.is_none());
+        assert_eq!(state.playback_state(), &PlaybackState::Playing);
+        assert_eq!(state.position(), Duration::ZERO);
+    }
+
+    #[test]
+    fn repeated_refresh_preserves_latest_seek_queued_for_replacement() {
+        let mut state = loaded_state();
+        state.twitch_resolver = test_twitch_resolver;
+        state.playback_factory = slow_test_playback_factory;
+        state.apply(AppCommand::Play);
+        state.update(Duration::from_secs(17));
+
+        state.apply(AppCommand::RefreshPlayback);
+        state.apply(AppCommand::SeekRelative(5));
+        assert_eq!(state.position(), Duration::from_secs(22));
+
+        // A second Refresh cancels the first open but must inherit the logical
+        // target rather than falling back to the stale old graph position.
+        state.apply(AppCommand::RefreshPlayback);
+        state.apply(AppCommand::SeekRelative(5));
+        assert_eq!(state.position(), Duration::from_secs(27));
+
+        for _ in 0..250 {
+            state.update(Duration::from_millis(200));
+            if state.pending_video_open.is_none()
+                && matches!(state.playback_state(), PlaybackState::Playing)
+                && state.position() == Duration::from_secs(27)
+            {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+
+        assert!(state.pending_video_open.is_none());
+        assert_eq!(state.playback_state(), &PlaybackState::Playing);
+        assert_eq!(state.position(), Duration::from_secs(27));
     }
 
     #[test]

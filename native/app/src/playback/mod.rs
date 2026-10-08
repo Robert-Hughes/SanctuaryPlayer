@@ -246,6 +246,7 @@ pub trait PlaybackBackend: Send {
     fn intends_playing(&self) -> bool;
     fn play(&mut self);
     fn pause(&mut self);
+    fn cancel_pending_seek(&mut self) {}
     fn position(&self) -> Duration;
     fn duration(&self) -> Option<Duration>;
     fn seek(&mut self, position: Duration);
@@ -335,6 +336,12 @@ impl<P: PlaybackBackend> PlaybackBackend for Option<P> {
     fn pause(&mut self) {
         if let Some(playback) = self.as_mut() {
             playback.pause();
+        }
+    }
+
+    fn cancel_pending_seek(&mut self) {
+        if let Some(playback) = self.as_mut() {
+            playback.cancel_pending_seek();
         }
     }
 

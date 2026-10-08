@@ -107,6 +107,12 @@ impl PlaybackBackend for DummyPlayback {
         }
     }
 
+    fn cancel_pending_seek(&mut self) {
+        if self.pending_seek.take().is_some() {
+            self.state = PlaybackState::Paused;
+        }
+    }
+
     fn position(&self) -> Duration {
         self.pending_seek
             .as_ref()

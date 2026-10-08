@@ -2018,6 +2018,32 @@ impl PlaybackBackend for OxidePlayback {
         self.state = PlaybackState::Paused;
     }
 
+    fn cancel_pending_seek(&mut self) {
+        let Some(pending) = self.seek_pending.take() else {
+            self.queued_seek = None;
+            return;
+        };
+        log::info!(
+            "SanctuaryPlayer: cancelling pending seek generation={} requested={:.3}s",
+            pending.generation,
+            pending.requested.as_secs_f64(),
+        );
+        self.queued_seek = None;
+        self.pending_audio_frame = None;
+        self.post_seek_epoch = None;
+        self.video_queue.clear();
+        self.video_clock.reset();
+        self.first_frame_presented = false;
+        self.starvation_started_at = None;
+        if let Some(audio) = self.audio_output.as_mut()
+            && let Err(error) = audio.set_paused(true)
+        {
+            self.fail(error);
+            return;
+        }
+        self.state = PlaybackState::Paused;
+    }
+
     fn position(&self) -> Duration {
         if !matches!(self.state, PlaybackState::Seeking | PlaybackState::Error(_))
             && let Some(position) = self.video_position_at(Instant::now())
@@ -4566,6 +4592,44 @@ mod tests {
                 .map(|pending| pending.resume_playing),
             Some(false)
         );
+    }
+
+    #[test]
+    fn cancelling_seek_discards_late_barrier_from_old_generation() {
+        let (mut playback, _tx) = clock_test_playback();
+        playback.state = PlaybackState::Seeking;
+        playback.position = Duration::from_secs(10);
+        playback.seek_pending = Some(PendingSeek {
+            generation: 7,
+            requested: Duration::from_secs(10),
+            prior_position: Duration::from_secs(5),
+            resume_playing: true,
+            barriers_remaining: 1,
+            audio_answered: false,
+            video_answered: false,
+            landing: None,
+            rejected: false,
+        });
+        playback.queued_seek = Some(Duration::from_secs(20));
+
+        playback.cancel_pending_seek();
+
+        assert_eq!(playback.state, PlaybackState::Paused);
+        assert!(playback.seek_pending.is_none());
+        assert!(playback.queued_seek.is_none());
+        playback
+            .handle_seek_barrier(
+                Some(MediaType::Video),
+                BarrierKind::SeekFlush {
+                    generation: 7,
+                    landed_pts: 900_000,
+                    time_base: TimeBase::new(1, 90_000),
+                },
+            )
+            .unwrap();
+        assert_eq!(playback.state, PlaybackState::Paused);
+        assert_eq!(playback.position, Duration::from_secs(10));
+        assert!(playback.seek_pending.is_none());
     }
 
     #[test]
