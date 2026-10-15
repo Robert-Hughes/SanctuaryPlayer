@@ -11,6 +11,6 @@
 - Add an independent playback test with deliberately slow video presentation.
 - Add an independent playback test with deliberately slow audio presentation.
 - Add a manual A/V sync test mode using a deterministic synthetic cue such as a simulated metronome, so presentation offset and drift can be observed and adjusted deliberately.
-- Add live-stream playback support
+- Improve sliding-window live-HLS seeking: keep 0:00 anchored to the initial playlist timeline rather than moving it when old segments expire; track the currently available earliest and latest positions as the playlist slides; clamp or reject seeks outside that seekable range instead of attempting to fetch expired segments. Distinguish the moving live edge from the fixed playback timeline. (Growing live/event HLS playlist reload and playback support is implemented.)
 - Add OS media-key handling for play/pause and other appropriate transport controls.
 - Add equivalent display sleep/screensaver inhibition on desktop platforms; Android keeps the display awake only during foreground playback.
