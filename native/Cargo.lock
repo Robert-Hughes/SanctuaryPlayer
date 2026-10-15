@@ -560,7 +560,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -771,7 +771,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2171,7 +2171,7 @@ checksum = "776a36e8f0011eaacfb833e8e5b978609babb1f94e204f9c7d996bff3fe4f06c"
 [[package]]
 name = "oxideav-core"
 version = "0.1.37"
-source = "git+https://github.com/Robert-Hughes/oxideav-core.git?branch=dev#5ac8cae677d571579129c47fb41424cdf14109b2"
+source = "git+https://github.com/Robert-Hughes/oxideav-core.git?branch=dev#97d7d6b8a4ba1d2d495c1a4a37655ce2dbcd399f"
 dependencies = [
  "bytemuck",
  "serde_json",
@@ -2191,7 +2191,7 @@ dependencies = [
 [[package]]
 name = "oxideav-hls"
 version = "0.1.0"
-source = "git+https://github.com/Robert-Hughes/oxideav-hls.git?branch=dev#a8d7ba67e0b5cb6f964e7dc672503f99a6fb4cef"
+source = "git+https://github.com/Robert-Hughes/oxideav-hls.git?branch=dev#cab19a744d602350aac6edb1173969e4b77d16f4"
 dependencies = [
  "log",
  "m3u8-rs",
@@ -2268,7 +2268,7 @@ dependencies = [
 [[package]]
 name = "oxideav-pipeline"
 version = "0.1.12"
-source = "git+https://github.com/Robert-Hughes/oxideav-pipeline.git?branch=dev#88807d9968f2616f658bfeae74055daeb51820a2"
+source = "git+https://github.com/Robert-Hughes/oxideav-pipeline.git?branch=dev#6396d82f19c4bf6ebd7bebc4fc5612fed47bfc90"
 dependencies = [
  "indexmap",
  "log",
@@ -2609,7 +2609,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2902,7 +2902,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4213,7 +4213,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
