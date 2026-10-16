@@ -239,6 +239,13 @@ impl Default for PlaybackWake {
 
 /// Application-facing playback API. The concrete implementation owns media
 /// scheduling while the renderer consumes retained decoded-frame leases.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PlaybackEvent {
+    SeekCompleted { position: Duration },
+    SeekRejected,
+    Failed(String),
+}
+
 pub trait PlaybackBackend: Send {
     fn open(&mut self, source: &VideoSource) -> Result<(), String>;
     fn source(&self) -> Option<&VideoSource>;
@@ -261,6 +268,9 @@ pub trait PlaybackBackend: Send {
     }
     fn set_quality(&mut self, quality_id: &str);
     fn update(&mut self, elapsed: Duration);
+    fn drain_events(&mut self) -> Vec<PlaybackEvent> {
+        Vec::new()
+    }
 
     fn next_wake_deadline(&self, _now: Instant) -> Option<Instant> {
         None
@@ -409,6 +419,11 @@ impl<P: PlaybackBackend> PlaybackBackend for Option<P> {
         if let Some(playback) = self.as_mut() {
             playback.update(elapsed);
         }
+    }
+
+    fn drain_events(&mut self) -> Vec<PlaybackEvent> {
+        self.as_mut()
+            .map_or_else(Vec::new, PlaybackBackend::drain_events)
     }
 
     fn next_wake_deadline(&self, now: Instant) -> Option<Instant> {

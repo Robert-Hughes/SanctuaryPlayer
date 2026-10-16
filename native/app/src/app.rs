@@ -11,7 +11,7 @@ use ::oxideav::core::{CancellationToken, FrameLease, VideoColorInfo};
 
 use crate::model::{AppCommand, DebugGraph, DebugGraphLane, DebugNode, PlaybackState, Quality};
 use crate::playback::{
-    DecodeMode, OxidePlayback, PendingPlaybackWakes, PlaybackBackend, PlaybackWake,
+    DecodeMode, OxidePlayback, PendingPlaybackWakes, PlaybackBackend, PlaybackEvent, PlaybackWake,
 };
 use crate::services::{PositionService, RemotePositionService, SavedPosition, VideoMetadata};
 use crate::session::{SessionState, SessionStore};
@@ -520,20 +520,42 @@ impl<P: PlaybackBackend + 'static> AppState<P> {
             let was_seeking = matches!(self.playback.state(), PlaybackState::Seeking);
             // Errors may also arise while retrieving frames during rendering.
             self.playback.update(elapsed);
-            let seek_completed =
-                was_seeking && !matches!(self.playback.state(), PlaybackState::Seeking);
-            if seek_completed && !matches!(self.playback.state(), PlaybackState::Error(_)) {
+            let events = self.playback.drain_events();
+            let seek_completed = events
+                .iter()
+                .any(|event| matches!(event, PlaybackEvent::SeekCompleted { .. }))
+                || (was_seeking
+                    && !matches!(
+                        self.playback.state(),
+                        PlaybackState::Seeking | PlaybackState::Error(_)
+                    )
+                    && !events
+                        .iter()
+                        .any(|event| matches!(event, PlaybackEvent::SeekRejected)));
+            if seek_completed {
                 self.unconfirmed_start_position = None;
             }
-            let playback_error = match self.playback.state() {
-                PlaybackState::Error(message) if !self.playback_error_reported => {
-                    self.playback_error_reported = true;
-                    Some(message.clone())
-                }
-                PlaybackState::Error(_) => None,
-                _ => {
-                    self.playback_error_reported = false;
-                    None
+            let failures: Vec<_> = events
+                .iter()
+                .filter_map(|event| match event {
+                    PlaybackEvent::Failed(message) => Some(message.clone()),
+                    _ => None,
+                })
+                .collect();
+            let playback_error = if let Some(message) = failures.last() {
+                self.playback_error_reported = true;
+                Some(message.clone())
+            } else {
+                match self.playback.state() {
+                    PlaybackState::Error(message) if !self.playback_error_reported => {
+                        self.playback_error_reported = true;
+                        Some(message.clone())
+                    }
+                    PlaybackState::Error(_) => None,
+                    _ => {
+                        self.playback_error_reported = false;
+                        None
+                    }
                 }
             };
             if let Some(message) = playback_error {
@@ -1871,6 +1893,7 @@ mod tests {
         source: VideoSource,
         state: PlaybackState,
         position: Duration,
+        events: Vec<PlaybackEvent>,
     }
 
     impl ErrorOnUpdatePlayback {
@@ -1879,6 +1902,7 @@ mod tests {
                 source: VideoSource::parse("2386400830").unwrap(),
                 state: PlaybackState::Playing,
                 position: Duration::from_secs(123),
+                events: Vec::new(),
             }
         }
     }
@@ -1938,7 +1962,12 @@ mod tests {
         fn set_quality(&mut self, _quality_id: &str) {}
 
         fn update(&mut self, _elapsed: Duration) {
-            self.state = PlaybackState::Error("synthetic executor failure".into());
+            if matches!(self.state, PlaybackState::Playing) {
+                self.state = PlaybackState::Error("synthetic executor failure".into());
+            }
+        }
+        fn drain_events(&mut self) -> Vec<PlaybackEvent> {
+            std::mem::take(&mut self.events)
         }
     }
 
@@ -2152,6 +2181,13 @@ mod tests {
                 Self::Dummy(p) => p.update(elapsed),
                 Self::Error(p) => p.update(elapsed),
                 Self::Quality(p) => p.update(elapsed),
+            }
+        }
+        fn drain_events(&mut self) -> Vec<PlaybackEvent> {
+            match self {
+                Self::Dummy(p) => p.drain_events(),
+                Self::Error(p) => p.drain_events(),
+                Self::Quality(p) => p.drain_events(),
             }
         }
     }
@@ -2378,6 +2414,41 @@ mod tests {
         state.close_dialog();
         state.update(Duration::from_millis(16));
         assert!(state.ui.dialog.is_none());
+    }
+
+    #[test]
+    fn completed_seek_between_updates_unblocks_position_persistence() {
+        let mut state = AppState::<TestPlayback>::new_for_test(test_playback_factory);
+        let mut playback = ErrorOnUpdatePlayback::new();
+        playback.state = PlaybackState::Paused;
+        playback.position = Duration::from_secs(900);
+        playback.events.push(PlaybackEvent::SeekCompleted {
+            position: playback.position,
+        });
+        state.unconfirmed_start_position =
+            Some((playback.source.id.clone(), Duration::from_secs(800)));
+        state.playback = Some(TestPlayback::Error(playback));
+        state.update(Duration::from_millis(16));
+        assert!(state.unconfirmed_start_position.is_none());
+        assert_eq!(
+            state.last_safe_session.as_ref().unwrap().position,
+            Duration::from_secs(900)
+        );
+    }
+
+    #[test]
+    fn rejected_seek_between_updates_preserves_last_safe_session() {
+        let mut state = AppState::<TestPlayback>::new_for_test(test_playback_factory);
+        let mut playback = ErrorOnUpdatePlayback::new();
+        playback.state = PlaybackState::Paused;
+        playback.position = Duration::from_secs(900);
+        playback.events.push(PlaybackEvent::SeekRejected);
+        state.unconfirmed_start_position =
+            Some((playback.source.id.clone(), Duration::from_secs(1000)));
+        state.playback = Some(TestPlayback::Error(playback));
+        state.update(Duration::from_millis(16));
+        assert!(state.unconfirmed_start_position.is_some());
+        assert!(state.last_safe_session.is_none());
     }
 
     #[test]

@@ -23,7 +23,7 @@ use crate::model::{
 };
 use crate::video::VideoSource;
 
-use super::{DecodeMode, PlaybackBackend, PlaybackWake, PlaybackWakeKind};
+use super::{DecodeMode, PlaybackBackend, PlaybackEvent, PlaybackWake, PlaybackWakeKind};
 
 const SESSION_CHANNEL_CAP: usize = 2;
 const VIDEO_QUEUE_CAP: usize = 2;
@@ -129,6 +129,7 @@ pub struct OxidePlayback {
     queued_seek: Option<Duration>,
     seek_supported: bool,
     diagnostics: PlaybackDiagnostics,
+    events: VecDeque<PlaybackEvent>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -895,6 +896,7 @@ impl OxidePlayback {
             queued_seek: None,
             seek_supported: true,
             diagnostics: PlaybackDiagnostics::new(),
+            events: VecDeque::new(),
         })
     }
 
@@ -1320,6 +1322,7 @@ impl OxidePlayback {
             self.queued_seek = None;
             self.position = pending.prior_position;
             self.state = PlaybackState::Paused;
+            self.events.push_back(PlaybackEvent::SeekRejected);
             if pending.resume_playing {
                 self.play();
             }
@@ -1398,6 +1401,8 @@ impl OxidePlayback {
         self.first_frame_presented = false;
         self.position = landed;
         self.state = PlaybackState::Paused;
+        self.events
+            .push_back(PlaybackEvent::SeekCompleted { position: landed });
         if pending.resume_playing {
             self.play();
         }
@@ -1651,6 +1656,8 @@ impl OxidePlayback {
     }
 
     fn fail(&mut self, message: String) {
+        self.events
+            .push_back(PlaybackEvent::Failed(message.clone()));
         log::error!("SanctuaryPlayer: {message}");
         self.starvation_started_at = None;
         if let Some(executor) = self.executor.as_ref() {
@@ -2166,6 +2173,9 @@ impl PlaybackBackend for OxidePlayback {
         }
     }
 
+    fn drain_events(&mut self) -> Vec<PlaybackEvent> {
+        self.events.drain(..).collect()
+    }
     fn update(&mut self, _elapsed: Duration) {
         self.pump_session();
         let now = Instant::now();
@@ -3689,6 +3699,7 @@ mod tests {
                 queued_seek: None,
                 seek_supported: true,
                 diagnostics: PlaybackDiagnostics::new(),
+                events: VecDeque::new(),
             },
             TestSessionSenders {
                 _control_tx: control_tx,
