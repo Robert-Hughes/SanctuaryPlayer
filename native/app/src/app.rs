@@ -161,6 +161,7 @@ pub struct AppState<P: PlaybackBackend = OxidePlayback> {
     pending_video_open: Option<PendingVideoOpen<P>>,
     startup_video_pending: bool,
     play_when_opened: bool,
+    playback_error_reported: bool,
     muted: bool,
     volume: f32,
     graphics_debug_graph: DebugGraph,
@@ -302,6 +303,7 @@ impl<P: PlaybackBackend + 'static> AppState<P> {
             pending_video_open: None,
             startup_video_pending: false,
             play_when_opened: false,
+            playback_error_reported: false,
             muted: false,
             volume: 1.0,
             graphics_debug_graph: DebugGraph::default(),
@@ -516,7 +518,7 @@ impl<P: PlaybackBackend + 'static> AppState<P> {
             .is_some_and(|pending| pending.refresh_seek_target.is_some());
         if !refresh_open_in_progress {
             let was_seeking = matches!(self.playback.state(), PlaybackState::Seeking);
-            let was_error = matches!(self.playback.state(), PlaybackState::Error(_));
+            // Errors may also arise while retrieving frames during rendering.
             self.playback.update(elapsed);
             let seek_completed =
                 was_seeking && !matches!(self.playback.state(), PlaybackState::Seeking);
@@ -524,11 +526,21 @@ impl<P: PlaybackBackend + 'static> AppState<P> {
                 self.unconfirmed_start_position = None;
             }
             let playback_error = match self.playback.state() {
-                PlaybackState::Error(message) if !was_error => Some(message.clone()),
-                _ => None,
+                PlaybackState::Error(message) if !self.playback_error_reported => {
+                    self.playback_error_reported = true;
+                    Some(message.clone())
+                }
+                PlaybackState::Error(_) => None,
+                _ => {
+                    self.playback_error_reported = false;
+                    None
+                }
             };
             if let Some(message) = playback_error {
-                self.show_message("Playback error", message);
+                // Preserve a more specific open/refresh failure already displayed.
+                if self.ui.dialog.is_none() {
+                    self.show_message("Playback error", message);
+                }
             }
             self.refresh_safe_session();
             self.persist_session(seek_completed);
@@ -615,6 +627,7 @@ impl<P: PlaybackBackend + 'static> AppState<P> {
                         .unwrap_or("?")
                 );
                 self.playback = Some(opened.playback);
+                self.playback_error_reported = false;
                 self.metadata = opened.metadata;
                 let start_time = refresh_seek_target.or_else(|| {
                     self.playback
@@ -2365,6 +2378,34 @@ mod tests {
         state.close_dialog();
         state.update(Duration::from_millis(16));
         assert!(state.ui.dialog.is_none());
+    }
+
+    #[test]
+    fn playback_error_set_between_updates_is_reported_once() {
+        let mut state = AppState::<TestPlayback>::new_for_test(test_playback_factory);
+        let mut playback = ErrorOnUpdatePlayback::new();
+        playback.state = PlaybackState::Error("synthetic executor failure".into());
+        state.playback = Some(TestPlayback::Error(playback));
+
+        state.update(Duration::from_millis(16));
+        assert!(matches!(
+            state.ui.dialog.as_ref(),
+            Some(DialogState::Message { title, message })
+                if title == "Playback error" && message == "synthetic executor failure"
+        ));
+
+        state.close_dialog();
+        state.update(Duration::from_millis(16));
+        assert!(state.ui.dialog.is_none());
+
+        // A later independent failure must be reported, even with identical text.
+        state.playback = Some(TestPlayback::Dummy(DummyPlayback::new()));
+        state.update(Duration::from_millis(16));
+        let mut playback = ErrorOnUpdatePlayback::new();
+        playback.state = PlaybackState::Error("synthetic executor failure".into());
+        state.playback = Some(TestPlayback::Error(playback));
+        state.update(Duration::from_millis(16));
+        assert!(matches!(state.ui.dialog, Some(DialogState::Message { .. })));
     }
 
     #[test]
