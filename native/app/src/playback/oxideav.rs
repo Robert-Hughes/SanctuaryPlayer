@@ -106,6 +106,8 @@ pub struct OxidePlayback {
     video_rx: Receiver<SessionMsg>,
     channel_depths: SessionChannelDepths,
     executor: Option<ExecutorHandle>,
+    executor_stop_result: Option<Receiver<Result<(), String>>>,
+    wake: PlaybackWake,
     video_stream: StreamInfo,
     audio_stream: Option<StreamInfo>,
     video_decoder: Option<DecoderDebugInfo>,
@@ -290,6 +292,7 @@ struct SessionSink {
     video_tx: SyncSender<SessionMsg>,
     depths: SessionChannelDepths,
     wake: PlaybackWake,
+    cancellation: CancellationToken,
 }
 
 impl SessionSink {
@@ -299,6 +302,7 @@ impl SessionSink {
         video_tx: SyncSender<SessionMsg>,
         depths: SessionChannelDepths,
         wake: PlaybackWake,
+        cancellation: CancellationToken,
     ) -> Self {
         Self {
             control_tx,
@@ -306,18 +310,21 @@ impl SessionSink {
             video_tx,
             depths,
             wake,
+            cancellation,
         }
     }
 
     fn send_control(&mut self, message: SessionMsg) -> ::oxideav::core::Result<()> {
         let wake_kind = message.wake_kind();
-        self.depths.control.fetch_add(1, Ordering::SeqCst);
-        if self.control_tx.send(message).is_err() {
-            release_session_depth(&self.depths.control);
-            return Err(Error::other("SanctuaryPlayer: control receiver dropped"));
-        }
-        self.wake.wake(wake_kind);
-        Ok(())
+        send_cancellable_session_message(
+            &self.control_tx,
+            &self.depths.control,
+            &self.wake,
+            &self.cancellation,
+            message,
+            wake_kind,
+            "control",
+        )
     }
 
     fn send_legacy_track_message(
@@ -340,15 +347,66 @@ impl SessionSink {
             ),
             _ => return Ok(()),
         };
-        depth.fetch_add(1, Ordering::SeqCst);
-        if tx.send(message).is_err() {
-            release_session_depth(depth);
-            return Err(Error::other(format!(
-                "SanctuaryPlayer: {label} receiver dropped"
+        send_cancellable_session_message(
+            tx,
+            depth,
+            &self.wake,
+            &self.cancellation,
+            message,
+            wake_kind,
+            label,
+        )
+    }
+}
+
+// Legacy/job-level sinks share cancellation with the executor just like the
+// independently delivered TrackSinks. SyncSender::send can block forever on a
+// full channel once the UI stops draining it, including during executor stop.
+fn send_cancellable_session_message(
+    tx: &SyncSender<SessionMsg>,
+    depth: &AtomicUsize,
+    wake: &PlaybackWake,
+    cancellation: &CancellationToken,
+    mut message: SessionMsg,
+    wake_kind: PlaybackWakeKind,
+    label: &str,
+) -> ::oxideav::core::Result<()> {
+    let mut wake_sent_while_blocked = false;
+    loop {
+        if cancellation.is_cancelled() {
+            return Err(Error::cancelled(format!(
+                "SanctuaryPlayer: {label} session send cancelled"
             )));
         }
-        self.wake.wake(wake_kind);
-        Ok(())
+        // Increment before enqueue so a fast receiver cannot underflow the
+        // depth counter; roll back the increment on unsuccessful attempts.
+        depth.fetch_add(1, Ordering::SeqCst);
+        match tx.try_send(message) {
+            Ok(()) => {
+                wake.wake(wake_kind);
+                return Ok(());
+            }
+            Err(TrySendError::Full(returned)) => {
+                release_session_depth(depth);
+                message = returned;
+                if !wake_sent_while_blocked {
+                    wake.wake(wake_kind);
+                    wake_sent_while_blocked = true;
+                }
+                std::thread::sleep(TRACK_SINK_BACKPRESSURE_WAIT);
+            }
+            Err(TrySendError::Disconnected(_)) => {
+                release_session_depth(depth);
+                if cancellation.is_cancelled() {
+                    return Err(Error::cancelled(format!(
+                        "SanctuaryPlayer: {label} session receiver dropped during cancellation"
+                    )));
+                }
+                return Err(Error::other(format!(
+                    "SanctuaryPlayer: {label} receiver dropped"
+                )));
+            }
+        }
     }
 }
 
@@ -679,6 +737,7 @@ fn open_variant_session(
         video_tx,
         channel_depths.clone(),
         wake,
+        cancellation.clone(),
     ));
     log::info!(
         "SanctuaryPlayer: OxideAV compressed packet queue cap={} per track",
@@ -873,6 +932,8 @@ impl OxidePlayback {
             video_rx: session.video_rx,
             channel_depths: session.channel_depths,
             executor: session.executor,
+            executor_stop_result: None,
+            wake,
             video_stream: session.video_stream,
             audio_stream: session.audio_stream,
             video_decoder: session.video_decoder,
@@ -1566,6 +1627,22 @@ impl OxidePlayback {
     }
 
     fn collect_executor_result(&mut self) {
+        if let Some(receiver) = self.executor_stop_result.as_ref() {
+            let result = match receiver.try_recv() {
+                Ok(result) => Some(result),
+                Err(TryRecvError::Disconnected) => {
+                    Some(Err("executor cleanup worker exited without a result".into()))
+                }
+                Err(TryRecvError::Empty) => None,
+            };
+            if let Some(result) = result {
+                self.executor_stop_result = None;
+                if let Err(error) = result {
+                    log::error!("SanctuaryPlayer: executor stop failed: {error}");
+                    self.fail(format!("OxideAV playback failed: {error}"));
+                }
+            }
+        }
         let finished = self
             .executor
             .as_ref()
@@ -1577,27 +1654,29 @@ impl OxidePlayback {
             return;
         };
         log::info!(
-            "SanctuaryPlayer: executor finished; stop begin state={:?} sink_finished={} video_eof={} audio_eof={}",
+            "SanctuaryPlayer: executor finished; scheduling stop state={:?} sink_finished={} video_eof={} audio_eof={}",
             self.state,
             self.sink_finished,
             self.video_eof,
             self.audio_eof
         );
-        log::logger().flush();
-        let started = Instant::now();
-        match executor.stop() {
-            Ok(_) => log::info!(
-                "SanctuaryPlayer: executor stop complete elapsed={:.3}s",
-                started.elapsed().as_secs_f64()
-            ),
-            Err(error) => {
-                log::error!(
-                    "SanctuaryPlayer: executor stop failed elapsed={:.3}s error={error}",
-                    started.elapsed().as_secs_f64()
-                );
-                self.fail(format!("OxideAV playback failed: {error}"));
-            }
-        }
+        let (sender, receiver) = mpsc::channel();
+        let wake = self.wake.clone();
+        self.executor_stop_result = Some(receiver);
+        dispatch_executor_stop(move || {
+            let started = Instant::now();
+            let result = executor
+                .stop()
+                .map(|_| ())
+                .map_err(|error| error.to_string());
+            log::info!(
+                "SanctuaryPlayer: executor stop completed elapsed={:.3}s success={}",
+                started.elapsed().as_secs_f64(),
+                result.is_ok()
+            );
+            let _ = sender.send(result);
+            wake.wake(PlaybackWakeKind::Control);
+        });
     }
 
     fn forward_buffers_ready(&self) -> bool {
@@ -2920,6 +2999,20 @@ impl PlaybackBackend for OxidePlayback {
     }
 }
 
+// Isolated here so teardown latency can be regression-tested without a live decoder.
+fn dispatch_executor_stop(work: impl FnOnce() + Send + 'static) {
+    // Keep ownership of ExecutorHandle until its worker actually exits, but
+    // never join that worker on the rendering / Android activity thread.
+    // If thread creation fails, dropping the closure detaches the executor's
+    // already-cancelled join handle rather than blocking the UI.
+    if let Err(error) = std::thread::Builder::new()
+        .name("sanctuary-executor-stop".into())
+        .spawn(work)
+    {
+        log::error!("SanctuaryPlayer: could not spawn executor cleanup: {error}");
+    }
+}
+
 impl Drop for OxidePlayback {
     fn drop(&mut self) {
         log::info!(
@@ -2934,20 +3027,21 @@ impl Drop for OxidePlayback {
             let _ = audio.set_paused(true);
         }
         if let Some(executor) = self.executor.take() {
-            log::info!("SanctuaryPlayer: OxidePlayback aborting and joining executor before drop");
+            log::info!("SanctuaryPlayer: OxidePlayback requesting executor abort before drop");
             executor.request_abort();
-            log::logger().flush();
-            let started = Instant::now();
-            match executor.stop() {
-                Ok(_) => log::info!(
-                    "SanctuaryPlayer: OxidePlayback executor join complete elapsed={:.3}s",
-                    started.elapsed().as_secs_f64()
-                ),
-                Err(error) => log::warn!(
-                    "SanctuaryPlayer: OxidePlayback executor join failed elapsed={:.3}s error={error}",
-                    started.elapsed().as_secs_f64()
-                ),
-            }
+            dispatch_executor_stop(move || {
+                let started = Instant::now();
+                match executor.stop() {
+                    Ok(_) => log::info!(
+                        "SanctuaryPlayer: OxidePlayback executor join complete elapsed={:.3}s",
+                        started.elapsed().as_secs_f64()
+                    ),
+                    Err(error) => log::warn!(
+                        "SanctuaryPlayer: OxidePlayback executor join failed elapsed={:.3}s error={error}",
+                        started.elapsed().as_secs_f64()
+                    ),
+                }
+            });
         }
         log::info!("SanctuaryPlayer: OxidePlayback drop complete");
     }
@@ -3673,6 +3767,8 @@ mod tests {
                 video_rx,
                 channel_depths: SessionChannelDepths::default(),
                 executor: None,
+                executor_stop_result: None,
+                wake: PlaybackWake::noop(),
                 video_stream,
                 audio_stream: None,
                 video_decoder: None,
@@ -4672,6 +4768,146 @@ mod tests {
     }
 
     #[test]
+    fn async_executor_stop_result_reports_failure_without_blocking() {
+        let (mut playback, _senders) = clock_test_playback();
+        let (sender, receiver) = mpsc::channel();
+        playback.executor_stop_result = Some(receiver);
+        playback.collect_executor_result();
+        assert!(playback.executor_stop_result.is_some());
+        sender
+            .send(Err("synthetic shutdown failure".into()))
+            .unwrap();
+        playback.collect_executor_result();
+        assert!(playback.executor_stop_result.is_none());
+        assert!(matches!(
+            playback.state,
+            PlaybackState::Error(ref message) if message.contains("synthetic shutdown failure")
+        ));
+    }
+
+    #[test]
+    fn dropping_playback_must_not_wait_for_executor_shutdown() {
+        // Models a decoder/executor which does not finish until a stalled
+        // operation is released. The UI must be free to process the next event.
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (returned_tx, returned_rx) = mpsc::channel();
+        let ui_thread = std::thread::spawn(move || {
+            dispatch_executor_stop(move || {
+                entered_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+            });
+            returned_tx.send(()).unwrap();
+        });
+        entered_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        let returned_while_executor_blocked =
+            returned_rx.recv_timeout(Duration::from_millis(150)).is_ok();
+        // Always release the test worker before checking the assertion.
+        release_tx.send(()).unwrap();
+        ui_thread.join().unwrap();
+        assert!(
+            returned_while_executor_blocked,
+            "playback destruction blocked the UI waiting for an executor worker"
+        );
+    }
+
+    #[test]
+    fn full_control_channel_must_cancel_without_receiver_progress() {
+        let (control_tx, control_rx) = mpsc::sync_channel(1);
+        let (audio_tx, _audio_rx) = mpsc::sync_channel(1);
+        let (video_tx, _video_rx) = mpsc::sync_channel(1);
+        let cancellation = CancellationToken::new();
+        let depths = SessionChannelDepths::default();
+        let mut sink = SessionSink::new(
+            control_tx,
+            audio_tx,
+            video_tx,
+            depths.clone(),
+            PlaybackWake::noop(),
+            cancellation.clone(),
+        );
+        sink.send_control(SessionMsg::Finished).unwrap();
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            entered_tx.send(()).unwrap();
+            let result = sink.send_control(SessionMsg::Finished);
+            done_tx
+                .send(result.is_err_and(|e| e.is_cancelled()))
+                .unwrap();
+        });
+        entered_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+        assert!(matches!(done_rx.try_recv(), Err(TryRecvError::Empty)));
+        cancellation.cancel();
+        let exited_on_cancel = done_rx
+            .recv_timeout(Duration::from_millis(150))
+            .unwrap_or(false);
+        // The old code needs the receiver to go away to unblock send().
+        drop(control_rx);
+        worker.join().unwrap();
+        assert!(
+            exited_on_cancel,
+            "full control channel ignores cancellation"
+        );
+        assert_eq!(depths.control.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn full_legacy_video_channel_must_cancel_without_receiver_progress() {
+        let (control_tx, _control_rx) = mpsc::sync_channel(1);
+        let (audio_tx, _audio_rx) = mpsc::sync_channel(1);
+        let (video_tx, video_rx) = mpsc::sync_channel(1);
+        let cancellation = CancellationToken::new();
+        let depths = SessionChannelDepths::default();
+        let mut sink = SessionSink::new(
+            control_tx,
+            audio_tx,
+            video_tx,
+            depths.clone(),
+            PlaybackWake::noop(),
+            cancellation.clone(),
+        );
+        sink.send_legacy_track_message(
+            MediaType::Video,
+            SessionMsg::Frame {
+                kind: MediaType::Video,
+                frame: video_frame_lease(Some(9000)),
+            },
+        )
+        .unwrap();
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            entered_tx.send(()).unwrap();
+            let result = sink.send_legacy_track_message(
+                MediaType::Video,
+                SessionMsg::Frame {
+                    kind: MediaType::Video,
+                    frame: video_frame_lease(Some(18000)),
+                },
+            );
+            done_tx
+                .send(result.is_err_and(|e| e.is_cancelled()))
+                .unwrap();
+        });
+        entered_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+        assert!(matches!(done_rx.try_recv(), Err(TryRecvError::Empty)));
+        cancellation.cancel();
+        let exited_on_cancel = done_rx
+            .recv_timeout(Duration::from_millis(150))
+            .unwrap_or(false);
+        drop(video_rx);
+        worker.join().unwrap();
+        assert!(
+            exited_on_cancel,
+            "full legacy video channel ignores cancellation"
+        );
+        assert_eq!(depths.video.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
     fn session_sink_routes_control_audio_and_video_to_distinct_channels() {
         let (control_tx, control_rx) = mpsc::sync_channel(1);
         let (audio_tx, audio_rx) = mpsc::sync_channel(1);
@@ -4683,6 +4919,7 @@ mod tests {
             video_tx,
             depths.clone(),
             PlaybackWake::noop(),
+            CancellationToken::new(),
         );
 
         sink.send_control(SessionMsg::Finished).unwrap();

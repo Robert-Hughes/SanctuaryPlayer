@@ -11,6 +11,14 @@ On 19 October the Android private app log stopped after a quality-replacement pa
 
 A bounded synthetic test first failed against the original HLS code after a 401 ms wait on an artificially stalled successor segment. `oxideav-hls` commit `2437ac0` now uses `try_recv()` and returns pending from the packet poll. A second test verifies that a packet worker can observe cancellation while the successor is still blocked. All 33 HLS library tests and 215 active Sanctuary app library tests passed on Windows with the fix. This proves the cancellation defect and its local repair, but does not conclusively establish that the October Android incident was caused by the same segment fetch; other synchronous seek/decoder or network operations remain possible blocking sources. The committed Cargo lockfile pins this corrected HLS dependency; an updated Android APK was not installed as part of the investigation.
 
+### Follow-up: asynchronous executor retirement and cancellable channel sends
+
+The UI remained vulnerable after the HLS fix: `OxidePlayback::drop()` synchronously joined its executor when a new quality replaced the old player, and the ordinary `collect_executor_result()` path also called `stop()` on the update thread. Both now transfer the executor handle to a named cleanup thread that performs the join; completed-executor errors are sent back via a nonblocking channel and wake the application event loop. On teardown, the executor is aborted first, then its owned cleanup runs asynchronously.
+
+The job-level `SessionSink` also used unbounded blocking `SyncSender::send()` for control and legacy audio/video messages. Full channels can no longer strand those workers during shutdown: those sends now use cancellable `try_send()` retry loops, sharing the executor cancellation token, with balanced queue-depth counters and one wake while backpressured. The existing independent `SessionTrackSink` already used this pattern.
+
+Three bounded regression tests were first run against the original blocking behaviours and all **failed as intended** (synchronous executor join, full control queue, full legacy video queue). They then passed after the fixes; a fourth test verifies asynchronous executor error reporting. Windows app tests: **219 passed, 0 failed, 6 ignored**. `cargo check -p sanctuary-player-android --target aarch64-linux-android` also passed with the NDK's versioned ARM64 C/C++ compilers configured. No Android APK was installed during this change. This does not address other previously identified UI blocking risks (e.g. Vulkan queue idle, filesystem persistence, logging).
+
 ## Dependency boundary
 
 SanctuaryPlayer consumes OxideAV **library crates directly**. It must not depend on
