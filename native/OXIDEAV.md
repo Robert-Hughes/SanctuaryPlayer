@@ -5,6 +5,12 @@ OxideAV stack. Framework implementation details, measurements and generic follow
 live in the corresponding OxideAV checkout's root `LOCAL-CHANGES.md`; this file
 contains only SanctuaryPlayer-specific integration decisions and work.
 
+## October 2026 Android quality-switch hang investigation
+
+On 19 October the Android private app log stopped after a quality-replacement path logged `OxidePlayback aborting and joining executor before drop` at 09:04:41 BST, with no join completion before a restart at approximately 09:05:28. The HLS successor-readahead path was found to block inside `HlsPacketSource::poll_next_packet()` on a synchronous `recv()`. This violates the packet-stage expectation that a pending poll returns so the executor can check cancellation; joining that executor on the application thread can therefore stall UI teardown if a successor segment download is delayed.
+
+A bounded synthetic test first failed against the original HLS code after a 401 ms wait on an artificially stalled successor segment. `oxideav-hls` commit `2437ac0` now uses `try_recv()` and returns pending from the packet poll. A second test verifies that a packet worker can observe cancellation while the successor is still blocked. All 33 HLS library tests and 215 active Sanctuary app library tests passed on Windows with the fix. This proves the cancellation defect and its local repair, but does not conclusively establish that the October Android incident was caused by the same segment fetch; other synchronous seek/decoder or network operations remain possible blocking sources. The committed Cargo lockfile pins this corrected HLS dependency; an updated Android APK was not installed as part of the investigation.
+
 ## Dependency boundary
 
 SanctuaryPlayer consumes OxideAV **library crates directly**. It must not depend on
