@@ -7,6 +7,7 @@
 pub mod app;
 mod audio_output;
 mod audio_timeline;
+pub mod display_sleep;
 #[cfg(not(target_os = "android"))]
 mod graphics;
 #[cfg(not(target_os = "android"))]
@@ -198,6 +199,7 @@ pub struct SanctuaryPlayerApp {
     next_egui_repaint: Option<Instant>,
     render_diagnostics: RenderDiagnostics,
     window_title: String,
+    display_sleep: display_sleep::DisplaySleepPolicy,
 }
 
 #[cfg(not(target_os = "android"))]
@@ -214,6 +216,7 @@ impl SanctuaryPlayerApp {
             next_egui_repaint: None,
             render_diagnostics: RenderDiagnostics::new(),
             window_title: String::new(),
+            display_sleep: display_sleep::DisplaySleepPolicy::default(),
         }
     }
 
@@ -291,6 +294,7 @@ impl SanctuaryPlayerApp {
             Self::apply_effect(window, effect);
         }
         self.sync_window_title(window);
+        self.sync_display_sleep();
         window.request_redraw();
     }
 
@@ -306,9 +310,29 @@ impl SanctuaryPlayerApp {
         self.state
             .update(now.saturating_duration_since(self.last_update));
         self.last_update = now;
+        self.sync_display_sleep();
+    }
+
+    fn sync_display_sleep(&mut self) {
+        if let Some(desired) = self
+            .display_sleep
+            .change_needed(self.state.playback_state())
+        {
+            match display_sleep::set_display_sleep_inhibited(desired) {
+                Ok(()) => {
+                    self.display_sleep.applied(desired);
+                    log::info!("SanctuaryPlayer: display sleep inhibited={desired}");
+                }
+                Err(error) => {
+                    log::error!("SanctuaryPlayer: display sleep inhibition failed: {error}")
+                }
+            }
+        }
     }
 
     fn shutdown(&mut self, event_loop: &ActiveEventLoop) {
+        self.display_sleep.set_foreground(false);
+        self.sync_display_sleep();
         self.flush_persistence_for_shutdown();
         self.next_egui_repaint = None;
         self.state.shutdown_playback_for_graphics_teardown();
@@ -359,6 +383,8 @@ impl ApplicationHandler<AppEvent> for SanctuaryPlayerApp {
         self.next_egui_repaint = None;
         self.window_title = initial_title;
         self.window = Some(window.clone());
+        self.display_sleep.set_foreground(true);
+        self.sync_display_sleep();
         self.graphics = Some(graphics);
         if let Some((source, autoplay)) = self.take_startup_video() {
             if autoplay {
@@ -371,6 +397,8 @@ impl ApplicationHandler<AppEvent> for SanctuaryPlayerApp {
     }
 
     fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
+        self.display_sleep.set_foreground(false);
+        self.sync_display_sleep();
         self.state.flush_persistence_for_background();
         self.state.shutdown_playback_for_graphics_teardown();
         self.graphics = None;
@@ -526,12 +554,15 @@ impl ApplicationHandler<AppEvent> for SanctuaryPlayerApp {
                         }
                         Err(error) => {
                             log::error!("SanctuaryPlayer: GPU surface error: {error}");
+                            self.display_sleep.set_foreground(false);
+                            self.sync_display_sleep();
                             self.flush_persistence_for_shutdown();
                             event_loop.exit();
                         }
                     }
                 }
 
+                self.sync_display_sleep();
                 if diagnose_render {
                     self.render_diagnostics.finish_redraw(now, Instant::now());
                 }

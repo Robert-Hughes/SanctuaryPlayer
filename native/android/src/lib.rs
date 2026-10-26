@@ -300,33 +300,22 @@ mod android {
 
     #[derive(Default)]
     struct AndroidScreenOn {
-        enabled: bool,
-        foreground: bool,
+        policy: sanctuary_player_app::display_sleep::DisplaySleepPolicy,
     }
 
     impl AndroidScreenOn {
         fn set_foreground(&mut self, app: &AndroidApp, state: &AppState, foreground: bool) {
-            self.foreground = foreground;
+            self.policy.set_foreground(foreground);
             self.sync(app, state);
         }
 
         fn sync(&mut self, app: &AndroidApp, state: &AppState) {
-            let desired = self.foreground
-                && match state.playback_state() {
-                    PlaybackState::Playing => true,
-                    // Preserve the previous state across a seek: a seek that began
-                    // while playing should not briefly allow display sleep, while a
-                    // seek from a paused session should not acquire the inhibition.
-                    PlaybackState::Seeking => self.enabled,
-                    _ => false,
-                };
-            if desired == self.enabled {
+            let Some(desired) = self.policy.change_needed(state.playback_state()) else {
                 return;
-            }
-
+            };
             match android_set_playback_keeps_screen_on(app, desired) {
                 Ok(()) => {
-                    self.enabled = desired;
+                    self.policy.applied(desired);
                     log::info!("SanctuaryPlayer: Android keep-screen-on={desired}");
                 }
                 Err(error) => {
@@ -337,7 +326,6 @@ mod android {
             }
         }
     }
-
     const PLATFORM_INTERRUPTION_AUTO_RESUME_WINDOW: Duration = Duration::from_secs(10);
 
     #[derive(Default)]
