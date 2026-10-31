@@ -1483,9 +1483,13 @@ impl<P: PlaybackBackend + 'static> AppState<P> {
                 self.schedule_paused_position_save();
             }
             AppCommand::SeekAbsolute(position) => {
-                log::info!("SanctuaryPlayer: seek request kind=absolute current={:.3}s target={:.3}s", self.position().as_secs_f64(), position.as_secs_f64());
+                log::info!(
+                    "SanctuaryPlayer: seek request kind=absolute current={:.3}s target={:.3}s",
+                    self.position().as_secs_f64(),
+                    position.as_secs_f64()
+                );
                 self.seek_to(position);
-            },
+            }
             AppCommand::SeekRelative(offset) => {
                 let current = self.position();
                 let target = if offset >= 0 {
@@ -1493,7 +1497,11 @@ impl<P: PlaybackBackend + 'static> AppState<P> {
                 } else {
                     current.saturating_sub(Duration::from_secs(offset.unsigned_abs()))
                 };
-                log::info!("SanctuaryPlayer: seek request kind=relative offset={offset}s current={:.3}s target={:.3}s", current.as_secs_f64(), target.as_secs_f64());
+                log::info!(
+                    "SanctuaryPlayer: seek request kind=relative offset={offset}s current={:.3}s target={:.3}s",
+                    current.as_secs_f64(),
+                    target.as_secs_f64()
+                );
                 self.seek_to(target);
             }
             AppCommand::SetPlaybackRate(rate) => self.playback.set_playback_rate(rate),

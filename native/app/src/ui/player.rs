@@ -653,7 +653,10 @@ fn paint_bottom_controls(ui: &mut egui::Ui, state: &mut AppState, commands: &mut
                     .clicked();
             });
         if clicked {
-            log::info!("SanctuaryPlayer: seek input source=player_bottom_button label={label} offset={offset}s current={:.3}s", state.position().as_secs_f64());
+            log::info!(
+                "SanctuaryPlayer: seek input source=player_bottom_button label={label} offset={offset}s current={:.3}s",
+                state.position().as_secs_f64()
+            );
             commands.push(AppCommand::SeekRelative(offset));
         }
         x += size.x + gap;
@@ -732,7 +735,10 @@ fn paint_bottom_controls(ui: &mut egui::Ui, state: &mut AppState, commands: &mut
                     .clicked();
             });
         if clicked {
-            log::info!("SanctuaryPlayer: seek input source=player_bottom_button label={label} offset={offset}s current={:.3}s", state.position().as_secs_f64());
+            log::info!(
+                "SanctuaryPlayer: seek input source=player_bottom_button label={label} offset={offset}s current={:.3}s",
+                state.position().as_secs_f64()
+            );
             commands.push(AppCommand::SeekRelative(offset));
         }
         x += size.x + gap;

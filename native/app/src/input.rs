@@ -12,7 +12,10 @@ pub(crate) fn command_for_key<P: PlaybackBackend + 'static>(
         return None;
     }
     if state.has_video() && matches!(code, KeyCode::ArrowLeft | KeyCode::ArrowRight) {
-        log::info!("SanctuaryPlayer: seek input source=keyboard key={code:?} current={:.3}s", state.position().as_secs_f64());
+        log::info!(
+            "SanctuaryPlayer: seek input source=keyboard key={code:?} current={:.3}s",
+            state.position().as_secs_f64()
+        );
     }
     match code {
         KeyCode::Space => Some(AppCommand::TogglePlayback),

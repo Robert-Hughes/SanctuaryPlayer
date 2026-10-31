@@ -604,7 +604,10 @@ fn render_saved_positions(
         let entry = &positions[index];
         let is_current = current_id.as_deref() == Some(entry.source.id.as_str());
         if is_current {
-            log::info!("SanctuaryPlayer: seek input source=chapter_menu target={:.3}s", entry.position.as_secs_f64());
+            log::info!(
+                "SanctuaryPlayer: seek input source=chapter_menu target={:.3}s",
+                entry.position.as_secs_f64()
+            );
             commands.push(AppCommand::SeekAbsolute(entry.position));
         } else {
             let mut source = entry.source.clone();
