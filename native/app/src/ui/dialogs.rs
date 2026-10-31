@@ -60,6 +60,7 @@ pub fn render(ui: &mut egui::Ui, state: &mut AppState, commands: &mut Vec<AppCom
                 ui.horizontal(|ui| {
                     if ui.button("Seek").clicked() || accept_pressed {
                         if let Some(time) = parse_friendly_time(input) {
+                            log::info!("SanctuaryPlayer: seek input source=go_to_time_dialog target={:.3}s", time.as_secs_f64());
                             commands.push(AppCommand::SeekAbsolute(time));
                             keep_open = false;
                         } else {
