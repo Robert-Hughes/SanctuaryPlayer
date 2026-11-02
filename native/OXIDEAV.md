@@ -21,30 +21,32 @@ Three bounded regression tests were first run against the original blocking beha
 
 ## November 2026: source-owned HLS segment cache
 
-The HLS dependency now uses oxideav-hls dev commit 290a10a. Each HLS source
-instance caches complete compressed segments in memory, targeting **45 seconds
-ahead and 30 seconds behind** the current indexed segment. The window is
-expressed in media time, not a global byte budget. Whole segments crossing
-the window boundary are retained, with a 128 MiB per-resource safety ceiling.
+The HLS dependency now uses oxideav-hls dev commit 146f79d with
+oxideav-http dev commit b6a24cb. Each source caches compressed segments in
+memory, targeting **45 seconds ahead and 30 seconds behind** the current
+segment. The window uses media time, not a global byte budget. Whole segments
+may cross the boundaries, with a 128 MiB per-segment safety ceiling.
 
-Every media-segment access now goes through a shared streaming cache entry.
-On a miss, a foreground transfer starts immediately and makes arriving bytes
-available to the demuxer while the remainder downloads. Background prefetch
-and the existing successor-demux preparation reuse the same entry instead of
-starting duplicate HTTP transfers. The single prefetch worker fills the current
-segment, then the forward window nearest first, and finally any missing
-historical segments nearest first. It also handles eviction and cancellation
-on seek or source replacement. Blocking HTTP reads check cancellation between
-read calls; cache readers wake immediately when cancelled. Playlist requests
-and initialization maps retain their separate handling. The decoded audio
-ring, video queue, packet channels, and buffering thresholds are unchanged.
+Every media-segment request flows through a shared streaming cache entry.
+Foreground misses start immediately, while the existing successor-demux worker
+and background prefetch reuse the same download. The worker fills the current
+and forward window first, then any missing history, nearest first. A new
+asynchronous HTTP streaming API uses Tokio/Reqwest cancellation during
+connection establishment and stalled response-body reads, including byte
+ranges. The old blocking open_http path is no longer used for media segments.
+Cache readers wake on cancellation too. Playlist requests and initialization
+maps retain their separate handling. The decoded audio/video buffers and
+playback thresholds are unchanged.
 
-The registered HLS source uses its default configuration; an explicit
-open_hls_with_config API can supply different per-instance durations.
-Cache-window logs record segment count, bytes, contiguous coverage and
-hit/miss counts. Local-HTTP tests verified that seeking repeatedly within
-the cached window makes no additional HTTP requests; 38 HLS tests and
-220 SanctuaryPlayer application tests passed against the local code.
+INFO-level cache statistics are reported on window moves, shutdown and every
+30 seconds: completed/in-flight segments, memory bytes, contiguous coverage
+ahead/behind, complete hits, joins of existing downloads, demand/prefetch
+starts, download bytes/count and mean transfer time, failures, cancellations,
+and evictions. Per-segment activity is DEBUG; genuine network failures WARN.
+The cache does not log signed segment URLs.
+
+Local HTTP regression tests verify cached seeking and responsive cancellation
+of stalled segment transfers: 39 HLS tests and 342 HTTP tests passed.
 
 The HLS commit has been pushed; this repository's Cargo.lock pins it so
 ordinary builds use the new code without MANTA's local Cargo path overrides.
