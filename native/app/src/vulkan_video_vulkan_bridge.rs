@@ -8,6 +8,7 @@
 use ::oxideav::core::{Error, HardwareVideoFrame, HardwareVideoFrameStorage, Result};
 use ash::vk::{self, Handle};
 use oxideav_vulkan_video::decoder::VulkanVideoFrameStorage;
+use std::time::{Duration, Instant};
 use wgpu::hal::api::Vulkan;
 
 pub(crate) struct VulkanVideoVulkanBridge {
@@ -24,6 +25,11 @@ pub(crate) struct VulkanVideoVulkanBridge {
     copy_fence: vk::Fence,
     inflight: Option<HardwareVideoFrame>,
     output_sampled: bool,
+    stats_start: Instant,
+    submits: u64,
+    completes: u64,
+    max_fence_age: Duration,
+    inflight_start: Option<Instant>,
 }
 
 impl VulkanVideoVulkanBridge {
@@ -168,6 +174,11 @@ impl VulkanVideoVulkanBridge {
             copy_fence,
             inflight: None,
             output_sampled: false,
+            stats_start: Instant::now(),
+            submits: 0,
+            completes: 0,
+            max_fence_age: Duration::ZERO,
+            inflight_start: None,
         })
     }
 
@@ -187,19 +198,47 @@ impl VulkanVideoVulkanBridge {
         self.output_sampled = true;
     }
 
+    fn log_stats(&mut self, force: bool) {
+        let elapsed = self.stats_start.elapsed();
+        if !force && elapsed < Duration::from_secs(1) {
+            return;
+        }
+        if self.submits > 0 || self.completes > 0 {
+            log::info!(
+                "SanctuaryPlayer: Vulkan copy stats submitted={} completed={} inflight={} max_fence_age={:.2}ms interval={:.2}s",
+                self.submits,
+                self.completes,
+                self.inflight.is_some(),
+                self.max_fence_age.as_secs_f64() * 1000.0,
+                elapsed.as_secs_f64()
+            );
+        }
+        self.stats_start = Instant::now();
+        self.submits = 0;
+        self.completes = 0;
+        self.max_fence_age = Duration::ZERO;
+    }
     pub(crate) fn is_available(&mut self) -> Result<bool> {
+        self.log_stats(false);
         if self.inflight.is_none() {
             return Ok(true);
         }
         match unsafe { self.vk_device.get_fence_status(self.copy_fence) } {
             Ok(true) => {
+                if let Some(start) = self.inflight_start.take() {
+                    self.max_fence_age = self.max_fence_age.max(start.elapsed());
+                }
+                self.completes += 1;
                 self.inflight = None;
                 Ok(true)
             }
             Ok(false) => Ok(false),
-            Err(error) => Err(Error::other(format!(
-                "Vulkan direct query copy fence: {error}"
-            ))),
+            Err(error) => {
+                self.log_stats(true);
+                Err(Error::other(format!(
+                    "Vulkan direct query copy fence: {error}"
+                )))
+            }
         }
     }
 
@@ -361,12 +400,15 @@ impl VulkanVideoVulkanBridge {
                 .map_err(|error| Error::other(format!("Vulkan direct submit copy: {error}")))?;
         }
         self.inflight = Some(frame);
+        self.inflight_start = Some(Instant::now());
+        self.submits += 1;
         Ok(())
     }
 }
 
 impl Drop for VulkanVideoVulkanBridge {
     fn drop(&mut self) {
+        self.log_stats(true);
         log::info!(
             "SanctuaryPlayer: Vulkan direct bridge drop begin size={}x{} inflight={} fence=0x{:x} command_pool=0x{:x}",
             self.width,

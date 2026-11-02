@@ -2,7 +2,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use winit::event::{ElementState, WindowEvent};
 use winit::keyboard::{KeyCode, ModifiersState, PhysicalKey};
@@ -28,12 +28,49 @@ pub(crate) struct Graphics {
     modifiers: ModifiersState,
     pending_egui_events: Vec<egui::Event>,
     surface_validation_failures: u8,
+    resize: ResizeTelemetry,
     queue: wgpu::Queue,
     device: wgpu::Device,
     _adapter: wgpu::Adapter,
     _instance: wgpu::Instance,
 }
 
+#[derive(Default)]
+struct ResizeTelemetry {
+    start: Option<Instant>,
+    last: Option<Instant>,
+    from: (u32, u32),
+    events: u64,
+    changes: u64,
+    configs: u64,
+    total: Duration,
+    max: Duration,
+    slow: u64,
+}
+impl ResizeTelemetry {
+    fn flush(&mut self, to: (u32, u32), force: bool) {
+        if let (Some(start), Some(last)) = (self.start, self.last) {
+            if !force && last.elapsed() < Duration::from_millis(250) {
+                return;
+            }
+            log::info!(
+                "SanctuaryPlayer: resize burst duration={:.2}s events={} changes={} from={}x{} to={}x{} configs={} config_avg={:.2}ms config_max={:.2}ms config_gt50ms={}",
+                last.duration_since(start).as_secs_f64(),
+                self.events,
+                self.changes,
+                self.from.0,
+                self.from.1,
+                to.0,
+                to.1,
+                self.configs,
+                self.total.as_secs_f64() * 1000.0 / self.configs.max(1) as f64,
+                self.max.as_secs_f64() * 1000.0,
+                self.slow
+            );
+            *self = Self::default();
+        }
+    }
+}
 impl Graphics {
     pub(crate) fn new(window: Arc<Window>, decode_mode: DecodeMode) -> Result<Self, String> {
         pollster::block_on(Self::new_async(window, decode_mode))
@@ -185,6 +222,7 @@ impl Graphics {
             modifiers: ModifiersState::empty(),
             pending_egui_events: Vec::new(),
             surface_validation_failures: 0,
+            resize: ResizeTelemetry::default(),
         })
     }
 
@@ -219,9 +257,38 @@ impl Graphics {
     }
 
     pub(crate) fn resize(&mut self, width: u32, height: u32) {
-        self.surface_config.width = width.clamp(1, self.max_texture_dimension_2d);
-        self.surface_config.height = height.clamp(1, self.max_texture_dimension_2d);
+        self.flush_resize_diagnostics();
+        let now = Instant::now();
+        if self.resize.start.is_none() {
+            self.resize.start = Some(now);
+            self.resize.from = (self.surface_config.width, self.surface_config.height);
+        }
+        self.resize.last = Some(now);
+        self.resize.events += 1;
+        let size = (
+            width.clamp(1, self.max_texture_dimension_2d),
+            height.clamp(1, self.max_texture_dimension_2d),
+        );
+        if size != (self.surface_config.width, self.surface_config.height) {
+            self.resize.changes += 1;
+        }
+        self.surface_config.width = size.0;
+        self.surface_config.height = size.1;
+        let start = Instant::now();
         self.reconfigure();
+        let duration = start.elapsed();
+        self.resize.configs += 1;
+        self.resize.total += duration;
+        self.resize.max = self.resize.max.max(duration);
+        if duration >= Duration::from_millis(50) {
+            self.resize.slow += 1;
+        }
+    }
+    pub(crate) fn flush_resize_diagnostics(&mut self) {
+        self.resize.flush(
+            (self.surface_config.width, self.surface_config.height),
+            false,
+        );
     }
 
     pub(crate) fn reconfigure(&self) {

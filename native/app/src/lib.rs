@@ -104,6 +104,9 @@ struct RenderDiagnostics {
     last_redraw: Option<Instant>,
     last_report: Instant,
     redraws: u64,
+    window_events: u64,
+    redraw_requests: u64,
+    resize_events: u64,
     gaps_over_20ms: u64,
     gaps_over_33ms: u64,
     max_gap: Duration,
@@ -118,6 +121,9 @@ impl RenderDiagnostics {
             last_redraw: None,
             last_report: Instant::now(),
             redraws: 0,
+            window_events: 0,
+            redraw_requests: 0,
+            resize_events: 0,
             gaps_over_20ms: 0,
             gaps_over_33ms: 0,
             max_gap: Duration::ZERO,
@@ -126,6 +132,15 @@ impl RenderDiagnostics {
         }
     }
 
+    fn requested(&mut self, resize: bool) {
+        self.redraw_requests += 1;
+        if resize {
+            self.resize_events += 1;
+        }
+    }
+    fn redraw_requested(&mut self) {
+        self.redraw_requests += 1;
+    }
     fn begin_redraw(&mut self, now: Instant) {
         if let Some(last_redraw) = self.last_redraw {
             let gap = now.saturating_duration_since(last_redraw);
@@ -158,7 +173,10 @@ impl RenderDiagnostics {
             self.redraw_work_total.as_secs_f64() * 1000.0 / self.redraws as f64
         };
         log::info!(
-            "SanctuaryPlayer: render cadence redraws={} rate={rate:.1}/s gap_gt20ms={} gap_gt33ms={} max_gap={:.2}ms redraw_work_avg={average_work_ms:.2}ms redraw_work_max={:.2}ms",
+            "SanctuaryPlayer: render cadence requests={} other_window_events={} resize_events={} redraws={} rate={rate:.1}/s gap_gt20ms={} gap_gt33ms={} max_gap={:.2}ms redraw_work_avg={average_work_ms:.2}ms redraw_work_max={:.2}ms",
+            self.redraw_requests,
+            self.window_events,
+            self.resize_events,
             self.redraws,
             self.gaps_over_20ms,
             self.gaps_over_33ms,
@@ -167,6 +185,9 @@ impl RenderDiagnostics {
         );
 
         self.last_report = finished;
+        self.redraw_requests = 0;
+        self.window_events = 0;
+        self.resize_events = 0;
         self.redraws = 0;
         self.gaps_over_20ms = 0;
         self.gaps_over_33ms = 0;
@@ -178,6 +199,9 @@ impl RenderDiagnostics {
     fn reset(&mut self, now: Instant) {
         self.last_redraw = None;
         self.last_report = now;
+        self.redraw_requests = 0;
+        self.window_events = 0;
+        self.resize_events = 0;
         self.redraws = 0;
         self.gaps_over_20ms = 0;
         self.gaps_over_33ms = 0;
@@ -459,6 +483,7 @@ impl ApplicationHandler<AppEvent> for SanctuaryPlayerApp {
         }
 
         if requested_redraw && let Some(window) = self.window.as_ref() {
+            self.render_diagnostics.redraw_requested();
             window.request_redraw();
             event_loop.set_control_flow(ControlFlow::Poll);
             return;
@@ -515,6 +540,7 @@ impl ApplicationHandler<AppEvent> for SanctuaryPlayerApp {
 
         match event {
             WindowEvent::Resized(size) => {
+                self.render_diagnostics.requested(true);
                 if let Some(graphics) = self.graphics.as_mut() {
                     graphics.resize(size.width, size.height);
                 }
@@ -530,16 +556,21 @@ impl ApplicationHandler<AppEvent> for SanctuaryPlayerApp {
 
                 self.update_state_at(now);
                 self.sync_window_title(window);
+                if let Some(graphics) = self.graphics.as_mut() {
+                    graphics.flush_resize_diagnostics();
+                }
 
                 if let Some(graphics) = self.graphics.as_mut() {
                     match graphics.render(window, &mut self.state) {
                         Ok(frame) => {
                             if frame.status == RenderStatus::Reconfigure {
                                 graphics.reconfigure();
+                                self.render_diagnostics.redraw_requested();
                                 window.request_redraw();
                             }
                             if let Some(delay) = frame.repaint_after {
                                 if delay.is_zero() {
+                                    self.render_diagnostics.redraw_requested();
                                     window.request_redraw();
                                     self.next_egui_repaint = None;
                                 } else {
@@ -576,7 +607,11 @@ impl ApplicationHandler<AppEvent> for SanctuaryPlayerApp {
                     self.apply_command(window, command);
                 }
             }
-            _ => window.request_redraw(),
+            _ => {
+                self.render_diagnostics.requested(false);
+                self.render_diagnostics.redraw_requested();
+                window.request_redraw();
+            }
         }
     }
 }
