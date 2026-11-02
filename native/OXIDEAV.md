@@ -21,26 +21,29 @@ Three bounded regression tests were first run against the original blocking beha
 
 ## November 2026: source-owned HLS segment cache
 
-The HLS dependency now uses oxideav-hls dev commit 7983f54. Each HLS source
+The HLS dependency now uses oxideav-hls dev commit 290a10a. Each HLS source
 instance caches complete compressed segments in memory, targeting **45 seconds
 ahead and 30 seconds behind** the current indexed segment. The window is
 expressed in media time, not a global byte budget. Whole segments crossing
 the window boundary are retained, with a 128 MiB per-resource safety ceiling.
 
-A dedicated cancellable worker downloads segments independently of the
-decoder and packet queue backpressure. The existing successor-preparation
-worker reuses the same completed download, rather than starting another.
-A cache hit opens a demuxer from memory; a miss preserves the original
-streaming HTTP path. Seeking away cancels obsolete prefetches, and dropping
-or replacing the source discards the cache. Initialization maps retain their
-separate small cache. The decoded audio ring, video queue, packet channels,
-and playback buffering thresholds are unchanged.
+Every media-segment access now goes through a shared streaming cache entry.
+On a miss, a foreground transfer starts immediately and makes arriving bytes
+available to the demuxer while the remainder downloads. Background prefetch
+and the existing successor-demux preparation reuse the same entry instead of
+starting duplicate HTTP transfers. The single prefetch worker fills the current
+segment, then the forward window nearest first, and finally any missing
+historical segments nearest first. It also handles eviction and cancellation
+on seek or source replacement. Blocking HTTP reads check cancellation between
+read calls; cache readers wake immediately when cancelled. Playlist requests
+and initialization maps retain their separate handling. The decoded audio
+ring, video queue, packet channels, and buffering thresholds are unchanged.
 
 The registered HLS source uses its default configuration; an explicit
 open_hls_with_config API can supply different per-instance durations.
 Cache-window logs record segment count, bytes, contiguous coverage and
 hit/miss counts. Local-HTTP tests verified that seeking repeatedly within
-the cached window makes no additional HTTP requests; 36 HLS tests and
+the cached window makes no additional HTTP requests; 38 HLS tests and
 220 SanctuaryPlayer application tests passed against the local code.
 
 The HLS commit has been pushed; this repository's Cargo.lock pins it so
