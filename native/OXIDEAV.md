@@ -19,6 +19,35 @@ The job-level `SessionSink` also used unbounded blocking `SyncSender::send()` fo
 
 Three bounded regression tests were first run against the original blocking behaviours and all **failed as intended** (synchronous executor join, full control queue, full legacy video queue). They then passed after the fixes; a fourth test verifies asynchronous executor error reporting. Windows app tests: **219 passed, 0 failed, 6 ignored**. `cargo check -p sanctuary-player-android --target aarch64-linux-android` also passed with the NDK's versioned ARM64 C/C++ compilers configured. No Android APK was installed during this change. This does not address other previously identified UI blocking risks (e.g. Vulkan queue idle, filesystem persistence, logging).
 
+## November 2026: source-owned HLS segment cache
+
+The HLS dependency now uses oxideav-hls dev commit 7983f54. Each HLS source
+instance caches complete compressed segments in memory, targeting **45 seconds
+ahead and 30 seconds behind** the current indexed segment. The window is
+expressed in media time, not a global byte budget. Whole segments crossing
+the window boundary are retained, with a 128 MiB per-resource safety ceiling.
+
+A dedicated cancellable worker downloads segments independently of the
+decoder and packet queue backpressure. The existing successor-preparation
+worker reuses the same completed download, rather than starting another.
+A cache hit opens a demuxer from memory; a miss preserves the original
+streaming HTTP path. Seeking away cancels obsolete prefetches, and dropping
+or replacing the source discards the cache. Initialization maps retain their
+separate small cache. The decoded audio ring, video queue, packet channels,
+and playback buffering thresholds are unchanged.
+
+The registered HLS source uses its default configuration; an explicit
+open_hls_with_config API can supply different per-instance durations.
+Cache-window logs record segment count, bytes, contiguous coverage and
+hit/miss counts. Local-HTTP tests verified that seeking repeatedly within
+the cached window makes no additional HTTP requests; 36 HLS tests and
+220 SanctuaryPlayer application tests passed against the local code.
+
+The HLS commit has been pushed; this repository's Cargo.lock pins it so
+ordinary builds use the new code without MANTA's local Cargo path overrides.
+No new Android APK was installed or end-to-end degraded-network field test
+performed as part of this change.
+
 ## Dependency boundary
 
 SanctuaryPlayer consumes OxideAV **library crates directly**. It must not depend on
