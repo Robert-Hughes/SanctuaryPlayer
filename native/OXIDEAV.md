@@ -639,6 +639,29 @@ WASAPI, macOS uses CoreAudio, Linux uses the first working configured backend, a
 Android uses native AAudio (`libaaudio.so`, API 26+). Sanctuary does not contain a
 platform-specific audio device implementation.
 
+### Audio-output recovery (AAudio incident, October-November 2026)
+
+Private Sanctuary Player logs from October-November 2026 captured repeated
+AAUDIO_ERROR_DISCONNECTED (-899) from AAudioStream_requestStart, including
+resuming after a long pause, reopening after a seek, and starting a freshly
+opened output. Previously these errors propagated through
+fail(), aborted the executor and required a manual Twitch video refresh.
+The underlying Android reason for the disconnects has not been proven.
+
+OxidePlayback now retries ANY audio-output operation failure, rather than
+parsing backend-specific strings or changing the oxideav-sysaudio public API.
+It drops the invalid AudioOutput, freezes the media position and uses the
+existing ordered seek/decoder barriers to rebuild the audio epoch, PCM ring,
+resampler and A/V clock. There are at most three retries, delayed 250, 500
+and 1,000 ms, then the original playback error path. Every attempt retains
+the intended play/pause state and the latest seek target. The retry counter
+resets IMMEDIATELY on actual successful audio playback (not on stream open
+and not after a stability timeout). Playback wake deadlines trigger retries.
+
+Only audio is rebuilt; the Twitch video source is not reopened. The
+authoritative PCM-format safeguard remains: newly opened sessions must not
+rely on provisional AAC metadata merely because it looks complete.
+The low-level sysaudio API and other platform backends remain unchanged.
 The audio ring's timeline is expressed as integer device-rate sample-frame PTS values.
 Each decoded frame PTS is rescaled from the stream time base onto that integer sample
 clock before queueing. Contiguous frames append directly; forward gaps are padded with

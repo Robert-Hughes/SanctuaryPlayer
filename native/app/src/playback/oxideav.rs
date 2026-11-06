@@ -39,6 +39,21 @@ const PLAYBACK_PACKET_CHANNEL_CAP: usize = 256;
 const OPEN_TIMEOUT: Duration = Duration::from_secs(30);
 const DIAGNOSTIC_INTERVAL: Duration = Duration::from_secs(1);
 const BUFFERING_GRACE: Duration = Duration::from_millis(250);
+// On Samsung SM-F946B, AAudio returned intermittent AAUDIO_ERROR_DISCONNECTED (-899)
+// on resume, after seek and even on new output creation (2026-10-16..2026-11-06).
+// Retrying ANY audio-output error avoids platform-specific error-string matching
+// and keeps the oxideav-sysaudio API unchanged. Reset immediately on playback.
+const AUDIO_RECOVERY_DELAYS: [Duration; 3] = [
+    Duration::from_millis(250),
+    Duration::from_millis(500),
+    Duration::from_millis(1_000),
+];
+
+struct AudioRecovery {
+    deadline: Instant,
+    target: Duration,
+    resume_playing: bool,
+}
 const TRACK_SINK_BACKPRESSURE_WAIT: Duration = Duration::from_millis(20);
 const TRACK_SINK_BACKPRESSURE_LOG_AFTER: Duration = Duration::from_secs(5);
 const TRACK_SINK_BACKPRESSURE_LOG_INTERVAL: Duration = Duration::from_secs(30);
@@ -113,6 +128,9 @@ pub struct OxidePlayback {
     video_decoder: Option<DecoderDebugInfo>,
     audio_decoder: Option<DecoderDebugInfo>,
     audio_output: Option<AudioOutput>,
+    audio_recovery: Option<AudioRecovery>,
+    audio_recovery_attempts: usize,
+    audio_recovery_resume_playing: bool,
     pending_audio_frame: Option<FrameLease>,
     video_queue: VecDeque<FrameLease>,
     video_clock: VideoClock,
@@ -939,6 +957,9 @@ impl OxidePlayback {
             video_decoder: session.video_decoder,
             audio_decoder: session.audio_decoder,
             audio_output: session.audio_output,
+            audio_recovery: None,
+            audio_recovery_attempts: 0,
+            audio_recovery_resume_playing: false,
             pending_audio_frame: None,
             video_queue: VecDeque::new(),
             video_clock: VideoClock::default(),
@@ -1051,13 +1072,102 @@ impl OxidePlayback {
         }
     }
 
+    fn recover_audio_error(&mut self, error: String) {
+        let now = Instant::now();
+        let target = self.position();
+        let resume_playing = self.intends_playing()
+            || self.audio_recovery_resume_playing
+            || self
+                .audio_recovery
+                .as_ref()
+                .is_some_and(|retry| retry.resume_playing);
+        if self.audio_recovery_attempts >= AUDIO_RECOVERY_DELAYS.len()
+            || !self.seek_supported
+            || self.executor.is_none()
+        {
+            self.audio_recovery = None;
+            self.fail(format!(
+                "audio output recovery exhausted after {} retries: {error}",
+                self.audio_recovery_attempts
+            ));
+            return;
+        }
+        self.video_clock.pause(now, self.video_stream.time_base);
+        self.position = target;
+        self.audio_output = None;
+        self.pending_audio_frame = None;
+        self.audio_anchor_seconds = None;
+        self.audio_clock_aligned = false;
+        self.post_seek_epoch = None;
+        self.seek_pending = None;
+        self.queued_seek = None;
+        let delay = AUDIO_RECOVERY_DELAYS[self.audio_recovery_attempts];
+        self.audio_recovery_attempts += 1;
+        log::warn!(
+            "SanctuaryPlayer: audio output failed; retry={}/{} delay={}ms position={:.3}s resume={} error={}",
+            self.audio_recovery_attempts,
+            AUDIO_RECOVERY_DELAYS.len(),
+            delay.as_millis(),
+            target.as_secs_f64(),
+            resume_playing,
+            error,
+        );
+        self.audio_recovery = Some(AudioRecovery {
+            deadline: now + delay,
+            target,
+            resume_playing,
+        });
+        self.state = if resume_playing {
+            PlaybackState::Buffering
+        } else {
+            PlaybackState::Paused
+        };
+        self.wake.wake(PlaybackWakeKind::Control);
+    }
+
+    fn run_due_audio_recovery(&mut self, now: Instant) {
+        let Some(recovery) = self.audio_recovery.as_ref() else {
+            return;
+        };
+        if now < recovery.deadline {
+            return;
+        }
+        let recovery = self.audio_recovery.take().expect("recovery scheduled");
+        self.audio_recovery_resume_playing = recovery.resume_playing;
+        if let Err(error) =
+            self.dispatch_seek(recovery.target, recovery.target, recovery.resume_playing)
+        {
+            self.recover_audio_error(format!("dispatch audio recovery seek: {error}"));
+        }
+    }
+
+    fn note_successful_audio_playback(&mut self) {
+        if self.audio_recovery_attempts != 0
+            && matches!(self.state, PlaybackState::Playing)
+            && self
+                .audio_output
+                .as_ref()
+                .is_some_and(AudioOutput::is_playing)
+        {
+            log::info!(
+                "SanctuaryPlayer: audio recovery succeeded; reset retries from {}",
+                self.audio_recovery_attempts
+            );
+            self.audio_recovery_attempts = 0;
+            self.audio_recovery_resume_playing = false;
+        }
+    }
+
     fn pump_session(&mut self) {
+        if self.audio_recovery.is_some() {
+            return;
+        }
         if let Some(frame) = self.pending_audio_frame.take() {
             match self.queue_audio_frame(frame) {
                 Ok(Some(frame)) => self.pending_audio_frame = Some(frame),
                 Ok(None) => {}
                 Err(error) => {
-                    self.fail(error);
+                    self.recover_audio_error(error);
                     return;
                 }
             }
@@ -1067,8 +1177,22 @@ impl OxidePlayback {
             match self.control_rx.try_recv() {
                 Ok(message) => {
                     release_session_depth(&self.channel_depths.control);
+                    let audio_related = matches!(
+                        &message,
+                        SessionMsg::StreamUpdate(stream) if stream.params.media_type == MediaType::Audio
+                    ) || matches!(
+                        &message,
+                        SessionMsg::Frame {
+                            kind: MediaType::Audio,
+                            ..
+                        } | SessionMsg::EndOfStream(MediaType::Audio)
+                    );
                     if let Err(error) = self.handle_session_message(message) {
-                        self.fail(error);
+                        if audio_related {
+                            self.recover_audio_error(error);
+                        } else {
+                            self.fail(error);
+                        }
                         break;
                     }
                 }
@@ -1085,7 +1209,7 @@ impl OxidePlayback {
                 Ok(message) => {
                     release_session_depth(&self.channel_depths.audio);
                     if let Err(error) = self.handle_session_message(message) {
-                        self.fail(error);
+                        self.recover_audio_error(error);
                         break;
                     }
                 }
@@ -1100,8 +1224,13 @@ impl OxidePlayback {
             match self.video_rx.try_recv() {
                 Ok(message) => {
                     release_session_depth(&self.channel_depths.video);
+                    let seek_barrier = matches!(&message, SessionMsg::Barrier { .. });
                     if let Err(error) = self.handle_session_message(message) {
-                        self.fail(error);
+                        if seek_barrier {
+                            self.recover_audio_error(error);
+                        } else {
+                            self.fail(error);
+                        }
                         break;
                     }
                 }
@@ -1113,8 +1242,9 @@ impl OxidePlayback {
             && let Some(audio) = &mut self.audio_output
             && let Err(error) = audio.finish_input()
         {
-            self.fail(error);
+            self.recover_audio_error(error);
         }
+        self.note_successful_audio_playback();
         self.collect_executor_result();
         self.update_end_state();
     }
@@ -1439,8 +1569,14 @@ impl OxidePlayback {
             dropped_audio_frames: 0,
             dropped_video_frames: 0,
         });
+        self.audio_recovery_resume_playing = pending.resume_playing;
         if let Some(stream) = self.audio_stream.as_ref() {
-            if self.audio_output.is_some() && audio_stream_is_authoritative(stream) {
+            // Initial stream metadata can look complete but be provisional
+            // (HE-AAC/SBR). Only bypass the existing-output guard when an
+            // audio recovery is actively rebuilding a formerly valid output.
+            if (self.audio_output.is_some() || self.audio_recovery_attempts > 0)
+                && audio_stream_is_authoritative(stream)
+            {
                 let audio = AudioOutput::open(&stream.params, stream.time_base, self.muted)
                     .map_err(|error| format!("reopen audio output after seek: {error}"))?;
                 audio.set_volume(if self.muted { 0.0 } else { self.volume });
@@ -1712,7 +1848,7 @@ impl OxidePlayback {
         if let Some(audio) = self.audio_output.as_mut()
             && let Err(error) = audio.set_paused(true)
         {
-            self.fail(error);
+            self.recover_audio_error(error);
             return;
         }
         self.starvation_started_at = None;
@@ -1726,11 +1862,12 @@ impl OxidePlayback {
         if let Some(audio) = self.audio_output.as_mut()
             && let Err(error) = audio.set_paused(false)
         {
-            self.fail(error);
+            self.recover_audio_error(error);
             return;
         }
         self.video_clock.play(now);
         self.state = PlaybackState::Playing;
+        self.note_successful_audio_playback();
         log::info!("SanctuaryPlayer: playback -> Playing after buffering");
     }
 
@@ -1816,8 +1953,10 @@ impl OxidePlayback {
     }
 
     fn take_due_frame_at(&mut self, now: Instant) -> Option<FrameLease> {
+        self.run_due_audio_recovery(now);
         self.pump_session();
         self.resume_from_buffering_if_ready(now);
+        self.note_successful_audio_playback();
         self.note_or_enter_buffering(now);
 
         // Separate sources can finish preroll at different times and start at
@@ -2055,6 +2194,12 @@ impl PlaybackBackend for OxidePlayback {
     }
 
     fn play(&mut self) {
+        self.audio_recovery_resume_playing = true;
+        if let Some(recovery) = self.audio_recovery.as_mut() {
+            recovery.resume_playing = true;
+            self.state = PlaybackState::Buffering;
+            return;
+        }
         if matches!(self.state, PlaybackState::Seeking) {
             if let Some(pending) = self.seek_pending.as_mut() {
                 pending.resume_playing = true;
@@ -2069,14 +2214,21 @@ impl PlaybackBackend for OxidePlayback {
         if let Some(audio) = self.audio_output.as_mut()
             && let Err(error) = audio.set_paused(false)
         {
-            self.fail(error);
+            self.recover_audio_error(error);
             return;
         }
         self.video_clock.play(Instant::now());
         self.state = PlaybackState::Playing;
+        self.note_successful_audio_playback();
     }
 
     fn pause(&mut self) {
+        self.audio_recovery_resume_playing = false;
+        if let Some(recovery) = self.audio_recovery.as_mut() {
+            recovery.resume_playing = false;
+            self.state = PlaybackState::Paused;
+            return;
+        }
         if matches!(self.state, PlaybackState::Seeking) {
             if let Some(pending) = self.seek_pending.as_mut() {
                 pending.resume_playing = false;
@@ -2094,7 +2246,8 @@ impl PlaybackBackend for OxidePlayback {
         if let Some(audio) = self.audio_output.as_mut()
             && let Err(error) = audio.set_paused(true)
         {
-            self.fail(error);
+            self.state = PlaybackState::Paused;
+            self.recover_audio_error(error);
             return;
         }
         let now = Instant::now();
@@ -2124,7 +2277,9 @@ impl PlaybackBackend for OxidePlayback {
         if let Some(audio) = self.audio_output.as_mut()
             && let Err(error) = audio.set_paused(true)
         {
-            self.fail(error);
+            self.audio_recovery_resume_playing = false;
+            self.state = PlaybackState::Paused;
+            self.recover_audio_error(error);
             return;
         }
         self.state = PlaybackState::Paused;
@@ -2146,6 +2301,11 @@ impl PlaybackBackend for OxidePlayback {
     }
 
     fn seek(&mut self, position: Duration) {
+        if let Some(recovery) = self.audio_recovery.as_mut() {
+            recovery.target = position;
+            self.position = position;
+            return;
+        }
         if !self.seek_supported {
             log::info!("SanctuaryPlayer: seek ignored; source rejected seeking earlier");
             return;
@@ -2193,7 +2353,7 @@ impl PlaybackBackend for OxidePlayback {
         if let Some(audio) = self.audio_output.as_mut()
             && let Err(error) = audio.set_paused(true)
         {
-            self.fail(error);
+            self.recover_audio_error(error);
             return;
         }
         self.queued_seek = None;
@@ -2256,9 +2416,11 @@ impl PlaybackBackend for OxidePlayback {
         self.events.drain(..).collect()
     }
     fn update(&mut self, _elapsed: Duration) {
-        self.pump_session();
         let now = Instant::now();
+        self.run_due_audio_recovery(now);
+        self.pump_session();
         self.resume_from_buffering_if_ready(now);
+        self.note_successful_audio_playback();
         self.note_or_enter_buffering(now);
         self.update_position_at(now);
         self.update_end_state();
@@ -2266,7 +2428,12 @@ impl PlaybackBackend for OxidePlayback {
     }
 
     fn next_wake_deadline(&self, now: Instant) -> Option<Instant> {
-        self.next_video_wake_deadline_at(now)
+        let video = self.next_video_wake_deadline_at(now);
+        let retry = self.audio_recovery.as_ref().map(|r| r.deadline.max(now));
+        match (video, retry) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
     }
 
     fn take_video_frame_lease(&mut self) -> Option<FrameLease> {
@@ -3774,6 +3941,9 @@ mod tests {
                 video_decoder: None,
                 audio_decoder: None,
                 audio_output: None,
+                audio_recovery: None,
+                audio_recovery_attempts: 0,
+                audio_recovery_resume_playing: false,
                 pending_audio_frame: None,
                 video_queue: VecDeque::new(),
                 video_clock: VideoClock {
@@ -5718,6 +5888,76 @@ mod tests {
         );
     }
 
+    #[test]
+    fn audio_recovery_exhaustion_fails_after_three_attempts() {
+        let (mut playback, _tx) = clock_test_playback();
+        playback.audio_recovery_attempts = AUDIO_RECOVERY_DELAYS.len();
+        playback.recover_audio_error("injected audio output error".to_owned());
+        assert!(playback.audio_recovery.is_none());
+        assert!(matches!(
+            playback.state,
+            PlaybackState::Error(ref message)
+                if message.contains("after 3 retries") && message.contains("injected audio output error")
+        ));
+    }
+    #[test]
+    fn audio_retry_counter_resets_immediately_when_output_plays() {
+        let (mut playback, _tx) = clock_test_playback();
+        let mut params = CodecParameters::audio(CodecId::new("aac"));
+        params.sample_rate = Some(48_000);
+        params.channels = Some(2);
+        params.sample_format = Some(SampleFormat::F32);
+        let driver = oxideav_sysaudio::driver_by_name("mock").unwrap();
+        let mut output =
+            AudioOutput::open_with_driver(driver, &params, TimeBase::AUDIO_48K, true).unwrap();
+        playback.audio_recovery_attempts = 2;
+        playback.audio_recovery_resume_playing = true;
+        playback.audio_output = Some(output);
+        playback.note_successful_audio_playback();
+        assert_eq!(
+            playback.audio_recovery_attempts, 2,
+            "opening is not successful playback"
+        );
+
+        output = playback.audio_output.take().unwrap();
+        output.set_media_origin(Duration::from_secs(3)).unwrap();
+        let frame = audio_frame_lease(24_000, 3 * 48_000);
+        let Some(Frame::Audio(frame)) = frame.as_frame() else {
+            unreachable!()
+        };
+        output.queue(frame).unwrap();
+        output.set_paused(false).unwrap();
+        assert!(output.is_playing());
+        playback.audio_output = Some(output);
+        playback.note_successful_audio_playback();
+        assert_eq!(playback.audio_recovery_attempts, 0);
+        assert!(!playback.audio_recovery_resume_playing);
+    }
+
+    #[test]
+    fn audio_retry_counter_does_not_reset_while_paused() {
+        let (mut playback, _tx) = clock_test_playback();
+        playback.audio_recovery_attempts = 2;
+        playback.state = PlaybackState::Paused;
+        playback.note_successful_audio_playback();
+        assert_eq!(playback.audio_recovery_attempts, 2);
+    }
+
+    #[test]
+    fn user_seek_while_audio_recovery_pending_updates_target() {
+        let (mut playback, _tx) = clock_test_playback();
+        playback.audio_recovery = Some(AudioRecovery {
+            deadline: Instant::now() + Duration::from_millis(250),
+            target: Duration::from_secs(2),
+            resume_playing: true,
+        });
+        playback.seek(Duration::from_secs(11));
+        assert_eq!(
+            playback.audio_recovery.as_ref().unwrap().target,
+            Duration::from_secs(11)
+        );
+        assert_eq!(playback.position, Duration::from_secs(11));
+    }
     #[test]
     fn seek_completion_waits_for_authoritative_audio_after_fresh_session() {
         let (mut playback, _tx) = clock_test_playback();
