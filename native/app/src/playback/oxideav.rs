@@ -147,7 +147,6 @@ pub struct OxidePlayback {
     seek_pending: Option<PendingSeek>,
     post_seek_epoch: Option<PostSeekEpoch>,
     queued_seek: Option<Duration>,
-    seek_supported: bool,
     diagnostics: PlaybackDiagnostics,
     events: VecDeque<PlaybackEvent>,
 }
@@ -976,7 +975,6 @@ impl OxidePlayback {
             seek_pending: None,
             post_seek_epoch: None,
             queued_seek: None,
-            seek_supported: true,
             diagnostics: PlaybackDiagnostics::new(),
             events: VecDeque::new(),
         })
@@ -1081,10 +1079,7 @@ impl OxidePlayback {
                 .audio_recovery
                 .as_ref()
                 .is_some_and(|retry| retry.resume_playing);
-        if self.audio_recovery_attempts >= AUDIO_RECOVERY_DELAYS.len()
-            || !self.seek_supported
-            || self.executor.is_none()
-        {
+        if self.audio_recovery_attempts >= AUDIO_RECOVERY_DELAYS.len() || self.executor.is_none() {
             self.audio_recovery = None;
             self.fail(format!(
                 "audio output recovery exhausted after {} retries: {error}",
@@ -1509,7 +1504,6 @@ impl OxidePlayback {
             .take()
             .expect("matching seek barrier implies pending seek");
         if pending.rejected {
-            self.seek_supported = false;
             self.queued_seek = None;
             self.position = pending.prior_position;
             self.state = PlaybackState::Paused;
@@ -2306,10 +2300,6 @@ impl PlaybackBackend for OxidePlayback {
             self.position = position;
             return;
         }
-        if !self.seek_supported {
-            log::info!("SanctuaryPlayer: seek ignored; source rejected seeking earlier");
-            return;
-        }
         if self.timeline_origin_seconds.is_none() {
             log::info!("SanctuaryPlayer: seek ignored until media timeline origin is known");
             return;
@@ -2835,7 +2825,6 @@ impl PlaybackBackend for OxidePlayback {
                             .unwrap_or_else(|| "none".into()),
                     ),
                     ("post-seek epoch".into(), post_seek),
-                    ("seek supported".into(), self.seek_supported.to_string()),
                 ],
             ),
         ]
@@ -3963,7 +3952,6 @@ mod tests {
                 seek_pending: None,
                 post_seek_epoch: None,
                 queued_seek: None,
-                seek_supported: true,
                 diagnostics: PlaybackDiagnostics::new(),
                 events: VecDeque::new(),
             },
@@ -6080,7 +6068,7 @@ mod tests {
     }
 
     #[test]
-    fn rejected_seek_restores_prior_position_and_disables_future_seeks() {
+    fn rejected_seek_restores_prior_position_without_disabling_future_seeks() {
         let (mut playback, _tx) = clock_test_playback();
         playback.state = PlaybackState::Seeking;
         playback.position = Duration::from_secs(30);
@@ -6100,7 +6088,24 @@ mod tests {
             .unwrap();
         assert_eq!(playback.position, Duration::from_secs(3));
         assert_eq!(playback.state, PlaybackState::Paused);
-        assert!(!playback.seek_supported);
+        assert!(playback.seek_pending.is_none());
+        // A rejected generation does not permanently disable source seeking;
+        // the next request can still be dispatched when an executor is present.
+        // Simulate a subsequent in-flight seek: another request must coalesce
+        // rather than being dropped because an earlier generation was rejected.
+        playback.seek_pending = Some(PendingSeek {
+            generation: 5,
+            requested: Duration::from_secs(8),
+            prior_position: Duration::from_secs(3),
+            resume_playing: false,
+            barriers_remaining: 1,
+            audio_answered: false,
+            video_answered: false,
+            landing: None,
+            rejected: false,
+        });
+        playback.seek(Duration::from_secs(12));
+        assert_eq!(playback.queued_seek, Some(Duration::from_secs(12)));
     }
 
     #[test]

@@ -847,20 +847,27 @@ impl<P: PlaybackBackend + 'static> AppState<P> {
             .pending_video_open
             .as_ref()
             .and_then(|pending| pending.refresh_seek_target);
-        let backend_position = queued_refresh_position.unwrap_or_else(|| self.playback.position());
-        let position = if queued_refresh_position.is_some() || !backend_position.is_zero() {
-            backend_position
-        } else if let Some(requested) = source.start_time.filter(|position| !position.is_zero()) {
-            requested
-        } else if let Some(session) = self
-            .last_safe_session
+        // A fresh backend starts at zero. If its initial restoration seek is
+        // rejected (for example after an interrupted HLS segment download), its
+        // zero/prior position is NOT evidence that the user wanted the beginning.
+        // Keep the last requested position authoritative until a seek completes.
+        let unconfirmed = self
+            .unconfirmed_start_position
             .as_ref()
-            .filter(|session| session.source.id == source.id && !session.position.is_zero())
-        {
-            session.position
-        } else {
-            Duration::ZERO
-        };
+            .filter(|(video_id, _)| video_id == &source.id)
+            .map(|(_, position)| *position);
+        let backend_position = self.playback.position();
+        let position = queued_refresh_position
+            .or(unconfirmed)
+            .or_else(|| (!backend_position.is_zero()).then_some(backend_position))
+            .or_else(|| source.start_time.filter(|position| !position.is_zero()))
+            .or_else(|| {
+                self.last_safe_session
+                    .as_ref()
+                    .filter(|session| session.source.id == source.id && !session.position.is_zero())
+                    .map(|session| session.position)
+            })
+            .unwrap_or(Duration::ZERO);
         source.start_time = (!position.is_zero()).then_some(position);
 
         // A refresh supersedes the current playback graph. Cancel its logical
@@ -1416,6 +1423,16 @@ impl<P: PlaybackBackend + 'static> AppState<P> {
             .playback
             .duration()
             .map_or(position, |duration| position.min(duration));
+        // A newer user seek supersedes an unconfirmed restoration destination,
+        // even when the backend has not yet been able to land that destination.
+        if let Some((video_id, requested)) = self.unconfirmed_start_position.as_mut()
+            && self
+                .playback
+                .source()
+                .is_some_and(|source| source.id == *video_id)
+        {
+            *requested = target;
+        }
         if let Some(pending) = self.pending_video_open.as_mut()
             && let Some(refresh_seek_target) = pending.refresh_seek_target.as_mut()
         {
@@ -2461,6 +2478,61 @@ mod tests {
         state.update(Duration::from_millis(16));
         assert!(state.unconfirmed_start_position.is_some());
         assert!(state.last_safe_session.is_none());
+    }
+
+    #[test]
+    fn refresh_after_rejected_initial_seek_keeps_unconfirmed_position() {
+        let mut state = AppState::<TestPlayback>::new_for_test(test_playback_factory);
+        let mut playback = ErrorOnUpdatePlayback::new();
+        playback.state = PlaybackState::Paused;
+        // The replacement graph reverted to zero after its initial seek failed.
+        playback.position = Duration::ZERO;
+        playback.events.push(PlaybackEvent::SeekRejected);
+        let video_id = playback.source.id.clone();
+        state.unconfirmed_start_position = Some((video_id.clone(), Duration::from_secs(19_995)));
+        state.playback = Some(TestPlayback::Error(playback));
+        state.update(Duration::ZERO);
+
+        state.refresh_playback();
+
+        assert_eq!(
+            state
+                .pending_video_open
+                .as_ref()
+                .unwrap()
+                .refresh_seek_target,
+            Some(Duration::from_secs(19_995))
+        );
+        assert_eq!(
+            state.unconfirmed_start_position,
+            Some((video_id, Duration::from_secs(19_995)))
+        );
+    }
+
+    #[test]
+    fn latest_user_seek_supersedes_failed_restoration_position() {
+        let mut state = AppState::<TestPlayback>::new_for_test(test_playback_factory);
+        let mut playback = ErrorOnUpdatePlayback::new();
+        playback.state = PlaybackState::Paused;
+        playback.position = Duration::ZERO;
+        let video_id = playback.source.id.clone();
+        state.playback = Some(TestPlayback::Error(playback));
+        state.unconfirmed_start_position = Some((video_id.clone(), Duration::from_secs(19_995)));
+
+        state.seek_to(Duration::from_secs(123));
+        assert_eq!(
+            state.unconfirmed_start_position,
+            Some((video_id, Duration::from_secs(123)))
+        );
+        state.refresh_playback();
+        assert_eq!(
+            state
+                .pending_video_open
+                .as_ref()
+                .unwrap()
+                .refresh_seek_target,
+            Some(Duration::from_secs(123))
+        );
     }
 
     #[test]
