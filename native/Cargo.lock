@@ -2191,7 +2191,7 @@ dependencies = [
 [[package]]
 name = "oxideav-hls"
 version = "0.1.0"
-source = "git+https://github.com/Robert-Hughes/oxideav-hls.git?branch=dev#146f79d68772b53f668b8f2a14efd656f3abf898"
+source = "git+https://github.com/Robert-Hughes/oxideav-hls.git?branch=dev#b3466b35f9dbb34e920543018a031d94820a85da"
 dependencies = [
  "log",
  "m3u8-rs",
@@ -2206,7 +2206,7 @@ dependencies = [
 [[package]]
 name = "oxideav-http"
 version = "0.0.8"
-source = "git+https://github.com/Robert-Hughes/oxideav-http.git?branch=dev#b6a24cb67f6497f6fe7c07b56f8884f65306d7df"
+source = "git+https://github.com/Robert-Hughes/oxideav-http.git?branch=dev#de0dcfc247f64ffde6d6e9a42c9a9cbc88970819"
 dependencies = [
  "oxideav-core",
  "oxideav-source",
